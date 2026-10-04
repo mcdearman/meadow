@@ -32,21 +32,27 @@
 -- Both equality and `show` are structural and work at any type, so this is the
 -- assertion to reach for: the message names what was being checked and the
 -- values speak for themselves.
-@pub fun assertEq (actual : a) (expected : a) (msg : String) : () ! { Test | e } =
+@pub fun assertEq (actual : a) (expected : a) (msg : String) :
+    () ! { Test | e } =
   if actual == expected
   then ()
   else
     fail
-      (cat (cat (cat (cat msg ": expected ") (show expected)) ", got ") (show actual))
+      (cat
+        (cat (cat (cat msg ": expected ") (show expected)) ", got ")
+        (show actual))
 
-@pub fun assertNeq (actual : a) (unexpected : a) (msg : String) : () ! { Test | e } =
+@pub fun assertNeq (actual : a) (unexpected : a) (msg : String) :
+    () ! { Test | e } =
   if actual != unexpected
   then ()
   else fail (cat (cat msg ": expected anything but ") (show unexpected))
 
-@pub fun assertTrue (actual : Bool) (msg : String) : () ! { Test | e } = assertEq actual True msg
+@pub fun assertTrue (actual : Bool) (msg : String) : () ! { Test | e } =
+  assertEq actual True msg
 
-@pub fun assertFalse (actual : Bool) (msg : String) : () ! { Test | e } = assertEq actual False msg
+@pub fun assertFalse (actual : Bool) (msg : String) : () ! { Test | e } =
+  assertEq actual False msg
 
 -- Fail unconditionally -- for the arm of a `match` that should be unreachable.
 @pub fun failWith (msg : String) : () ! { Test | e } = fail msg
@@ -63,7 +69,8 @@
   }
 
 -- `act` must fail; if it succeeds, *this* is the failure.
-@pub fun assertFails (act : () -> a ! { Test, Test | e }) (msg : String) : () ! { Test | e } =
+@pub fun assertFails (act : () -> a ! { Test, Test | e }) (msg : String) :
+    () ! { Test | e } =
   assert (didFail act) (cat "expected a failure: " msg)
 
 -- `String.concat`, spelled out from the primitives. `Std.String` is compiled
@@ -86,9 +93,17 @@ fun cat a b =
 
 @test fun assertionsFailWhenTheyShould () =
   let a = assertTrue (didFail (\u2 -> assert False "x")) "assert False" in
-  let b = assertTrue (didFail (\u2 -> assertEq 1 2 "x")) "assertEq of different values" in
-  let c = assertTrue (didFail (\u2 -> assertNeq 1 1 "x")) "assertNeq of equal values" in
-  let d = assertTrue (didFail (\u2 -> assertTrue False "x")) "assertTrue False" in
+  let b =
+    assertTrue
+      (didFail (\u2 -> assertEq 1 2 "x"))
+      "assertEq of different values"
+  in
+  let c =
+    assertTrue (didFail (\u2 -> assertNeq 1 1 "x")) "assertNeq of equal values"
+  in
+  let d =
+    assertTrue (didFail (\u2 -> assertTrue False "x")) "assertTrue False"
+  in
   let e = assertTrue (didFail (\u2 -> failWith "x")) "failWith" in
   assertTrue (didFail (\u2 -> refuteThat True "x")) "refuteThat True"
 
@@ -102,7 +117,9 @@ fun cat a b =
   -- No `Just` here: this module is compiled before `Std.Maybe`, deliberately,
   -- so that every module below can carry tests.
   let d = assertEq True True "booleans" in
-  assertTrue (didFail (\u2 -> assertEq [1; 2] [1; 3] "x")) "and tells them apart"
+  assertTrue
+    (didFail (\u2 -> assertEq [1; 2] [1; 3] "x"))
+    "and tells them apart"
 
 @test fun aFailureUnwindsPastWhateverIsInBetween () =
   -- The point of using an effect rather than a return value: an assertion in a

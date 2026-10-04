@@ -67,7 +67,7 @@ fun main () =
         ++ S.fromInt (worst / 1000) ++ " us; " ++ S.fromInt slow
         ++ " over 1 ms; " ++ S.fromInt (H.size m2) ++ " entries")
 
--- --- tests --------------------------------------------------------------------
+-- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq)
 

@@ -57,7 +57,8 @@ use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
 use Std.Maybe.Maybe.*
 
-fun squares (n : Int) = V.foldl (\m i -> H.insert i (i * i) m) H.empty (V.range 0 n)
+fun squares (n : Int) =
+  V.foldl (\m i -> H.insert i (i * i) m) H.empty (V.range 0 n)
 
 @test fun theValueComesBackUnchanged () =
   let m = squares 500 in

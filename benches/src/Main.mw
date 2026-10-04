@@ -88,7 +88,7 @@ use Std.Bench (bench, benchUnits, runAll)
 use Std.Collections.List as L
 use Std.String as S
 
--- --- the three ----------------------------------------------------------------
+-- --- the three ---------------------------------------------------------------
 
 -- Ackermann. Grows fast in both arguments; `m` is kept at 2 so the benchmark
 -- finishes, and `n` does the scaling.
@@ -103,7 +103,7 @@ fun tailFib n = fibLoop n 0 1
 
 fun fibLoop n a b = if n == 0 then a else fibLoop (n - 1) b (a + b)
 
--- --- how much work each one does ----------------------------------------------
+-- --- how much work each one does ---------------------------------------------
 --
 -- The throughput column is only worth reading if it counts the thing the
 -- benchmark is actually exercising. `naiveFib 20` makes 21891 calls, so
@@ -126,7 +126,7 @@ fun countedAck c m n =
   else if n == 0 then countedAck c (m - 1) 1
   else countedAck c (m - 1) (countedAck c m (n - 1))
 
--- --- a few more ---------------------------------------------------------------
+-- --- a few more --------------------------------------------------------------
 
 -- Allocation and pattern matching: one `Cons` per element, then one `match`.
 fun sumList xs =
@@ -159,7 +159,7 @@ fun main () =
       , benchUnits "joinNumbers 200" 200 (\u -> joinNumbers 200)
     ]
 
--- --- tests --------------------------------------------------------------------
+-- --- tests -------------------------------------------------------------------
 --
 -- The benchmarked functions have to be *correct*, or the numbers are a
 -- measurement of the wrong thing. Small arguments only: `meadow test` should
@@ -180,7 +180,10 @@ use Std.Test (assertEq)
 
 @test fun tailFibGoesFurtherThanTheNaiveOne u =
   -- The point of having both: this one is a loop, so the depth is free.
-  assertEq (tailFib 90) 2880067194370816120 "the 90th, which naive fib cannot reach"
+  assertEq
+    (tailFib 90)
+    2880067194370816120
+    "the 90th, which naive fib cannot reach"
 
 @test fun theCallCountsAreRight u =
   -- If these are wrong the throughput column is confidently wrong, which is

@@ -67,7 +67,8 @@ def builtin : [(String, Fixity)] =
     ("<=", fx GroupsNeither 4), (">=", fx GroupsNeither 4), ("<.", fx GroupsNeither 4), (">.", fx GroupsNeither 4),
     ("<=.", fx GroupsNeither 4), (">=.", fx GroupsNeither 4) ]
 
-fun builtinOf (op : String) : Maybe Fixity = M.map snd (V.find (\b -> fst b == op) builtin)
+fun builtinOf (op : String) : Maybe Fixity =
+  M.map snd (V.find (\b -> fst b == op) builtin)
 
 -- The keyword a fixity is declared with.
 fun keyword (f : Fixity) : String =
@@ -82,39 +83,78 @@ fun keyword (f : Fixity) : String =
   | Just f -> f
   | None -> M.unwrapOr undeclared (H.lookup op declared)
 
--- --- declarations --------------------------------------------------------------------
+-- --- declarations ------------------------------------------------------------
 
 -- Every fixity the modules `trees` declare, on top of `known` -- a
 -- dependency's, say -- the first declaration of an operator the one that
 -- stands. A level out of range, a language operator declared otherwise than
 -- it is, and one declared two ways are errors, reported where they are.
-@pub fun declare (known : HashMap String Fixity) (trees : [Syntax Surface]) : HashMap String Fixity ! { Report | e } =
+@pub fun declare (known : HashMap String Fixity) (trees : [Syntax Surface])
+    : HashMap String Fixity ! { Report | e } =
   V.foldl (\acc t -> V.foldl declareOne acc (R.nodes t)) known trees
 
-fun declareOne (acc : HashMap String Fixity) (d : Syntax Surface) : HashMap String Fixity ! { Report | e } =
+fun declareOne (acc : HashMap String Fixity) (d : Syntax Surface)
+    : HashMap String Fixity ! { Report | e } =
   match M.andThen (\i -> V.find (\x -> R.kindOf x == NodeFixity) (R.nodes i)) (V.find (\x -> R.kindOf x == NodeItem) (R.nodes d)) with
   | Just (SurfaceFixity assoc prec ops) ->
       let level = M.unwrapOr 0 (S.toInt (R.text prec)) in
-      let f = fx (if R.kindOf assoc == TokenInfixl then GroupsLeft else if R.kindOf assoc == TokenInfixr then GroupsRight else GroupsNeither) level in
-      if level > 9 then (let u = say (errorAt (metaOf prec) "fixity level ${show level} is out of range") in acc)
-      else V.foldl (\a o -> declareOp a f o) acc ops
+      let f =
+        fx
+          (if R.kindOf assoc == TokenInfixl
+            then GroupsLeft
+            else if R.kindOf assoc == TokenInfixr
+            then GroupsRight
+            else GroupsNeither)
+          level
+      in
+      if level > 9
+      then
+        (let u =
+          say
+            (errorAt
+              (metaOf prec)
+              "fixity level ${show level} is out of range")
+in
+        acc)
+else V.foldl (\a o -> declareOp a f o) acc ops
   | _ -> acc
 
-fun declareOp (acc : HashMap String Fixity) (f : Fixity) (o : Syntax Surface) : HashMap String Fixity ! { Report | e } =
+fun declareOp (acc : HashMap String Fixity) (f : Fixity) (o : Syntax Surface)
+    : HashMap String Fixity ! { Report | e } =
   match V.find (\x -> R.kindOf x == NodeOpName) (R.nodes o) with
   | None -> acc
   | Just n ->
       let name = S.trim (R.text n) in
       match builtinOf name with
-      | Just b -> (if b == f then acc else (let u = say (errorAt (metaOf n) "`${name}` is `${keyword b} ${show b.level}` in the language itself") in acc))
-      | None ->
-          (match H.lookup name acc with
-           | Just before -> (if before == f then acc else (let u = say (errorAt (metaOf n) "`${name}` was already declared `${keyword before} ${show before.level}`") in acc))
-           | None -> H.insert name f acc)
+      | Just b ->
+          (if b == f
+            then acc
+            else
+              (let u =
+                say
+                (errorAt
+                  (metaOf n)
+                  "`${name}` is `${keyword b} ${show b.level}` in the language itself")
+in
+            acc))
+  | None ->
+      (match H.lookup name acc with
+       | Just before ->
+           (if before == f
+             then acc
+             else
+               (let u =
+                 say
+                     (errorAt
+                       (metaOf n)
+                       "`${name}` was already declared `${keyword before} ${show before.level}`")
+in
+                 acc))
+  | None -> H.insert name f acc)
 
 fun metaOf (s : Syntax Surface) = spanMeta (R.offset s) (R.endOffset s)
 
--- --- the pass ------------------------------------------------------------------------
+-- --- the pass ----------------------------------------------------------------
 
 -- The parser's language with its chains grouped: where the parser has a chain
 -- of operators, `Ops`, an operator applied to two, or an operand alone.
@@ -131,13 +171,18 @@ pass! {
 }
 
 -- The chain `first`, then each operator and operand in `rest`, grouped.
-fun chain (out : Origin Surface Grouped) (table : HashMap String Fixity) (first : Part Grouped) (rest : [Part Grouped]) : Part Grouped ! { Report | e } =
+fun chain (out : Origin Surface Grouped) (table : HashMap String Fixity)
+    (first : Part Grouped) (rest : [Part Grouped])
+    : Part Grouped ! { Report | e } =
   let leaf = \p -> W.node out Grouped.NodeLeaf [p] in
   let steps =
     V.concatMap
       (\t ->
         let cs = W.childrenOf out t in
-        match (V.find (\c -> W.kindOf out c == Grouped.NodeInfixOp) cs, V.find (\c -> W.kindOf out c == Grouped.NodeOperand) cs) with
+        match (
+          V.find (\c -> W.kindOf out c == Grouped.NodeInfixOp) cs,
+          V.find (\c -> W.kindOf out c == Grouped.NodeOperand) cs
+        ) with
         | (Just op, Just operand) -> [(op, operand)]
         | _ -> [])
       rest in
@@ -149,15 +194,23 @@ fun chain (out : Origin Surface Grouped) (table : HashMap String Fixity) (first 
             let name = S.trim (W.textOf out op) in
             let here = fixityOf table name in
             let reduced = reduce out outs ops name here op in
-            (V.pushBack (fst reduced) (leaf operand), V.pushBack (snd reduced) (op, here, name)))
+            (
+              V.pushBack (fst reduced) (leaf operand),
+              V.pushBack (snd reduced) (op, here, name)
+            ))
       ([leaf first], [])
       steps in
-      let outs = V.foldr (\o acc -> apply out acc o) (fst applied) (snd applied) in
+      let outs =
+        V.foldr (\o acc -> apply out acc o) (fst applied) (snd applied)
+      in
       M.unwrapOr (leaf first) (V.get outs (V.len outs - 1))
 
 -- Apply every operator on the stack that goes before operator `name`, which
 -- binds as `here`.
-fun reduce (out : Origin Surface Grouped) (outs : [Part Grouped]) (ops : [(Part Grouped, Fixity, String)]) (name : String) (here : Fixity) (at : Part Grouped) : ([Part Grouped], [(Part Grouped, Fixity, String)]) ! { Report | e } =
+fun reduce (out : Origin Surface Grouped) (outs : [Part Grouped])
+    (ops : [(Part Grouped, Fixity, String)]) (name : String) (here : Fixity)
+    (at : Part Grouped) :
+    ([Part Grouped], [(Part Grouped, Fixity, String)]) ! { Report | e } =
   match V.get ops (V.len ops - 1) with
   | None -> (outs, ops)
   | Just (top, there, topName) ->
@@ -165,25 +218,44 @@ fun reduce (out : Origin Surface Grouped) (outs : [Part Grouped]) (ops : [(Part 
         if there.level > here.level then True
         else if there.level < here.level then False
         else if there.assoc == GroupsLeft and here.assoc == GroupsLeft then True
-        else if there.assoc == GroupsRight and here.assoc == GroupsRight then False
+        else if there.assoc == GroupsRight and here.assoc == GroupsRight
+        then False
         else
           let why =
-            if topName == name and there.assoc == GroupsNeither then "`${topName}` is `${keyword there} ${show there.level}`, which does not group: `x ${topName} y ${topName} z` means nothing"
-            else "`${topName}` (`${keyword there} ${show there.level}`) and `${name}` (`${keyword here} ${show here.level}`) cannot be mixed without parentheses" in
-            let u = say (errorAt (spanMeta (W.from at) (W.to at)) why) in
-            True in
-            if goes then reduce out (apply out outs (top, there, topName)) (V.take ops (V.len ops - 1)) name here at else (outs, ops)
+            if topName == name and there.assoc == GroupsNeither
+            then
+              "`${topName}` is `${keyword there} ${show there.level}`, which does not group: `x ${topName} y ${topName} z` means nothing"
+            else
+              "`${topName}` (`${keyword there} ${show there.level}`) and `${name}` (`${keyword here} ${show here.level}`) cannot be mixed without parentheses" in
+              let u = say (errorAt (spanMeta (W.from at) (W.to at)) why) in
+              True in
+              if goes
+              then
+                reduce
+                out
+                (apply out outs (top, there, topName))
+                (V.take ops (V.len ops - 1))
+                name
+                here
+                at
+              else (outs, ops)
 
 -- The top two operands, the operator applied to them.
-fun apply (out : Origin Surface Grouped) (outs : [Part Grouped]) (o : (Part Grouped, Fixity, String)) : [Part Grouped] =
+fun apply (out : Origin Surface Grouped) (outs : [Part Grouped])
+    (o : (Part Grouped, Fixity, String)) : [Part Grouped] =
   match (o, V.get outs (V.len outs - 2), V.get outs (V.len outs - 1)) with
-  | ((op, _, _), Just l, Just r) -> V.pushBack (V.take outs (V.len outs - 2)) (W.node out Grouped.NodeInfix [l, op, r])
+  | ((op, _, _), Just l, Just r) ->
+      V.pushBack
+        (V.take outs (V.len outs - 2))
+        (W.node out Grouped.NodeInfix [l, op, r])
   | _ -> outs
 
 -- `tree` with every chain grouped by `table`'s fixities, and what was wrong.
-@pub fun grouped (table : HashMap String Fixity) (tree : Syntax Surface) : (Green Grouped, [Diagnostic]) = collect (\() -> regroup table tree)
+@pub fun grouped (table : HashMap String Fixity) (tree : Syntax Surface) :
+    (Green Grouped, [Diagnostic]) =
+  collect (\() -> regroup table tree)
 
--- --- what the grouping is ------------------------------------------------------------
+-- --- what the grouping is ----------------------------------------------------
 --
 -- What the fixity test compares: each chain of operators outside a pattern,
 -- by where its first operator is, bracketed as it grouped -- each operator
@@ -192,15 +264,24 @@ fun apply (out : Origin Surface Grouped) (outs : [Part Grouped]) (o : (Part Grou
 -- as a pattern, not a chain.
 
 -- Every chain of `tree` outside a pattern, a line each, first operator first.
-@pub fun chainsOf (tree : Syntax Grouped) : [String] = V.map snd (sortOn fst (chainsIn tree False))
+@pub fun chainsOf (tree : Syntax Grouped) : [String] =
+  V.map snd (sortOn fst (chainsIn tree False))
 
 -- The chains under `s`, each with where its first operator is. `pattern` is
 -- whether `s` is inside a pattern's parentheses.
 fun chainsIn (s : Syntax Grouped) (pattern : Bool) : [(Int, String)] =
   let k = R.kindOf s in
   if k == Grouped.NodeInfix then
-    V.append (if pattern then [] else [(firstOp s, bracketed s)]) (V.concatMap (\c -> chainsIn c pattern) (leaves s))
-  else if k == Grouped.NodePatParen then V.concatMap (\c -> if R.kindOf c == Grouped.NodeElem then elemChains c True else chainsIn c pattern) (R.nodes s)
+    V.append
+      (if pattern then [] else [(firstOp s, bracketed s)])
+      (V.concatMap (\c -> chainsIn c pattern) (leaves s))
+  else if k == Grouped.NodePatParen
+  then
+    V.concatMap
+      (\c -> if R.kindOf c == Grouped.NodeElem
+        then elemChains c True
+        else chainsIn c pattern)
+      (R.nodes s)
   else if k == Grouped.NodeElem then elemChains s pattern
   else V.concatMap (\c -> chainsIn c pattern) (R.nodes s)
 
@@ -208,7 +289,10 @@ fun chainsIn (s : Syntax Grouped) (pattern : Bool) : [(Int, String)] =
 -- expression, and anything else a pattern.
 fun elemChains (e : Syntax Grouped) (pattern : Bool) : [(Int, String)] =
   let view = V.any (\c -> R.kindOf c == Grouped.NodeViewTail) (R.nodes e) in
-  V.concatMap (\c -> chainsIn c (pattern and not (view and R.kindOf c == Grouped.NodeExpr))) (R.nodes e)
+  V.concatMap
+    (\c ->
+      chainsIn c (pattern and not (view and R.kindOf c == Grouped.NodeExpr)))
+    (R.nodes e)
 
 -- The operands of a chain, however deep: where the chains inside it are.
 fun leaves (s : Syntax Grouped) : [Syntax Grouped] =
@@ -218,20 +302,32 @@ fun leaves (s : Syntax Grouped) : [Syntax Grouped] =
 
 fun firstOp (s : Syntax Grouped) : Int =
   match s with
-  | GroupedInfix l op _ -> (if R.kindOf l == Grouped.NodeInfix then min (firstOp l) (startOf op) else startOf op)
+  | GroupedInfix l op _ ->
+      (if R.kindOf l == Grouped.NodeInfix
+        then min (firstOp l) (startOf op)
+        else startOf op)
   | _ -> 0
 
 fun bracketed (s : Syntax Grouped) : String =
   match s with
-  | GroupedInfix l op r -> "(${bracketed l} ${S.trim (R.text op)}@${show (startOf op)}..${show (endOf op)} ${bracketed r})"
+  | GroupedInfix l op r ->
+      "(${bracketed l} ${S.trim (R.text op)}@${show (startOf op)}..${show (endOf op)} ${bracketed r})"
   | _ -> "_"
 
 -- Where a node's first and last tokens are, the text between them not
 -- counted.
-fun startOf (s : Syntax Grouped) : Int = M.unwrapOr (R.offset s) (M.map R.offset (V.find (\t -> not (groupedIsTrivia (R.kindOf t))) (tokensUnder s)))
+fun startOf (s : Syntax Grouped) : Int =
+  M.unwrapOr
+    (R.offset s)
+    (M.map
+      R.offset
+      (V.find (\t -> not (groupedIsTrivia (R.kindOf t))) (tokensUnder s)))
 
 fun endOf (s : Syntax Grouped) : Int =
-  let ts = V.filter (\t -> not (groupedIsTrivia (R.kindOf t))) (tokensUnder s) in
+  let ts =
+    V.filter (\t -> not (groupedIsTrivia (R.kindOf t))) (tokensUnder s)
+  in
   M.unwrapOr (R.endOffset s) (M.map R.endOffset (V.get ts (V.len ts - 1)))
 
-fun tokensUnder (s : Syntax Grouped) : [Syntax Grouped] = if R.isTokenOf s then [s] else V.concatMap tokensUnder (R.children s)
+fun tokensUnder (s : Syntax Grouped) : [Syntax Grouped] =
+  if R.isTokenOf s then [s] else V.concatMap tokensUnder (R.children s)

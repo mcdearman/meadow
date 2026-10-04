@@ -30,7 +30,7 @@ use Std.Collections.Vector as V
 use Std.String as S
 use Std.Maybe.Maybe.*
 
--- --- our own effects ----------------------------------------------------------
+-- --- our own effects ---------------------------------------------------------
 
 effect Log {
   log : String -> (),
@@ -71,14 +71,24 @@ fun checkout basket =
     let _ = put (get () + 1) in
     let _ = log (S.concatAll ["item ", S.fromInt item]) in
     total + item) 0 basket in
-  let _ = if subtotal > limit then raise (S.concatAll ["order of ", S.fromInt subtotal, " is over the limit"]) else 0 in
+  let _ =
+    if subtotal > limit
+    then
+      raise
+        (S.concatAll ["order of ", S.fromInt subtotal, " is over the limit"])
+    else 0
+  in
   let total = subtotal + subtotal * rate / 100 in
   let _ = log (S.concatAll ["total ", S.fromInt total]) in
   total
 
 -- Every handler at once: settings, logging, a counter, and failure as a value.
 fun runCheckout table basket =
-  collectingLogs (\() -> withSettings table (\() -> runState (toInt 0) (\() -> toResult (\() -> checkout basket))))
+  collectingLogs
+    (\() ->
+      withSettings
+        table
+        (\() -> runState (toInt 0) (\() -> toResult (\() -> checkout basket))))
 
 -- --- effects the standard library already has -------------------------------
 
@@ -103,7 +113,16 @@ def settings = [("taxPercent", toInt 20), ("limit", 100)]
 
 fun main () =
   let _ = println "== checkout, printing its log" in
-  let result = printingLogs (\() -> withSettings settings (\() -> runState (toInt 0) (\() -> toResult (\() -> checkout [10, 20, 30])))) in
+  let result =
+    printingLogs
+      (\() ->
+        withSettings
+          settings
+          (\() ->
+            runState
+              (toInt 0)
+              (\() -> toResult (\() -> checkout [10, 20, 30]))))
+  in
   let _ = println (S.concat "result and items counted: " (show result)) in
 
   let _ = println "== the same checkout, collecting its log instead" in
@@ -111,11 +130,17 @@ fun main () =
   let _ = println (S.concat "outcome: " (show outcome)) in
   let _ = println (S.concat "log: " (show lines)) in
 
-  let _ = println "== a dice game with a seed and a frozen clock: the same every run" in
+  let _ =
+    println "== a dice game with a seed and a frozen clock: the same every run"
+  in
   let _ = println (withClock 1000 (\() -> withSeed 42 (\() -> game ()))) in
 
-  let _ = println "== the greeter, fed its input and with its output captured" in
-  let (u, printed) = withOutput (\() -> withInput ["Ada"] (\() -> greeter ())) in
+  let _ =
+    println "== the greeter, fed its input and with its output captured"
+  in
+  let (u, printed) =
+    withOutput (\() -> withInput ["Ada"] (\() -> greeter ()))
+  in
   println (S.concat "it printed: " (show printed))
 
 -- --- tests -------------------------------------------------------------------
@@ -129,15 +154,29 @@ use Std.Test (assertEq)
 
 @test fun aCheckoutOverTheLimitFailsWithAValue () =
   let (outcome, lines) = runCheckout [("limit", toInt 5)] [3, 4] in
-  assertEq outcome (Err "order of 7 is over the limit", 2) "a value, not a crash"
+  assertEq
+    outcome
+    (Err "order of 7 is over the limit", 2)
+    "a value, not a crash"
 
 @test fun theSameSeedGivesTheSameGame () =
-  assertEq (withSeed 7 (\() -> V.map (\i -> roll ()) (V.range 0 5))) (withSeed 7 (\() -> V.map (\i -> roll ()) (V.range 0 5))) "reproducible"
+  assertEq
+    (withSeed 7 (\() -> V.map (\i -> roll ()) (V.range 0 5)))
+    (withSeed 7 (\() -> V.map (\i -> roll ()) (V.range 0 5)))
+    "reproducible"
 
 @test fun theGreeterGreets () =
-  let (u, printed) = withOutput (\() -> withInput ["Grace"] (\() -> greeter ())) in
-  assertEq printed "What is your name?\nHello, Grace!\n" "one question, one greeting"
+  let (u, printed) =
+    withOutput (\() -> withInput ["Grace"] (\() -> greeter ()))
+  in
+  assertEq
+    printed
+    "What is your name?\nHello, Grace!\n"
+    "one question, one greeting"
 
 @test fun theGreeterCopesWithNoInput () =
   let (u, printed) = withOutput (\() -> withInput [] (\() -> greeter ())) in
-  assertEq printed "What is your name?\nNobody there.\n" "end of input is not an error"
+  assertEq
+    printed
+    "What is your name?\nNobody there.\n"
+    "end of input is not an error"

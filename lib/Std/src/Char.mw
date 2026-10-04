@@ -12,7 +12,7 @@
 
 use Std.Ordering (isLess, isEqual, isGreater)
 
--- --- codes --------------------------------------------------------------------
+-- --- codes -------------------------------------------------------------------
 
 -- The Unicode scalar value: `code 'A'` is 65.
 @pub fun code (c : Char) : Int = charCode c
@@ -24,11 +24,12 @@ use Std.Ordering (isLess, isEqual, isGreater)
 @pub fun isScalar (n : n) : Bool =
   n >= 0 and n <= 1114111 and (n < 55296 or n > 57343)
 
-@pub fun fromCodeSafe (n : Int) : Maybe Char = if isScalar n then Just (charFromCode n) else None
+@pub fun fromCodeSafe (n : Int) : Maybe Char =
+  if isScalar n then Just (charFromCode n) else None
 
 @pub fun toString (c : Char) : String = charsToString #[c]
 
--- --- classification (ASCII) ----------------------------------------------------
+-- --- classification (ASCII) --------------------------------------------------
 
 @pub fun isAscii (c : Char) : Bool = code c < 128
 
@@ -52,16 +53,19 @@ use Std.Ordering (isLess, isEqual, isGreater)
   let n = code c in
   n == 32 or (n >= 9 and n <= 13)
 
--- --- case ----------------------------------------------------------------------
+-- --- case --------------------------------------------------------------------
 
-@pub fun toUpper (c : Char) : Char = if isLower c then charFromCode (code c - 32) else c
+@pub fun toUpper (c : Char) : Char =
+  if isLower c then charFromCode (code c - 32) else c
 
-@pub fun toLower (c : Char) : Char = if isUpper c then charFromCode (code c + 32) else c
+@pub fun toLower (c : Char) : Char =
+  if isUpper c then charFromCode (code c + 32) else c
 
--- --- digits --------------------------------------------------------------------
+-- --- digits ------------------------------------------------------------------
 
 -- `'7'` to `7`; `None` for anything that is not a decimal digit.
-@pub fun digitToInt (c : Char) : Maybe Int = if isDigit c then Just (code c - 48) else None
+@pub fun digitToInt (c : Char) : Maybe Int =
+  if isDigit c then Just (code c - 48) else None
 
 -- `0`..`15` to `'0'`..`'f'`; `None` outside that range.
 @pub fun fromHexDigit (n : Int) : Maybe Char =
@@ -78,14 +82,15 @@ use Std.Ordering (isLess, isEqual, isGreater)
   else if n >= 65 and n <= 70 then Just (n - 55)
   else None
 
--- --- ordering ------------------------------------------------------------------
+-- --- ordering ----------------------------------------------------------------
 
 -- By code point. `==` already works at any type; this is for sorting and ranges.
 @pub fun cmp (a : Char) (b : Char) : Ordering = compare (code a) (code b)
 
-@pub fun isBetween (lo : Char) (hi : Char) (c : Char) : Bool = code c >= code lo and code c <= code hi
+@pub fun isBetween (lo : Char) (hi : Char) (c : Char) : Bool =
+  code c >= code lo and code c <= code hi
 
--- --- tests ---------------------------------------------------------------------
+-- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
 use Std.Maybe.Maybe.*

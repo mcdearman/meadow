@@ -40,7 +40,8 @@ fun transfer from to (amount : Int) =
     Stm.modifyTVar to (\b -> b + amount))
 
 -- Every balance, read as one moment.
-fun balances accounts = Stm.atomically (\() -> V.map (\a -> Stm.readTVar a) accounts)
+fun balances accounts =
+  Stm.atomically (\() -> V.map (\a -> Stm.readTVar a) accounts)
 
 fun total accounts = V.foldl (\a b -> a + b) 0 (balances accounts)
 
@@ -48,7 +49,10 @@ fun total accounts = V.foldl (\a b -> a + b) 0 (balances accounts)
 fun shuffle accounts (i : Int) (rounds : Int) =
   match (V.get accounts i, V.get accounts ((i + 1) % V.len accounts)) with
   | (Just from, Just to) ->
-      let rec go (k : Int) = if k == 0 then () else let _ = transfer from to 1 in go (k - 1) in
+      let rec go (k : Int) =
+        if k == 0 then () else let _ = transfer from to 1
+      in
+      go (k - 1) in
       go rounds
   | _ -> ()
 
@@ -56,7 +60,9 @@ fun shuffle accounts (i : Int) (rounds : Int) =
 -- readings were not the total there should be. Always none.
 fun audit accounts (expected : Int) (times : Int) =
   let rec go (k : Int) (wrong : Int) =
-    if k == 0 then wrong else go (k - 1) (if total accounts == expected then wrong else wrong + 1)
+    if k == 0
+    then wrong
+    else go (k - 1) (if total accounts == expected then wrong else wrong + 1)
   in go times 0
 
 -- --- a bounded queue ---------------------------------------------------------
@@ -64,7 +70,8 @@ fun audit accounts (expected : Int) (times : Int) =
 -- At most `capacity` values, oldest first.
 record Queue a = { items : TVar [a], capacity : Int }
 
-fun newQueue (capacity : Int) = { items = Stm.newTVarIO [], capacity = capacity }
+fun newQueue (capacity : Int) =
+  { items = Stm.newTVarIO [], capacity = capacity }
 
 -- Add `x`, waiting while the queue is full.
 fun push q x =
@@ -85,13 +92,23 @@ fun popEither a b = Stm.orElse (\() -> pop a) (\() -> pop b)
 -- --- main --------------------------------------------------------------------
 
 fun main () =
-  let _ = println "== a bank: 4 accounts, 4 threads shuffling money round, 1 auditor" in
+  let _ =
+    println "== a bank: 4 accounts, 4 threads shuffling money round, 1 auditor"
+  in
   let accounts = V.map (\i -> Stm.newTVarIO (toInt 100)) (V.range 0 4) in
-  let movers = V.map (\i -> Thread.spawn (\() -> shuffle accounts i 2000)) (V.range 0 4) in
+  let movers =
+    V.map (\i -> Thread.spawn (\() -> shuffle accounts i 2000)) (V.range 0 4)
+  in
   let auditor = Thread.spawn (\() -> audit accounts 400 500) in
   let _ = Thread.awaitAll movers in
-  let _ = println (S.concatAll ["readings with the wrong total: ", S.fromInt (Thread.await auditor)]) in
-  let _ = println (S.concatAll ["balances at the end: ", show (balances accounts)]) in
+  let _ =
+    println
+      (S.concatAll
+        ["readings with the wrong total: ", S.fromInt (Thread.await auditor)])
+  in
+  let _ =
+    println (S.concatAll ["balances at the end: ", show (balances accounts)])
+  in
 
   let _ = println "== a transfer that waits for the money" in
   let poor = Stm.newTVarIO (toInt 0) in
@@ -99,14 +116,20 @@ fun main () =
   let waiting = Thread.spawn (\() -> transfer poor rich 50) in
   let _ = Stm.atomically (\() -> Stm.writeTVar poor 80) in
   let _ = Thread.await waiting in
-  let _ = println (S.concatAll ["after the deposit it went through: ", show (balances [poor, rich])]) in
+  let _ =
+    println
+      (S.concatAll
+        ["after the deposit it went through: ", show (balances [poor, rich])])
+  in
 
   let _ = println "== two bounded queues, one consumer taking from either" in
   let urgent = newQueue 2 in
   let normal = newQueue 2 in
   let producer = Thread.spawn (\() ->
     V.forEach (\i -> Stm.atomically (\() -> push (if i % 3 == 0 then urgent else normal) i)) (V.range 1 10)) in
-  let taken = V.map (\i -> Stm.atomically (\() -> popEither urgent normal)) (V.range 1 10) in
+  let taken =
+    V.map (\i -> Stm.atomically (\() -> popEither urgent normal)) (V.range 1 10)
+  in
   let _ = Thread.await producer in
   println (S.concatAll ["took, in the order they came: ", show taken])
 
@@ -116,7 +139,9 @@ use Std.Test (assertEq)
 
 @test fun transfersKeepTheTotal () =
   let accounts = V.map (\i -> Stm.newTVarIO (toInt 50)) (V.range 0 3) in
-  let movers = V.map (\i -> Thread.spawn (\() -> shuffle accounts i 300)) (V.range 0 3) in
+  let movers =
+    V.map (\i -> Thread.spawn (\() -> shuffle accounts i 300)) (V.range 0 3)
+  in
   let _ = Thread.awaitAll movers in
   assertEq (total accounts) 150 "money moved, none made or lost"
 
@@ -140,7 +165,10 @@ use Std.Test (assertEq)
 
 @test fun aQueueGivesEverythingBackInOrder () =
   let q = newQueue 3 in
-  let producer = Thread.spawn (\() -> V.forEach (\i -> Stm.atomically (\() -> push q i)) (V.range 0 10)) in
+  let producer =
+    Thread.spawn
+      (\() -> V.forEach (\i -> Stm.atomically (\() -> push q i)) (V.range 0 10))
+  in
   let got = V.map (\i -> Stm.atomically (\() -> pop q)) (V.range 0 10) in
   let _ = Thread.await producer in
   assertEq got (V.range 0 10) "first in, first out, despite the capacity"

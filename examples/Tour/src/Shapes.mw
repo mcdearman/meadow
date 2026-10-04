@@ -27,7 +27,8 @@ fun area' s =
 
 -- Newton's method, since there is no `sqrt` primitive to reach for.
 fun sqrt x =
-  let rec go (guess : Float) (n : Int) = if n == 0 then guess else go ((guess +. x /. guess) /. 2.0) (n - 1)
+  let rec go (guess : Float) (n : Int) =
+    if n == 0 then guess else go ((guess +. x /. guess) /. 2.0) (n - 1)
   in if x <=. 0.0 then 0.0 else go x 30
 
 -- `Just` the name of a shape with no area, if it is one.

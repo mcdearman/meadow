@@ -19,7 +19,7 @@ use Std.Maybe.Maybe.*
 
 @pub fun isSeparator (b : UInt8) = b == 47 or b == 92
 
--- --- joining ------------------------------------------------------------------
+-- --- joining -----------------------------------------------------------------
 
 -- `join "a" "b"` is `"a/b"`. An absolute `b` wins outright, as it does in Rust's
 -- `Path::join` -- joining onto it would silently produce a path nobody meant.
@@ -30,9 +30,10 @@ use Std.Maybe.Maybe.*
   else if endsWithSeparator a then S.concat a b
   else S.concatAll [a, separator, b]
 
-@pub fun joinAll (parts : [String]) : String = V.foldl (\acc p -> join acc p) "" parts
+@pub fun joinAll (parts : [String]) : String =
+  V.foldl (\acc p -> join acc p) "" parts
 
--- --- splitting ----------------------------------------------------------------
+-- --- splitting ---------------------------------------------------------------
 
 -- Everything before the final separator: `parent "a/b/c"` is `"a/b"`. `None` when
 -- there is nothing above -- a bare name, or the root itself.
@@ -77,9 +78,10 @@ use Std.Maybe.Maybe.*
   | Just d -> join d name
 
 -- Every non-empty component, separators discarded.
-@pub fun components (p : String) : [String] = p |> splitAny |> V.filter (\c -> not (S.isEmpty c))
+@pub fun components (p : String) : [String] =
+  p |> splitAny |> V.filter (\c -> not (S.isEmpty c))
 
--- --- classifying --------------------------------------------------------------
+-- --- classifying -------------------------------------------------------------
 
 @pub fun isAbsolute (p : String) : Bool =
   if S.isEmpty p then False
@@ -92,7 +94,7 @@ use Std.Maybe.Maybe.*
 fun hasDrive p =
   if S.byteLength p < 2 then False else byteAt p 1 == 58
 
--- --- normalising --------------------------------------------------------------
+-- --- normalising -------------------------------------------------------------
 
 -- Resolve `.` and `..` textually and collapse repeated separators. Purely
 -- lexical: it never looks at the disk, so it cannot follow symlinks, and
@@ -111,14 +113,17 @@ fun pushPart abs acc c =
   if c == "." then acc
   else if c != ".." then V.pushBack acc c
   -- Nothing is above a drive.
-  else if V.len acc == 1 and (match V.last acc with | Just d -> hasDrive d | None -> False) then acc
   else
-    match V.last acc with
-    | None if abs -> acc
-    | Just prev if prev != ".." -> V.popBack acc
-    | _ -> V.pushBack acc c
+    if V.len acc == 1
+    and (match V.last acc with | Just d -> hasDrive d | None -> False)
+    then acc
+    else
+      match V.last acc with
+      | None if abs -> acc
+      | Just prev if prev != ".." -> V.popBack acc
+      | _ -> V.pushBack acc c
 
--- --- helpers ------------------------------------------------------------------
+-- --- helpers -----------------------------------------------------------------
 
 fun endsWithSeparator p =
   let n = S.byteLength p in
@@ -174,7 +179,9 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 
 @test fun splittingAPath () =
   let a = assertEq (fileName "a/b/c.txt") "c.txt" "fileName" in
-  let b = assertEq (fileName "c.txt") "c.txt" "a bare name is its own fileName" in
+  let b =
+    assertEq (fileName "c.txt") "c.txt" "a bare name is its own fileName"
+  in
   let c = assertEq (fileStem "a/b/c.txt") "c" "fileStem" in
   let d = assertEq (extension "a/b/c.txt") "txt" "extension" in
   let e = assertEq (parent "a/b/c.txt") (Just "a/b") "parent" in
@@ -187,8 +194,15 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   assertTrue (hasExtension "a.txt") "a real extension"
 
 @test fun replacingPartsOfAPath () =
-  let a = assertEq (withExtension "a/b/c.txt" "md") "a/b/c.md" "withExtension" in
-  let b = assertEq (withExtension "a/b/c.txt" "") "a/b/c" "an empty extension removes it" in
+  let a =
+    assertEq (withExtension "a/b/c.txt" "md") "a/b/c.md" "withExtension"
+  in
+  let b =
+    assertEq
+      (withExtension "a/b/c.txt" "")
+      "a/b/c"
+      "an empty extension removes it"
+  in
   let c = assertEq (withExtension "c" "txt") "c.txt" "adding one" in
   assertEq (withFileName "a/b/c.txt" "d.md") "a/b/d.md" "withFileName"
 
@@ -220,5 +234,10 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   assertEq (normalize r"a\b") "a/b" "output is always forward slashes"
 
 @test fun aDriveStaysWhereItIs () =
-  let a = assertEq (normalize "C:\\Users\\me\\..\\you") "C:/Users/you" "the drive first, no separator before it" in
+  let a =
+    assertEq
+      (normalize "C:\\Users\\me\\..\\you")
+      "C:/Users/you"
+      "the drive first, no separator before it"
+  in
   assertEq (normalize "C:/..") "C:" "nothing above a drive"

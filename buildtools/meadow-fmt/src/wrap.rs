@@ -360,7 +360,15 @@ fn wrap_piece(chars: &[char], toks: &[Tok], indent: usize, width: usize, out: &m
     if toks[0].kind == Kind::Open && (1..n).all(|i| depth[i] >= 1) {
         let opener = toks[0].end - toks[0].start;
         let mut inner = Vec::new();
-        wrap_piece(chars, &toks[1..], indent + opener, width, &mut inner);
+        // Measured one bracket in, and laid out from where the line starts:
+        // what is cut off hangs a unit under the line, whatever opened on it.
+        wrap_piece(
+            chars,
+            &toks[1..],
+            indent,
+            width.saturating_sub(opener),
+            &mut inner,
+        );
         if inner.len() > 1 {
             let open = text_of(chars, &toks[0]);
             for (i, l) in inner.into_iter().enumerate() {
@@ -371,6 +379,20 @@ fn wrap_piece(chars: &[char], toks: &[Tok], indent: usize, width: usize, out: &m
                 });
             }
             return;
+        }
+    }
+    // A variant and its fields: a field to a line, under the constructor.
+    if (op(0, "=") || op(0, "|")) && n > 2 && find(1, &|i| op(i, "->") || op(i, "=")).is_none() {
+        let fields: Vec<usize> = (2..n)
+            .filter(|&i| {
+                top(i)
+                    && matches!(toks[i].kind, Kind::Word | Kind::Open)
+                    && matches!(toks[i - 1].kind, Kind::Word | Kind::Close)
+            })
+            .collect();
+        let plain = (1..n).all(|i| !top(i) || !matches!(toks[i].kind, Kind::Op | Kind::Comma));
+        if plain && !fields.is_empty() {
+            return cut(chars, toks, &fields, indent, indent + 2 * UNIT, width, out);
         }
     }
     // A definition and its body.
@@ -387,7 +409,9 @@ fn wrap_piece(chars: &[char], toks: &[Tok], indent: usize, width: usize, out: &m
     // lines after the first further in than its body will be.
     if declares && op(n - 1, "=") {
         let starts: Vec<usize> = (2..n)
-            .filter(|&i| top(i) && (toks[i].kind == Kind::Open || op(i, ":") || op(i, "!")))
+            // Before a parameter or the result's `:` -- and never between a
+            // `!` and the effects it says.
+            .filter(|&i| top(i) && ((toks[i].kind == Kind::Open && !op(i - 1, "!")) || op(i, ":")))
             .collect();
         let mut cuts = Vec::new();
         let mut from = toks[0].start;
@@ -561,8 +585,8 @@ fn wrap_piece(chars: &[char], toks: &[Tok], indent: usize, width: usize, out: &m
         wrap_piece(
             chars,
             &toks[1..n - 1],
-            indent + opener,
-            width.saturating_sub(1),
+            indent,
+            width.saturating_sub(opener + 1),
             &mut inner,
         );
         if inner.len() > 1 {
@@ -664,6 +688,30 @@ mod tests {
         assert_eq!(
             w("fun f xs =\n  V.foldl (\\acc x -> step acc x) (0, 1) xs\n"),
             "fun f xs =\n  V.foldl\n    (\\acc x -> step acc x)\n    (0, 1)\n    xs\n"
+        );
+    }
+
+    #[test]
+    fn a_variant_has_a_field_to_a_line_and_stays_in_from_the_margin() {
+        assert_eq!(
+            w("data Live k\n  = Live (TVar Int) (TVar (HashMap k Int)) (k -> Maybe Int)\n"),
+            "data Live k\n  = Live\n      (TVar Int)\n      (TVar (HashMap k Int))\n      (k -> Maybe Int)\n"
+        );
+    }
+
+    #[test]
+    fn an_effect_row_stays_with_its_bang() {
+        assert_eq!(
+            w("fun newDb (compute : k -> Maybe v) : Db k v ! { Thread | e } =\n  go\n"),
+            "fun newDb (compute : k -> Maybe v)\n    : Db k v ! { Thread | e } =\n  go\n"
+        );
+    }
+
+    #[test]
+    fn arguments_hang_a_unit_under_their_line_whatever_opened_on_it() {
+        assert_eq!(
+            w("fun f o =\n  g (Once (newRef firstThing) (newRef secondThing) (newRef third))\n"),
+            "fun f o =\n  g\n    (Once\n      (newRef firstThing)\n      (newRef secondThing)\n      (newRef third))\n"
         );
     }
 

@@ -42,10 +42,16 @@ use Std.Ordering.Ordering.*
     | (>) x y = match partialCmp x y with | Just Greater -> True | _ -> False
 
   fun (<=) : a -> a -> Bool
-    | (<=) x y = match partialCmp x y with | Just Less -> True | Just Equal -> True | _ -> False
+    | (<=) x y = match partialCmp x y with
+                 | Just Less -> True
+                 | Just Equal -> True
+                 | _ -> False
 
   fun (>=) : a -> a -> Bool
-    | (>=) x y = match partialCmp x y with | Just Greater -> True | Just Equal -> True | _ -> False
+    | (>=) x y = match partialCmp x y with
+                 | Just Greater -> True
+                 | Just Equal -> True
+                 | _ -> False
 }
 
 @pub trait Ord a <: Eq a, PartialOrd a {
@@ -68,7 +74,7 @@ use Std.Ordering.Ordering.*
   | Equal -> True
   | _ -> False
 
-  -- --- the integer types ---------------------------------------------------------
+  -- --- the integer types -----------------------------------------------------
   --
   -- Every comparison is its primitive, so that `x < y` on two `Int`s is the one
   -- instruction it would be if `<` were built in.
@@ -83,21 +89,28 @@ use Std.Ordering.Ordering.*
         impl Eq $t {
         }
         impl PartialOrd $t {
-          fun partialCmp x y = Just (if _primLt x y then Less else if _primEq x y then Equal else Greater)
-          fun (<) x y = _primLt x y
-          fun (>) x y = _primGt x y
-          fun (<=) x y = _primLe x y
-          fun (>=) x y = _primGe x y
+          fun partialCmp x y =
+            Just
+              (if _primLt x y
+                then Less
+                else if _primEq x y
+                then Equal
+                else Greater)
+            fun (<) x y = _primLt x y
+            fun (>) x y = _primGt x y
+            fun (<=) x y = _primLe x y
+            fun (>=) x y = _primGe x y
         }
         impl Ord $t {
-          fun compare x y = if _primLt x y then Less else if _primEq x y then Equal else Greater
+          fun compare x y =
+            if _primLt x y then Less else if _primEq x y then Equal else Greater
         }
       )*
   }
 
   comparable! { Int, BigInt, Int8, Int16, Int32, UInt8, UInt16, UInt32, UInt64 }
 
-  -- --- floats: partial -----------------------------------------------------------
+  -- --- floats: partial -------------------------------------------------------
   --
   -- IEEE 754: `NaN` equals nothing, itself included, and is ordered against
   -- nothing; `-0.0` equals `0.0`.
@@ -124,7 +137,7 @@ use Std.Ordering.Ordering.*
 
   floating! { Float, Float32 }
 
--- --- characters and strings ----------------------------------------------------
+-- --- characters and strings --------------------------------------------------
 
 fun codeOrder x y =
   let a = charCode x in
@@ -167,7 +180,7 @@ impl Ord String {
   fun compare x y = stringOrder x y
 }
 
--- --- the types before this module -----------------------------------------------
+-- --- the types before this module --------------------------------------------
 
 impl PartialEq () {
   fun (==) x y = True
@@ -269,10 +282,11 @@ impl PartialEq (Compact a) where PartialEq a {
 impl Eq (Compact a) where Eq a {
 }
 
--- --- tuples, field by field ----------------------------------------------------
+-- --- tuples, field by field --------------------------------------------------
 
 impl PartialEq (a, b) where PartialEq a, PartialEq b {
-  fun (==) p q = match (p, q) with | ((a1, b1), (a2, b2)) -> a1 == a2 and b1 == b2
+  fun (==) p q =
+    match (p, q) with | ((a1, b1), (a2, b2)) -> a1 == a2 and b1 == b2
 }
 
 impl Eq (a, b) where Eq a, Eq b {
@@ -328,7 +342,8 @@ impl Ord (a, b, c) where Ord a, Ord b, Ord c {
 impl PartialEq (a, b, c, d) where PartialEq a, PartialEq b, PartialEq c, PartialEq d {
   fun (==) p q =
     match (p, q) with
-    | ((a1, b1, c1, d1), (a2, b2, c2, d2)) -> a1 == a2 and b1 == b2 and c1 == c2 and d1 == d2
+    | ((a1, b1, c1, d1), (a2, b2, c2, d2)) ->
+        a1 == a2 and b1 == b2 and c1 == c2 and d1 == d2
 }
 
 impl Eq (a, b, c, d) where Eq a, Eq b, Eq c, Eq d {
@@ -350,7 +365,7 @@ impl Ord (a, b, c, d) where Ord a, Ord b, Ord c, Ord d {
         if isEqualOrdering x then compare (c1, d1) (c2, d2) else x
 }
 
--- --- arrays, element by element ------------------------------------------------
+-- --- arrays, element by element ----------------------------------------------
 --
 -- Lexicographic: the first element that differs decides, and a shorter array
 -- that is a prefix of a longer one comes first.
@@ -402,7 +417,11 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   assertEq (compare (0 - 5) 0) Less "-5 vs 0"
 
 @test fun everyPrimitiveIsOrdered () =
-  let a = assertTrue ('a' < 'b' and "abc" < "abd" and (1, 2) < (1, 3)) "chars, strings, tuples" in
+  let a =
+    assertTrue
+      ('a' < 'b' and "abc" < "abd" and (1, 2) < (1, 3))
+      "chars, strings, tuples"
+  in
   let b = assertEq (compare (Just 1) None) Greater "None before Just" in
   let c = assertTrue (False < True and Less < Greater) "Bool and Ordering" in
   assertEq (compare #[1, 2] #[1, 2, 0]) Less "a prefix first"

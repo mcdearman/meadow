@@ -43,7 +43,7 @@ use MeadowBoot.Lex (Token, foldToken)
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
 
--- --- the grammar ------------------------------------------------------------------
+-- --- the grammar -------------------------------------------------------------
 
 @pub syntax! {
   pub Surface

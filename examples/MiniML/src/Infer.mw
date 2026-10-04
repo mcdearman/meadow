@@ -75,7 +75,8 @@ fun occursAdjust id level t =
            else if l > level then setRef r (Tv.Unbound n level)
            else ()
        | Tv.Link inner -> occursAdjust id level inner)
-  | Ty.Fun a b -> let ignored = occursAdjust id level a in occursAdjust id level b
+  | Ty.Fun a b ->
+      let ignored = occursAdjust id level a in occursAdjust id level b
   | other -> ()
 
 fun unify a b =
@@ -111,7 +112,8 @@ fun freeAbove level t acc =
   match force t with
   | Ty.Var r ->
       (match getRef r with
-       | Tv.Unbound n l -> if l > level and not (V.elem n acc) then V.pushBack acc n else acc
+       | Tv.Unbound n l ->
+           if l > level and not (V.elem n acc) then V.pushBack acc n else acc
        | Tv.Link inner -> freeAbove level inner acc)
   | Ty.Fun a b -> freeAbove level b (freeAbove level a acc)
   | other -> acc
@@ -153,7 +155,8 @@ fun lookupVar env name =
   | None -> raise (S.concat "unbound variable: " name)
 
 fun binOpType op =
-  if op == "+" or op == "-" or op == "*" or op == "/" then (Ty.Int, Ty.Int, Ty.Int)
+  if op == "+" or op == "-" or op == "*" or op == "/"
+  then (Ty.Int, Ty.Int, Ty.Int)
   else (Ty.Int, Ty.Int, Ty.Bool)
 
 fun infer counter env level e =
@@ -163,7 +166,9 @@ fun infer counter env level e =
   | Expr.Var name -> instantiate counter level (lookupVar env name)
   | Expr.Lam param body ->
       let argT = newTv counter level in
-      let bodyT = infer counter ((param, Scheme.Forall V.empty argT) :: env) level body in
+      let bodyT =
+        infer counter ((param, Scheme.Forall V.empty argT) :: env) level body
+      in
       Ty.Fun argT bodyT
   | Expr.App f a ->
       let fT = infer counter env level f in

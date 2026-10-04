@@ -38,18 +38,21 @@ fun unwrap s = match s with | Set t -> t
 
 @pub fun maxElem (s : Set) : Maybe Int = Tree.maxElem (unwrap s)
 
-@pub fun union (a : Set) (b : Set) : Set = V.foldl (\acc x -> insert x acc) a (toVec b)
+@pub fun union (a : Set) (b : Set) : Set =
+  V.foldl (\acc x -> insert x acc) a (toVec b)
 
-@pub fun diff (a : Set) (b : Set) : Set = V.foldl (\acc x -> delete x acc) a (toVec b)
+@pub fun diff (a : Set) (b : Set) : Set =
+  V.foldl (\acc x -> delete x acc) a (toVec b)
 
-@pub fun intersect (a : Set) (b : Set) : Set = a |> toVec |> V.filter (\x -> member x b) |> fromVec
+@pub fun intersect (a : Set) (b : Set) : Set =
+  a |> toVec |> V.filter (\x -> member x b) |> fromVec
 
 @pub fun subset (a : Set) (b : Set) : Bool = V.all (\x -> member x b) (toVec a)
 
 -- Yield every element in ascending order, for `Std.Stream`.
 @pub fun toStream (s : Set) : () ! { Yield Int | e } = Tree.toStream (unwrap s)
 
--- --- comparing -----------------------------------------------------------------
+-- --- comparing ---------------------------------------------------------------
 
 -- By their elements in order, not by the shape of the tree beneath.
 
@@ -90,7 +93,9 @@ def b = fromVec [3, 4]
 
 @test fun toVecIsSortedAndDistinct () =
   let x = assertEq (toVec a) [1, 2, 3] "sorted" in
-  let y = assertEq (toVec (fromVec [3, 1, 3, 2])) [1, 2, 3] "sorted and deduped" in
+  let y =
+    assertEq (toVec (fromVec [3, 1, 3, 2])) [1, 2, 3] "sorted and deduped"
+  in
   assertEq (toList (fromList [2; 1; 2])) [1; 2] "the List forms agree"
 
 @test fun unionDiffIntersect () =

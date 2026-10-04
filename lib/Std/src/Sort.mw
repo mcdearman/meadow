@@ -43,7 +43,7 @@ use Std.Ordering (Ordering)
 -- overhead when there is little to divide.
 def smallRange = 16
 
--- --- the public surface -------------------------------------------------------
+-- --- the public surface ------------------------------------------------------
 
 -- Sort a `Vector` by a comparison. Unstable: equal elements may be reordered.
 @pub fun sortBy (cmp : a -> a -> Ordering ! e) (v : [a]) : [a] ! e =
@@ -60,14 +60,16 @@ def smallRange = 16
 
 -- Sort by a projection: `sortOn length names`. The key is computed on every
 -- comparison rather than cached, so keep it cheap -- or use `sortBy`.
-@pub fun sortOn (key : a -> b ! e) (v : [a]) : [a] ! e = sortBy (\a b -> compare (key a) (key b)) v
+@pub fun sortOn (key : a -> b ! e) (v : [a]) : [a] ! e =
+  sortBy (\a b -> compare (key a) (key b)) v
 
 -- The in-place sort itself, on a plain `Array`.
-@pub fun sortArrayBy (cmp : a -> a -> Ordering ! e) (arr : #[a]) : #[a] ! e = arr |> V.fromArray |> sortBy cmp |> V.toArray
+@pub fun sortArrayBy (cmp : a -> a -> Ordering ! e) (arr : #[a]) : #[a] ! e =
+  arr |> V.fromArray |> sortBy cmp |> V.toArray
 
 @pub fun sortArray (arr : #[a]) : #[a] = sortArrayBy compare arr
 
--- --- the stable sort ----------------------------------------------------------
+-- --- the stable sort ---------------------------------------------------------
 --
 -- Merge sort, which is a list algorithm: it splits and merges by taking heads,
 -- so it works over `List` underneath and a `Vector` is converted on the way in
@@ -75,12 +77,14 @@ def smallRange = 16
 -- keeps an empty effect row.
 
 -- Sort a `Vector` by a comparison, keeping equal elements in their order.
-@pub fun stableSortBy (cmp : a -> a -> Ordering) (v : [a]) : [a] = v |> V.toList |> mergeSort cmp |> V.fromList
+@pub fun stableSortBy (cmp : a -> a -> Ordering) (v : [a]) : [a] =
+  v |> V.toList |> mergeSort cmp |> V.fromList
 
 @pub fun stableSort (v : [a]) : [a] = stableSortBy compare v
 
 -- The same, for a `List`, with no conversion.
-@pub fun stableSortListBy (cmp : a -> a -> Ordering) (xs : List a) : List a = mergeSort cmp xs
+@pub fun stableSortListBy (cmp : a -> a -> Ordering) (xs : List a) : List a =
+  mergeSort cmp xs
 
 @pub fun stableSortList (xs : List a) : List a = mergeSort compare xs
 
@@ -125,9 +129,10 @@ fun reverseOnto acc xs =
   | [;] -> acc
   | x :: rest -> reverseOnto (x :: acc) rest
 
--- --- checking -----------------------------------------------------------------
+-- --- checking ----------------------------------------------------------------
 
-@pub fun isSortedBy (cmp : a -> a -> Ordering ! e) (v : [a]) : Bool ! e = sortedFrom cmp (V.toArray v) 1
+@pub fun isSortedBy (cmp : a -> a -> Ordering ! e) (v : [a]) : Bool ! e =
+  sortedFrom cmp (V.toArray v) 1
 
 @pub fun isSorted (v : [a]) : Bool = isSortedBy compare v
 
@@ -138,7 +143,7 @@ fun sortedFrom cmp arr i =
   then False
   else sortedFrom cmp arr (i + 1)
 
--- --- the scratch space --------------------------------------------------------
+-- --- the scratch space -------------------------------------------------------
 
 fun at cells i = stGetArray cells i
 
@@ -150,7 +155,7 @@ fun swapAt cells i j =
   let ignored = put cells i b in
   put cells j a
 
--- --- introsort ----------------------------------------------------------------
+-- --- introsort ---------------------------------------------------------------
 --
 -- `2 * floor(log2 n)` is the usual budget: a well-behaved quicksort never comes
 -- close, and one that does has already gone wrong.
@@ -170,7 +175,7 @@ fun introsort cmp cells lo hi depth =
     let ignored = introsort cmp cells lo p (depth - 1) in
     introsort cmp cells (p + 1) hi (depth - 1)
 
--- --- insertion sort -----------------------------------------------------------
+-- --- insertion sort ----------------------------------------------------------
 
 fun insertionSort cmp cells lo hi = insertOuter cmp cells lo hi (lo + 1)
 
@@ -191,7 +196,7 @@ fun insertInner cmp cells lo j =
     insertInner cmp cells lo (j - 1)
   else ()
 
--- --- quicksort ----------------------------------------------------------------
+-- --- quicksort ---------------------------------------------------------------
 
 -- Lomuto partition around a median-of-three pivot parked at the last slot.
 -- Returns the pivot's final index.
@@ -207,10 +212,20 @@ fun partition cmp cells lo hi =
 -- Order the three so the median ends up at `last` -- the pivot a naive
 -- "first element" choice gets wrong on sorted input.
 fun medianOfThree cmp cells lo mid last =
-  let a = if isLess (cmp (at cells mid) (at cells lo)) then swapAt cells lo mid else () in
-  let b = if isLess (cmp (at cells last) (at cells lo)) then swapAt cells lo last else () in
+  let a =
+    if isLess (cmp (at cells mid) (at cells lo))
+    then swapAt cells lo mid
+    else ()
+  in
+  let b =
+    if isLess (cmp (at cells last) (at cells lo))
+    then swapAt cells lo last
+    else ()
+  in
   -- `lo` now holds the smallest, so the median is the smaller of the other two.
-  if isLess (cmp (at cells mid) (at cells last)) then swapAt cells mid last else ()
+  if isLess (cmp (at cells mid) (at cells last))
+  then swapAt cells mid last
+  else ()
 
 -- `j` scans, `i` is where the next smaller-than-pivot element goes.
 fun lomuto cmp cells j last i pivot =
@@ -222,7 +237,7 @@ fun lomuto cmp cells j last i pivot =
     lomuto cmp cells (j + 1) last (i + 1) pivot
   else lomuto cmp cells (j + 1) last i pivot
 
--- --- heapsort -----------------------------------------------------------------
+-- --- heapsort ----------------------------------------------------------------
 --
 -- The fallback. Guaranteed O(n log n) and O(1) extra space, which is what makes
 -- the whole thing safe against an input crafted to defeat the pivot.
@@ -256,10 +271,14 @@ fun siftDown cmp cells lo n i =
   let l = 2 * i + 1 in
   let r = l + 1 in
   let bigL =
-    if l < n and isGreater (cmp (at cells (lo + l)) (at cells (lo + i))) then l else i
+    if l < n and isGreater (cmp (at cells (lo + l)) (at cells (lo + i)))
+    then l
+    else i
   in
   let big =
-    if r < n and isGreater (cmp (at cells (lo + r)) (at cells (lo + bigL))) then r else bigL
+    if r < n and isGreater (cmp (at cells (lo + r)) (at cells (lo + bigL)))
+    then r
+    else bigL
   in
   if big == i
   then ()
@@ -267,7 +286,7 @@ fun siftDown cmp cells lo n i =
     let ignored = swapAt cells (lo + i) (lo + big) in
     siftDown cmp cells lo n big
 
--- --- tests --------------------------------------------------------------------
+-- --- tests -------------------------------------------------------------------
 
 @test fun sortsTheEasyCases () =
   let a = assertEq (sort [3, 1, 2]) [1, 2, 3] "three elements" in
@@ -305,8 +324,16 @@ fun siftDown cmp cells lo n i =
 
 @test fun byAndOnAndDesc () =
   let a = assertEq (sortDesc [1, 3, 2]) [3, 2, 1] "descending" in
-  let b = assertEq (sortBy (\x y -> compare y x) [1, 3, 2]) [3, 2, 1] "a reversed comparison" in
-  assertEq (sortOn (\p -> snd p) [(1, 3), (2, 1), (3, 2)]) [(2, 1), (3, 2), (1, 3)] "sortOn"
+  let b =
+    assertEq
+      (sortBy (\x y -> compare y x) [1, 3, 2])
+      [3, 2, 1]
+      "a reversed comparison"
+  in
+  assertEq
+    (sortOn (\p -> snd p) [(1, 3), (2, 1), (3, 2)])
+    [(2, 1), (3, 2), (1, 3)]
+    "sortOn"
 
 @test fun theArrayFormSortsInPlaceAndComesBack () =
   let a = assertEq (sortArray #[3, 1, 2]) #[1, 2, 3] "sortArray" in

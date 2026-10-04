@@ -31,7 +31,8 @@
 use Std.Test (assertEq, assertTrue, assertFalse)
 
 -- Apply `f` to the contents.
-@pub fun modify (r : Ref a) (f : a -> a ! { Mut | e }) : () ! { Mut | e } = setRef r (f (getRef r))
+@pub fun modify (r : Ref a) (f : a -> a ! { Mut | e }) : () ! { Mut | e } =
+  setRef r (f (getRef r))
 
 -- Replace the contents, returning what was there.
 @pub fun swap (r : Ref a) (x : a) : a ! { Mut | e } =
@@ -52,7 +53,8 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   next
 
 -- Add `n` to a counter and return the new total.
-@pub fun bump (r : Ref a) (n : a) : a ! { Mut | e } = modifyAndGet r (\x -> x + n)
+@pub fun bump (r : Ref a) (n : a) : a ! { Mut | e } =
+  modifyAndGet r (\x -> x + n)
 
 -- Run `act` `n` times for its effects. The loop a mutable cell usually wants.
 @pub fun repeatN (n : n) (act : () -> a ! e) : () ! e =
@@ -75,7 +77,9 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let r = newRef 1 in
   let a = assertEq (swap r 9) 1 "swap returns the old value" in
   let b = assertEq (getRef r) 9 "and stores the new one" in
-  let c = assertEq (getAndModify r (\x -> x + 1)) 9 "getAndModify returns the old" in
+  let c =
+    assertEq (getAndModify r (\x -> x + 1)) 9 "getAndModify returns the old"
+  in
   let d = assertEq (getRef r) 10 "and applied f" in
   assertEq (modifyAndGet r (\x -> x + 1)) 11 "modifyAndGet returns the new"
 

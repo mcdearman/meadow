@@ -16,7 +16,8 @@ use Map.*
 
 @pub def empty : Map a = Tip
 
-@pub fun null (m : Map a) : Bool = match m with | Tip -> True | Node l k v r -> False
+@pub fun null (m : Map a) : Bool =
+  match m with | Tip -> True | Node l k v r -> False
 
 @pub fun size (m : Map a) : n =
   match m with
@@ -60,7 +61,8 @@ fun pushInOrder acc m =
 
 fun insertPair p m = match p with | (k, v) -> insert k v m
 
-@pub fun fromVec (ps : [(Int, a)]) : Map a = V.foldl (\acc p -> insertPair p acc) empty ps
+@pub fun fromVec (ps : [(Int, a)]) : Map a =
+  V.foldl (\acc p -> insertPair p acc) empty ps
 
 -- The same, as a `List`.
 @pub fun toList (m : Map a) : List (Int, a) = consInOrder [;] m
@@ -70,7 +72,8 @@ fun consInOrder acc m =
   | Tip -> acc
   | Node l k v r -> consInOrder ((k, v) :: consInOrder acc r) l
 
-@pub fun fromList (ps : List (Int, a)) : Map a = List.foldl (\acc p -> insertPair p acc) empty ps
+@pub fun fromList (ps : List (Int, a)) : Map a =
+  List.foldl (\acc p -> insertPair p acc) empty ps
 
 @pub fun map (f : a -> b ! e) (m : Map a) : Map b ! e =
   match m with
@@ -117,7 +120,7 @@ fun removeRoot l r =
       let _ = yield (k, v) in
       toStream r
 
--- --- comparing -----------------------------------------------------------------
+-- --- comparing ---------------------------------------------------------------
 
 -- By their entries in key order, not by the shape of the tree beneath.
 
@@ -166,7 +169,10 @@ def sample = fromVec [(1, "a"), (2, "b")]
   let y = assertEq (values m) ["a", "b", "c"] "values" in
   let z = assertEq (toVec m) [(1, "a"), (2, "b"), (3, "c")] "toVec" in
   let w = assertEq (toList m) [(1, "a"); (2, "b"); (3, "c")] "toList" in
-  assertEq (toVec (fromList [(2, "b"); (1, "a")])) [(1, "a"), (2, "b")] "fromList"
+  assertEq
+    (toVec (fromList [(2, "b"); (1, "a")]))
+    [(1, "a"), (2, "b")]
+    "fromList"
 
 @test fun mapTouchesValuesOnly () =
   assertEq (toVec (map (\v -> "!") sample)) [(1, "!"), (2, "!")] "map"

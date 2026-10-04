@@ -28,7 +28,11 @@ use Std.Maybe.Maybe.*
 
 -- The top-level bindings of module `a`, in the order written.
 @pub fun bindingsOf (a : HirArena) (decls : [HirDecl]) : [Binding] =
-  V.concatMap (\d -> match bindOf a d with | Just b -> [Binding { bind = b, binds = boundBy a b }] | None -> []) decls
+  V.concatMap
+    (\d -> match bindOf a d with
+           | Just b -> [Binding { bind = b, binds = boundBy a b }]
+           | None -> [])
+    decls
 
 fun bindOf (a : HirArena) (d : HirDecl) : Maybe HirBind =
   match viewHirDecl a d with
@@ -52,49 +56,118 @@ fun bindOf (a : HirArena) (d : HirDecl) : Maybe HirBind =
   | HirPatView.PArray r -> V.concatMap (patVars a) r.items
   | HirPatView.PVector r -> V.concatMap (patVars a) r.items
   | HirPatView.PCons r -> V.concatMap (patVars a) r.args
-  | HirPatView.PRecord r -> V.concatMap (\f -> patVars a (hirPFieldPat a f)) r.fields
+  | HirPatView.PRecord r ->
+      V.concatMap (\f -> patVars a (hirPFieldPat a f)) r.fields
   | HirPatView.PView r -> patVars a r.pat
   | _ -> []
 
--- --- mentions ------------------------------------------------------------------------
+-- --- mentions ----------------------------------------------------------------
 
 -- The slots `owner` gives the top-level bindings binding `b` mentions, after
 -- `out`: every name its body is made of, and each meaning an overloaded one
 -- could have (`overloads`, by the name's own binder).
-@pub fun mentions (a : HirArena) (owner : HashMap Int Int) (overloads : HashMap Int [Int]) (b : HirBind) (out : [Int]) : [Int] =
+@pub fun mentions (a : HirArena) (owner : HashMap Int Int)
+    (overloads : HashMap Int [Int]) (b : HirBind) (out : [Int]) : [Int] =
   match viewHirBind a b with
-  | HirBindView.FunBind r -> exprMentions a owner overloads r.body (V.foldl (\acc p -> patMentions a owner overloads p acc) out r.params)
-  | HirBindView.PatBind r -> exprMentions a owner overloads r.value (patMentions a owner overloads r.pat out)
+  | HirBindView.FunBind r ->
+      exprMentions
+        a
+        owner
+        overloads
+        r.body
+        (V.foldl (\acc p -> patMentions a owner overloads p acc) out r.params)
+  | HirBindView.PatBind r ->
+      exprMentions
+        a
+        owner
+        overloads
+        r.value
+        (patMentions a owner overloads r.pat out)
 
-fun patMentions (a : HirArena) owner overloads (p : HirPat) (out : [Int]) : [Int] =
+fun patMentions (a : HirArena) owner overloads (p : HirPat) (out : [Int]) :
+    [Int] =
   match viewHirPat a p with
-  | HirPatView.PView r -> patMentions a owner overloads r.pat (exprMentions a owner overloads r.fn out)
+  | HirPatView.PView r ->
+      patMentions
+        a
+        owner
+        overloads
+        r.pat
+        (exprMentions a owner overloads r.fn out)
   | HirPatView.PAnn r -> patMentions a owner overloads r.pat out
   | HirPatView.PAs r -> patMentions a owner overloads r.pat out
-  | HirPatView.PTuple r -> V.foldl (\acc q -> patMentions a owner overloads q acc) out r.items
-  | HirPatView.PArray r -> V.foldl (\acc q -> patMentions a owner overloads q acc) out r.items
-  | HirPatView.PVector r -> V.foldl (\acc q -> patMentions a owner overloads q acc) out r.items
-  | HirPatView.PList r -> V.foldl (\acc q -> patMentions a owner overloads q acc) out r.items
-  | HirPatView.PCons r -> V.foldl (\acc q -> patMentions a owner overloads q acc) out r.args
-  | HirPatView.PRecord r -> V.foldl (\acc f -> patMentions a owner overloads (hirPFieldPat a f) acc) out r.fields
+  | HirPatView.PTuple r ->
+      V.foldl (\acc q -> patMentions a owner overloads q acc) out r.items
+  | HirPatView.PArray r ->
+      V.foldl (\acc q -> patMentions a owner overloads q acc) out r.items
+  | HirPatView.PVector r ->
+      V.foldl (\acc q -> patMentions a owner overloads q acc) out r.items
+  | HirPatView.PList r ->
+      V.foldl (\acc q -> patMentions a owner overloads q acc) out r.items
+  | HirPatView.PCons r ->
+      V.foldl (\acc q -> patMentions a owner overloads q acc) out r.args
+  | HirPatView.PRecord r ->
+      V.foldl
+        (\acc f -> patMentions a owner overloads (hirPFieldPat a f) acc)
+        out
+        r.fields
   | _ -> out
 
-fun exprMentions (a : HirArena) owner overloads (e : HirExpr) (out : [Int]) : [Int] =
-  let each = \acc xs -> V.foldl (\o x -> exprMentions a owner overloads x o) acc xs in
+fun exprMentions (a : HirArena) owner overloads (e : HirExpr) (out : [Int]) :
+    [Int] =
+  let each =
+    \acc xs -> V.foldl (\o x -> exprMentions a owner overloads x o) acc xs
+  in
   match viewHirExpr a e with
   | HirExprView.Var r ->
       let id = hirRefId a r.ref in
-      let direct = (match H.lookup id owner with | Just slot -> V.pushBack out slot | None -> out) in
-      V.foldl (\acc c -> match H.lookup c owner with | Just slot -> V.pushBack acc slot | None -> acc) direct (V.append (hirRefAlts a r.ref) (M.unwrapOr [] (H.lookup id overloads)))
-  | HirExprView.Lam r -> exprMentions a owner overloads r.body (V.foldl (\acc p -> patMentions a owner overloads p acc) out r.params)
+      let direct =
+        (match H.lookup id owner with
+         | Just slot -> V.pushBack out slot
+         | None -> out)
+      in
+      V.foldl
+        (\acc c -> match H.lookup c owner with
+                   | Just slot -> V.pushBack acc slot
+                   | None -> acc)
+        direct
+        (V.append (hirRefAlts a r.ref) (M.unwrapOr [] (H.lookup id overloads)))
+  | HirExprView.Lam r ->
+      exprMentions
+        a
+        owner
+        overloads
+        r.body
+        (V.foldl (\acc p -> patMentions a owner overloads p acc) out r.params)
   | HirExprView.App r -> each (exprMentions a owner overloads r.func out) r.args
-  | HirExprView.Let r -> exprMentions a owner overloads r.body (V.foldl (\acc b -> mentions a owner overloads b acc) out r.binds)
-  | HirExprView.If r -> exprMentions a owner overloads r.no (exprMentions a owner overloads r.yes (exprMentions a owner overloads r.cond out))
+  | HirExprView.Let r ->
+      exprMentions
+        a
+        owner
+        overloads
+        r.body
+        (V.foldl (\acc b -> mentions a owner overloads b acc) out r.binds)
+  | HirExprView.If r ->
+      exprMentions
+        a
+        owner
+        overloads
+        r.no
+        (exprMentions
+          a
+          owner
+          overloads
+          r.yes
+          (exprMentions a owner overloads r.cond out))
   | HirExprView.Match r ->
       V.foldl
         (\acc arm ->
           let withPat = patMentions a owner overloads (hirArmPat a arm) acc in
-          let withGuard = (match hirArmGuard a arm with | Just g -> exprMentions a owner overloads g withPat | None -> withPat) in
+          let withGuard =
+            (match hirArmGuard a arm with
+             | Just g -> exprMentions a owner overloads g withPat
+             | None -> withPat)
+          in
           exprMentions a owner overloads (hirArmBody a arm) withGuard)
         (exprMentions a owner overloads r.scrutinee out)
         r.arms
@@ -103,17 +176,47 @@ fun exprMentions (a : HirArena) owner overloads (e : HirExpr) (out : [Int]) : [I
   | HirExprView.ListE r -> each out r.items
   | HirExprView.Cons r -> each out r.args
   | HirExprView.RecordE r ->
-      let fields = V.foldl (\acc f -> exprMentions a owner overloads (hirFieldEValue a f) acc) out r.fields in
-      (match r.base with | Just b -> exprMentions a owner overloads b fields | None -> fields)
+      let fields =
+        V.foldl
+          (\acc f -> exprMentions a owner overloads (hirFieldEValue a f) acc)
+          out
+          r.fields
+      in
+      (match r.base with
+       | Just b -> exprMentions a owner overloads b fields
+       | None -> fields)
   | HirExprView.Proj r -> exprMentions a owner overloads r.target out
-  | HirExprView.Update r -> V.foldl (\acc f -> exprMentions a owner overloads (hirFieldEValue a f) acc) (exprMentions a owner overloads r.base out) r.fields
+  | HirExprView.Update r ->
+      V.foldl
+        (\acc f -> exprMentions a owner overloads (hirFieldEValue a f) acc)
+        (exprMentions a owner overloads r.base out)
+        r.fields
   | HirExprView.Handle r ->
       let body = exprMentions a owner overloads r.body out in
-      let arms = V.foldl (\acc h -> exprMentions a owner overloads (hirHArmBody a h) (patMentions a owner overloads (hirHArmParam a h) acc)) body r.arms in
-      (match r.ret with | Just x -> exprMentions a owner overloads (hirRetBody a x) (patMentions a owner overloads (hirRetPat a x) arms) | None -> arms)
+      let arms =
+        V.foldl
+          (\acc h ->
+            exprMentions
+              a
+              owner
+              overloads
+              (hirHArmBody a h)
+              (patMentions a owner overloads (hirHArmParam a h) acc))
+          body
+          r.arms
+      in
+      (match r.ret with
+       | Just x ->
+           exprMentions
+            a
+            owner
+            overloads
+            (hirRetBody a x)
+            (patMentions a owner overloads (hirRetPat a x) arms)
+       | None -> arms)
   | _ -> out
 
--- --- Tarjan ------------------------------------------------------------------------------
+-- --- Tarjan ------------------------------------------------------------------
 
 -- The strongly connected components of the graph `edges`, each after every
 -- component it points at, rooted in order so independent nodes keep theirs;
@@ -127,11 +230,35 @@ fun exprMentions (a : HirArena) owner overloads (e : HirExpr) (out : [Int]) : [I
     let stack = stNewRef [] in
     let next = stNewRef 0 in
     let out = stNewRef [] in
-    let t = Tarjan { edges = edges, index = index, low = low, onStack = onStack, stack = stack, next = next, out = out } in
-    let u = V.foldl (\w v -> if stGetArray index v < 0 then visit t v else ()) () (V.range 0 n) in
+    let t =
+      Tarjan
+        {
+          edges = edges,
+          index = index,
+          low = low,
+          onStack = onStack,
+          stack = stack,
+          next = next,
+          out = out
+        }
+    in
+    let u =
+      V.foldl
+        (\w v -> if stGetArray index v < 0 then visit t v else ())
+        ()
+        (V.range 0 n)
+    in
     stGetRef out)
 
-record Tarjan s = { edges : [[Int]], index : StArray s Int, low : StArray s Int, onStack : StArray s Bool, stack : StRef s [Int], next : StRef s Int, out : StRef s [[Int]] }
+record Tarjan s = {
+  edges : [[Int]],
+  index : StArray s Int,
+  low : StArray s Int,
+  onStack : StArray s Bool,
+  stack : StRef s [Int],
+  next : StRef s Int,
+  out : StRef s [[Int]]
+}
 
 fun visit (t : Tarjan s) (v : Int) : () ! { St s | e } =
   let at = stGetRef t.next in
@@ -143,12 +270,19 @@ fun visit (t : Tarjan s) (v : Int) : () ! { St s | e } =
   let g =
     V.foldl
       (\u w ->
-        if stGetArray t.index w < 0 then (let x = visit t w in stSetArray t.low v (min (stGetArray t.low v) (stGetArray t.low w)))
-        else if stGetArray t.onStack w then stSetArray t.low v (min (stGetArray t.low v) (stGetArray t.index w))
+        if stGetArray t.index w < 0
+        then
+          (let x = visit t w in
+            stSetArray t.low v (min (stGetArray t.low v) (stGetArray t.low w)))
+        else if stGetArray t.onStack w
+        then
+          stSetArray t.low v (min (stGetArray t.low v) (stGetArray t.index w))
         else ())
       ()
       (V.getOr [] t.edges v) in
-    if stGetArray t.low v == stGetArray t.index v then stSetRef t.out (V.pushBack (stGetRef t.out) (V.reverse (popTo t v []))) else ()
+    if stGetArray t.low v == stGetArray t.index v
+    then stSetRef t.out (V.pushBack (stGetRef t.out) (V.reverse (popTo t v [])))
+    else ()
 
 -- Pop the stack down to `v`, each off it, innermost first.
 fun popTo (t : Tarjan s) (v : Int) (acc : [Int]) : [Int] ! { St s | e } =
@@ -160,71 +294,148 @@ fun popTo (t : Tarjan s) (v : Int) (acc : [Int]) : [Int] ! { St s | e } =
       let b = stSetArray t.onStack w False in
       if w == v then V.pushBack acc w else popTo t v (V.pushBack acc w)
 
--- --- the three orders ----------------------------------------------------------------------
+-- --- the three orders --------------------------------------------------------
 
 -- The modules of a unit in dependency order: the result's `k`th is the
 -- module to place `k`th. `modules` are each module's tables and its
 -- top-level bindings.
-@pub fun moduleOrder (modules : [(HirArena, [Binding])]) (overloads : HashMap Int [Int]) : [Int] =
-  let owner = V.foldl (\h m -> V.foldl (\g (b : Binding) -> V.foldl (\f v -> H.insert v m f) g b.binds) h (bindsOf modules m)) H.empty (V.range 0 (V.len modules)) in
-  let edges = V.map (\m -> sortedDistinct (V.filter (\d -> d != m) (moduleMentions modules owner overloads m))) (V.range 0 (V.len modules)) in
+@pub fun moduleOrder (modules : [(HirArena, [Binding])])
+    (overloads : HashMap Int [Int]) : [Int] =
+  let owner =
+    V.foldl
+      (\h m ->
+        V.foldl
+          (\g (b : Binding) -> V.foldl (\f v -> H.insert v m f) g b.binds)
+          h
+          (bindsOf modules m))
+      H.empty
+      (V.range 0 (V.len modules))
+  in
+  let edges =
+    V.map
+      (\m ->
+        sortedDistinct
+          (V.filter (\d -> d != m) (moduleMentions modules owner overloads m)))
+      (V.range 0 (V.len modules))
+  in
   V.concat (scc edges)
 
-fun bindsOf (modules : [(HirArena, [Binding])]) (m : Int) : [Binding] = match V.get modules m with | Just (_, bs) -> bs | None -> []
+fun bindsOf (modules : [(HirArena, [Binding])]) (m : Int) : [Binding] =
+  match V.get modules m with | Just (_, bs) -> bs | None -> []
 
-fun moduleMentions (modules : [(HirArena, [Binding])]) owner overloads (m : Int) : [Int] =
+fun moduleMentions (modules : [(HirArena, [Binding])]) owner overloads (m : Int)
+    : [Int] =
   match V.get modules m with
-  | Just (a, bs) -> V.foldl (\acc (b : Binding) -> mentions a owner overloads b.bind acc) [] bs
+  | Just (a, bs) ->
+      V.foldl
+        (\acc (b : Binding) -> mentions a owner overloads b.bind acc)
+        []
+        bs
   | None -> []
 
 -- A module's bindings in dependency order, and its groups, each member a
 -- place in that order.
-@pub fun groupModule (a : HirArena) (binds : [Binding]) (overloads : HashMap Int [Int]) : ([Binding], [Group]) =
-  let owner = V.foldl (\h slot -> V.foldl (\g v -> H.insert v slot g) h (V.getOr noBinding binds slot).binds) H.empty (V.range 0 (V.len binds)) in
-  let edges = V.map (\(b : Binding) -> sortedDistinct (mentions a owner overloads b.bind [])) binds in
+@pub fun groupModule (a : HirArena) (binds : [Binding])
+    (overloads : HashMap Int [Int]) : ([Binding], [Group]) =
+  let owner =
+    V.foldl
+      (\h slot ->
+        V.foldl (\g v -> H.insert v slot g) h (V.getOr noBinding binds slot).binds)
+      H.empty
+      (V.range 0 (V.len binds))
+  in
+  let edges =
+    V.map
+      (\(b : Binding) -> sortedDistinct (mentions a owner overloads b.bind []))
+      binds
+  in
   let comps = scc edges in
-  let ordered = V.concatMap (\comp -> V.map (\s -> V.getOr noBinding binds s) comp) comps in
-  let starts = V.foldl (\acc comp -> V.pushBack acc (V.getOr 0 acc (V.len acc - 1) + V.len comp)) [0] comps in
+  let ordered =
+    V.concatMap (\comp -> V.map (\s -> V.getOr noBinding binds s) comp) comps
+  in
+  let starts =
+    V.foldl
+      (\acc comp -> V.pushBack acc (V.getOr 0 acc (V.len acc - 1) + V.len comp))
+      [0]
+      comps
+  in
   let groups =
     V.map
       (\i ->
         let comp = V.getOr [] comps i in
-        Group { members = V.map (\k -> (0, V.getOr 0 starts i + k)) (V.range 0 (V.len comp)), recursive = recursiveComp edges comp })
+        Group
+          {
+            members = V.map (\k -> (0, V.getOr 0 starts i + k)) (V.range 0 (V.len comp)),
+            recursive = recursiveComp edges comp
+          })
       (V.range 0 (V.len comps)) in
     (ordered, groups)
 
 -- The whole unit's bindings as one graph: `modules` each module's tables and
 -- bindings, in the order `groupModule` left them; a member is a module's
 -- place and a binding's.
-@pub fun unitGroups (modules : [(HirArena, [Binding])]) (overloads : HashMap Int [Int]) : [Group] =
-  let at = V.concatMap (\m -> V.map (\i -> (m, i)) (V.range 0 (V.len (bindsOf modules m)))) (V.range 0 (V.len modules)) in
+@pub fun unitGroups (modules : [(HirArena, [Binding])])
+    (overloads : HashMap Int [Int]) : [Group] =
+  let at =
+    V.concatMap
+      (\m -> V.map (\i -> (m, i)) (V.range 0 (V.len (bindsOf modules m))))
+      (V.range 0 (V.len modules))
+  in
   let bindAt = \p -> V.getOr noBinding (bindsOf modules (fst p)) (snd p) in
-  let owner = V.foldl (\h slot -> V.foldl (\g v -> H.insert v slot g) h (bindAt (V.getOr (0, 0) at slot)).binds) H.empty (V.range 0 (V.len at)) in
-  let edges = V.map (\p -> sortedDistinct (bindMentions modules owner overloads p (bindAt p))) at in
-  V.map (\comp -> Group { members = V.map (\s -> V.getOr (0, 0) at s) comp, recursive = recursiveComp edges comp }) (scc edges)
+  let owner =
+    V.foldl
+      (\h slot ->
+        V.foldl (\g v -> H.insert v slot g) h (bindAt (V.getOr (0, 0) at slot)).binds)
+      H.empty
+      (V.range 0 (V.len at))
+  in
+  let edges =
+    V.map
+      (\p -> sortedDistinct (bindMentions modules owner overloads p (bindAt p)))
+      at
+  in
+  V.map
+    (\comp ->
+      Group
+        {
+          members = V.map (\s -> V.getOr (0, 0) at s) comp,
+          recursive = recursiveComp edges comp
+        })
+    (scc edges)
 
-fun bindMentions (modules : [(HirArena, [Binding])]) owner overloads (p : (Int, Int)) (b : Binding) : [Int] =
+fun bindMentions (modules : [(HirArena, [Binding])]) owner overloads
+    (p : (Int, Int)) (b : Binding) : [Int] =
   match V.get modules (fst p) with
   | Just (a, _) -> mentions a owner overloads b.bind []
   | None -> []
 
 fun recursiveComp (edges : [[Int]]) (comp : [Int]) : Bool =
-  V.len comp > 1 or (match V.get comp 0 with | Just s -> V.elem s (V.getOr [] edges s) | None -> False)
+  V.len comp > 1
+    or (match V.get comp 0 with | Just s -> V.elem s (V.getOr [] edges s) | None -> False)
 
-fun sortedDistinct (xs : [Int]) : [Int] = V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] (sort xs)
+fun sortedDistinct (xs : [Int]) : [Int] =
+  V.foldl
+    (\acc x -> if V.elem x acc then acc else V.pushBack acc x)
+    []
+    (sort xs)
 
 def noBinding : Binding = Binding { bind = 0 - 1, binds = [] }
 
--- --- tests ---------------------------------------------------------------------------------
+-- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq)
 
-@test fun independentNodesKeepTheirOrder () = assertEq (scc [[], [], []]) [[0], [1], [2]] "as written"
+@test fun independentNodesKeepTheirOrder () =
+  assertEq (scc [[], [], []]) [[0], [1], [2]] "as written"
 
-@test fun aDependencyComesFirst () = assertEq (scc [[1], []]) [[1], [0]] "`1` before what mentions it"
+@test fun aDependencyComesFirst () =
+  assertEq (scc [[1], []]) [[1], [0]] "`1` before what mentions it"
 
-@test fun aCycleIsOneComponent () = assertEq (scc [[1], [0], [0]]) [[0, 1], [2]] "the pair, then what needs it"
+@test fun aCycleIsOneComponent () =
+  assertEq (scc [[1], [0], [0]]) [[0, 1], [2]] "the pair, then what needs it"
 
-@test fun aChainComesOutDeepestFirst () = assertEq (scc [[1], [2], []]) [[2], [1], [0]] "the end first"
+@test fun aChainComesOutDeepestFirst () =
+  assertEq (scc [[1], [2], []]) [[2], [1], [0]] "the end first"
 
-@test fun separateCyclesStaySeparate () = assertEq (scc [[1, 2], [0], [3], [2]]) [[2, 3], [0, 1]] "each its own"
+@test fun separateCyclesStaySeparate () =
+  assertEq (scc [[1, 2], [0], [3], [2]]) [[2, 3], [0, 1]] "each its own"

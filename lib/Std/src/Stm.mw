@@ -76,7 +76,9 @@ fun unreachable u = unreachable u
 -- Make `tv` hold `x` when this transaction commits.
 @pub fun writeTVar (tv : TVar a) (x : a) : () ! { Stm | e } = stmWrite tv x
 
-@pub fun modifyTVar (tv : TVar a) (f : a -> a ! { Stm | e }) : () ! { Stm | e } = writeTVar tv (f (readTVar tv))
+@pub fun modifyTVar (tv : TVar a) (f : a -> a ! { Stm | e }) :
+    () ! { Stm | e } =
+  writeTVar tv (f (readTVar tv))
 
 -- Give up for now: wait until something this transaction read changes, then
 -- run it again.
@@ -96,7 +98,8 @@ fun unreachable u = unreachable u
   } with
   | Done x -> let _ = stmMerge () in x
   | Retried -> let _ = stmRollback () in second ()
-  | Conflicted -> let _ = stmRollback () in let _ = conflictSignal () in unreachable ()
+  | Conflicted ->
+      let _ = stmRollback () in let _ = conflictSignal () in unreachable ()
 
 -- Run `f` as one transaction, as many times as it takes.
 @pub fun atomically (f : () -> a ! { Stm }) =
@@ -110,7 +113,8 @@ fun unreachable u = unreachable u
   | Conflicted -> atomically f
 
 -- What `tv` holds now, as a transaction of its own.
-@pub fun readTVarIO (tv : TVar a) : a ! { Thread | e } = atomically (\() -> readTVar tv)
+@pub fun readTVarIO (tv : TVar a) : a ! { Thread | e } =
+  atomically (\() -> readTVar tv)
 
 -- --- tests -------------------------------------------------------------------
 
@@ -126,7 +130,13 @@ use Std.Thread as T
   assertEq (readTVarIO tv) 41 "and it was committed"
 
 @test fun aTransactionCanMakeTVars () =
-  let pair = atomically (\() -> let a = newTVar "left" in let b = newTVar "right" in (readTVar a, readTVar b)) in
+  let pair =
+    atomically
+      (\() ->
+        let a = newTVar "left" in
+        let b = newTVar "right" in
+        (readTVar a, readTVar b))
+  in
   assertEq pair ("left", "right") "made and read in one transaction"
 
 @test fun orElseTakesTheSecondWhenTheFirstRetries () =
@@ -138,7 +148,11 @@ use Std.Thread as T
 
 @test fun orElseKeepsTheFirstWhenItSucceeds () =
   let tv = newTVarIO (toInt 0) in
-  let got = atomically (\() -> orElse (\() -> let _ = writeTVar tv 5 in "first") (\() -> "second")) in
+  let got =
+    atomically
+      (\() ->
+        orElse (\() -> let _ = writeTVar tv 5 in "first") (\() -> "second"))
+  in
   assertEq (got, readTVarIO tv) ("first", 5) "the first branch and its write"
 
 @test fun retryWaitsForAnotherThread () =
@@ -155,7 +169,8 @@ fun move from to (n : Int) =
     let _ = writeTVar from (x - n) in
     modifyTVar to (\y -> y + n))
 
-fun many from to (k : Int) = if k == 0 then () else let _ = move from to 1 in many from to (k - 1)
+fun many from to (k : Int) =
+  if k == 0 then () else let _ = move from to 1 in many from to (k - 1)
 
 @test fun concurrentTransfersKeepTheTotal () =
   let a = newTVarIO (toInt 1000) in
@@ -179,12 +194,18 @@ use Std.Collections.HashMap as H
 fun fill tv (from : Int) (to : Int) =
   if from == to then ()
   else
-    let _ = atomically (\() -> modifyTVar tv (\m -> H.insert from (show from) m)) in
+    let _ =
+      atomically (\() -> modifyTVar tv (\m -> H.insert from (show from) m))
+    in
     fill tv (from + 1) to
 
 @test fun aMapInATVarGrowsFromManyThreads () =
   let tv = newTVarIO H.empty in
-  let ts = V.map (\i -> T.spawn (\() -> fill tv (i * 500) ((i + 1) * 500))) (V.range (toInt 0) 4) in
+  let ts =
+    V.map
+      (\i -> T.spawn (\() -> fill tv (i * 500) ((i + 1) * 500)))
+      (V.range (toInt 0) 4)
+  in
   let _ = V.map T.await ts in
   let m = readTVarIO tv in
   let _ = assertEq (H.size m) 2000 "every entry" in
@@ -202,6 +223,7 @@ use Link.*
   let total =
     atomically (\() ->
       match readTVar first with
-      | Just (Link a next) -> (match readTVar next with | Just (Link b _) -> a + b | None -> a)
+      | Just (Link a next) ->
+          (match readTVar next with | Just (Link b _) -> a + b | None -> a)
       | None -> 0) in
     assertEq total 3 "followed from one TVar to the next"

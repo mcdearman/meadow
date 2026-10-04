@@ -43,7 +43,14 @@ use Std.Result.Result.*
 -- what it exports -- a unit whose declarations never mention visibility
 -- exports everything -- and what it knows about types.
 @derive(Reflect, Debug, PartialEq)
-@pub record Interface = { fixities : [Declared], package : String, exports : [Export], anyVis : Bool, types : TypeEnv }
+@pub record Interface =
+  {
+    fixities : [Declared],
+    package : String,
+    exports : [Export],
+    anyVis : Bool,
+    types : TypeEnv
+  }
 
 -- An operator, and how it binds.
 @derive(Reflect, Debug, PartialEq)
@@ -63,48 +70,114 @@ database! {
 }
 
 -- The files of a unit that are its modules: all but its manifest.
-fun modulesOf (files : [String]) : [String] = V.filter (\f -> S.endsWith ".mw" f) files
+fun modulesOf (files : [String]) : [String] =
+  V.filter (\f -> S.endsWith ".mw" f) files
 
 -- The fixities the unit's trees declare, over those it imported.
 fun declaredOf (imported : [Interface]) (trees : [Green Surface]) : [Declared] =
-  let known = V.foldl (\m (i : Interface) -> V.foldl (\n d -> match d with | Declared.Declared op f -> (if M.isSome (H.lookup op n) then n else H.insert op f n)) m i.fixities) H.empty imported in
+  let known =
+    V.foldl
+      (\m (i : Interface) ->
+        V.foldl
+          (\n d -> match d with
+                   | Declared.Declared op f ->
+                       (if M.isSome (H.lookup op n) then n else H.insert op f n))
+          m
+          i.fixities)
+      H.empty
+      imported
+  in
   let table = fst (collect (\() -> declare known (V.map R.root trees))) in
   V.map (\kv -> Declared.Declared (fst kv) (snd kv)) (H.toVec table)
 
-fun tableOf (ds : [Declared]) : HashMap String Fixity = V.foldl (\m d -> match d with | Declared.Declared op f -> H.insert op f m) H.empty ds
+fun tableOf (ds : [Declared]) : HashMap String Fixity =
+  V.foldl
+    (\m d -> match d with | Declared.Declared op f -> H.insert op f m)
+    H.empty
+    ds
 
-fun groupedOf (ds : [Declared]) (parsed : Result [(Int, String)] (Green Surface)) : Maybe (Green Grouped, [Diagnostic]) =
+fun groupedOf (ds : [Declared])
+    (parsed : Result [(Int, String)] (Green Surface)) : Maybe
+    (Green Grouped, [Diagnostic]) =
   match parsed with
   | Ok g -> Just (grouped (tableOf ds) (R.root g))
   | Err _ -> None
 
 -- The unit at `dir` renamed: each module's names, as the rename test
 -- compares them, by its path; what the unit exports; and whether it says.
-fun renamedOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity) (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))]) : ([(String, [String])], [Export], Bool) =
+fun renamedOf (dir : String) (imported : [Interface])
+    (fx : HashMap String Fixity)
+    (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))]) :
+    ([(String, [String])], [Export], Bool) =
   match unitOf dir imported fx files with
   | (sources, r) ->
       let mentions = mentionsOf r.binders in
-      (V.map (\x -> (fst x, M.unwrapOr [] (H.lookup (fileOf (snd x)) mentions))) sources, r.exports, r.anyVis)
+      (
+        V.map (\x -> (fst x, M.unwrapOr [] (H.lookup (fileOf (snd x)) mentions))) sources,
+        r.exports,
+        r.anyVis
+      )
 
 -- The unit at `dir` inferred: each module's top-level bindings' schemes, as
 -- the infer test compares them, by its path; what the unit exports, each with
 -- its scheme; whether it says; and what it knows about types.
-fun inferredOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity) (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))]) : ([(String, [String])], [Export], Bool, TypeEnv) =
+fun inferredOf (dir : String) (imported : [Interface])
+    (fx : HashMap String Fixity)
+    (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))]) :
+    ([(String, [String])], [Export], Bool, TypeEnv) =
   match unitOf dir imported fx files with
   | (sources, r) ->
-      let deps = V.map (\(i : Interface) -> DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis }) imported in
-      let texts = H.fromVec (V.concatMap (\x -> match x with | (path, text, _) -> (match V.find (\s -> fst s == path) sources with | Just (_, src) -> [(fileOf src, text)] | None -> [])) files) in
-      let done = inferUnit r deps (V.map (\(i : Interface) -> i.types) imported) texts in
+      let deps =
+        V.map
+          (\(i : Interface) ->
+            DepExports
+              { name = i.package, exports = i.exports, anyVis = i.anyVis })
+          imported
+      in
+      let texts =
+        H.fromVec
+          (V.concatMap
+            (\x -> match x with
+                   | (path, text, _) ->
+                       (match V.find (\s -> fst s == path) sources with
+                        | Just (_, src) -> [(fileOf src, text)]
+                        | None -> []))
+            files)
+      in
+      let done =
+        inferUnit r deps (V.map (\(i : Interface) -> i.types) imported) texts
+      in
       let dumps = H.fromVec done.dumps in
-      let exports = V.map (\(e : Export) -> { e | scheme = H.lookup e.binder done.schemes }) r.exports in
-      (V.map (\x -> (fst x, M.unwrapOr [] (H.lookup (fileOf (snd x)) dumps))) sources, exports, r.anyVis, done.types)
+      let exports =
+        V.map
+          (\(e : Export) -> { e | scheme = H.lookup e.binder done.schemes })
+          r.exports
+      in
+      (
+        V.map (\x -> (fst x, M.unwrapOr [] (H.lookup (fileOf (snd x)) dumps))) sources,
+        exports,
+        r.anyVis,
+        done.types
+      )
 
 -- The unit at `dir` renamed: its modules, each with its path, and what
 -- renaming made of them.
-fun unitOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity) (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))]) : ([(String, Source)], Renamed) =
-  let manifest = V.find (\x -> match x with | (p, _, _) -> S.endsWith "Meadow.toml" p) files in
-  let expanded = expansionsIn (V.concatMap (\x -> match x with | (p, text, _) -> (if S.endsWith ".json" p then [text] else [])) files) in
-  let pkg = (match manifest with | Just (_, text, _) -> packageName text | None -> "") in
+fun unitOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity)
+    (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))]) :
+    ([(String, Source)], Renamed) =
+  let manifest =
+    V.find (\x -> match x with | (p, _, _) -> S.endsWith "Meadow.toml" p) files
+  in
+  let expanded =
+    expansionsIn
+      (V.concatMap
+        (\x -> match x with
+               | (p, text, _) -> (if S.endsWith ".json" p then [text] else []))
+        files)
+  in
+  let pkg =
+    (match manifest with | Just (_, text, _) -> packageName text | None -> "")
+  in
   let isStd = pkg == "Std" in
   let src = Path.join dir "src" in
   let sources =
@@ -113,10 +186,24 @@ fun unitOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity) 
         match x with
         | (path, text, Just (g, _)) ->
             let file = "${pkg}/${relativeTo dir path}" in
-            [(path, Source { path = modulePath isStd src path, file = file, ast = lowered pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx })]
+            [(
+              path,
+              Source
+                {
+                  path = modulePath isStd src path,
+                  file = file,
+                  ast = lowered pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx
+                }
+            )]
         | _ -> [])
       files in
-    let deps = V.map (\(i : Interface) -> DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis }) imported in
+    let deps =
+      V.map
+        (\(i : Interface) ->
+          DepExports
+            { name = i.package, exports = i.exports, anyVis = i.anyVis })
+        imported
+    in
     (sources, renameUnit pkg isStd (V.map snd sources) deps)
 
 fun fileOf (s : Source) : String = s.file
@@ -131,8 +218,20 @@ fun expansionsIn (texts : [String]) : HashMap String (HashMap String Json) =
       | Ok j ->
           V.foldl
             (\g e ->
-              match (M.andThen J.asString (J.index 0 e), M.andThen J.asInt (J.index 1 e), M.andThen J.asString (J.index 3 e), J.index 4 e) with
-              | (Just file, Just at, Just kind, Just made) -> H.insert file (H.insert "${kind}@${show at}" made (M.unwrapOr H.empty (H.lookup file g))) g
+              match (
+                M.andThen J.asString (J.index 0 e),
+                M.andThen J.asInt (J.index 1 e),
+                M.andThen J.asString (J.index 3 e),
+                J.index 4 e
+              ) with
+              | (Just file, Just at, Just kind, Just made) ->
+                  H.insert
+                    file
+                    (H.insert
+                      "${kind}@${show at}"
+                      made
+                      (M.unwrapOr H.empty (H.lookup file g)))
+                    g
               | _ -> g)
             h
             (M.unwrapOr [] (J.asArray j))
@@ -151,8 +250,16 @@ fun relativeTo (dir : String) (path : String) : String =
 -- standard library `Prelude.mw` is too.
 fun modulePath (isStd : Bool) (src : String) (path : String) : [String] =
   let rel = relativeTo src path in
-  let segs = S.split "/" (if S.endsWith ".mw" rel then stringSlice rel 0 (stringByteLength rel - 3) else rel) in
-  if segs == ["Main"] or segs == ["Lib"] or (isStd and segs == ["Prelude"]) then [] else segs
+  let segs =
+    S.split
+      "/"
+      (if S.endsWith ".mw" rel
+        then stringSlice rel 0 (stringByteLength rel - 3)
+        else rel)
+  in
+  if segs == ["Main"] or segs == ["Lib"] or (isStd and segs == ["Prelude"])
+  then []
+  else segs
 
 -- A database for unit `u`: its files' texts, where it is, and what it
 -- imports, set.
@@ -165,7 +272,7 @@ fun modulePath (isStd : Bool) (src : String) (path : String) : [String] =
   let c = V.foldl (\acc s -> setCompilerSource db (fst s) (snd s)) () sources in
   db
 
--- --- the build --------------------------------------------------------------------------
+-- --- the build ---------------------------------------------------------------
 
 make! {
   pub Units "meadow"
@@ -192,7 +299,8 @@ fun compiling (u : Given Interface) =
     V.concatMap
       (\i ->
         match (V.get sources i, V.get parsed i) with
-        | (Just (path, _), Just (Err errs)) -> ["${path}: ${S.join "; " (V.map (\e -> "${snd e} at byte ${show (fst e)}") errs)}\n"]
+        | (Just (path, _), Just (Err errs)) ->
+            ["${path}: ${S.join "; " (V.map (\e -> "${snd e} at byte ${show (fst e)}") errs)}\n"]
         | _ -> [])
       (V.range 0 (V.len sources)) in
     if not (V.isEmpty failed) then Err (S.join "" failed)
@@ -202,12 +310,29 @@ fun compiling (u : Given Interface) =
         V.concatMap
         (\i ->
           match (V.get sources i, V.get groups i) with
-          | (Just (path, text), Just (Just (_, ds))) -> (if V.isEmpty ds then [] else [renderAll path text ds])
+          | (Just (path, text), Just (Just (_, ds))) ->
+              (if V.isEmpty ds then [] else [renderAll path text ds])
           | _ -> [])
         (V.range 0 (V.len sources)) in
         if not (V.isEmpty wrong) then Err (S.join "" wrong)
         else
           match compilerInferred db 0 with
           | (_, exports, anyVis, types) ->
-              let manifest = M.unwrapOr "" (M.map snd (V.find (\s -> S.endsWith "Meadow.toml" (fst s)) (unitSources u))) in
-              Ok (Interface { fixities = compilerFixities db 0, package = packageName manifest, exports = exports, anyVis = anyVis, types = types })
+              let manifest =
+                M.unwrapOr
+                  ""
+                  (M.map
+                    snd
+                    (V.find
+                      (\s -> S.endsWith "Meadow.toml" (fst s))
+                      (unitSources u)))
+              in
+              Ok
+                (Interface
+                  {
+                    fixities = compilerFixities db 0,
+                    package = packageName manifest,
+                    exports = exports,
+                    anyVis = anyVis,
+                    types = types
+                  })

@@ -35,7 +35,7 @@ use Std.Collections.Vector as V
 -- `[a, b]` desugars to a `vecFromArray` call.
 use Std.Collections.Vector (vecFromArray)
 
--- --- cells --------------------------------------------------------------------
+-- --- cells -------------------------------------------------------------------
 
 -- A new cell holding `x`.
 @pub fun newRef (x : a) : StRef b a ! { St b | e } = stNewRef x
@@ -45,20 +45,26 @@ use Std.Collections.Vector (vecFromArray)
 @pub fun setRef (r : StRef a b) (x : b) : () ! { St a | e } = stSetRef r x
 
 -- Apply `f` to what the cell holds.
-@pub fun modifyRef (r : StRef a b) (f : b -> b ! { St a | e }) : () ! { St a | e } = stSetRef r (f (stGetRef r))
+@pub fun modifyRef (r : StRef a b) (f : b -> b ! { St a | e }) :
+    () ! { St a | e } =
+  stSetRef r (f (stGetRef r))
 
--- --- arrays -------------------------------------------------------------------
+-- --- arrays ------------------------------------------------------------------
 
 -- `n` copies of `x`.
-@pub fun newArray (n : Int) (x : a) : StArray b a ! { St b | e } = stNewArray n x
+@pub fun newArray (n : Int) (x : a) : StArray b a ! { St b | e } =
+  stNewArray n x
 
 @pub fun get (a : StArray a b) (i : Int) : b ! { St a | e } = stGetArray a i
 
-@pub fun set (a : StArray a b) (i : Int) (x : b) : () ! { St a | e } = stSetArray a i x
+@pub fun set (a : StArray a b) (i : Int) (x : b) : () ! { St a | e } =
+  stSetArray a i x
 
 @pub fun length (a : StArray a b) : Int = stArrayLen a
 
-@pub fun modify (a : StArray a b) (i : Int) (f : b -> b ! { St a | e }) : () ! { St a | e } = stSetArray a i (f (stGetArray a i))
+@pub fun modify (a : StArray a b) (i : Int) (f : b -> b ! { St a | e }) :
+    () ! { St a | e } =
+  stSetArray a i (f (stGetArray a i))
 
 @pub fun swap (a : StArray a b) (i : Int) (j : Int) : () ! { St a | e } =
   let x = stGetArray a i in
@@ -75,16 +81,17 @@ use Std.Collections.Vector (vecFromArray)
 
 @pub fun toVec (a : StArray a b) : [b] ! { St a | e } = V.fromArray (stFreeze a)
 
--- --- loops --------------------------------------------------------------------
+-- --- loops -------------------------------------------------------------------
 
 -- `f lo`, `f (lo + 1)`, … up to but not including `hi`.
 @pub fun forRange (lo : n) (hi : n) (f : n -> a ! e) : () ! e =
   if lo >= hi then () else let _ = f lo in forRange (lo + 1) hi f
 
 -- Run `step` while `cond` holds.
-@pub fun while (cond : () -> Bool ! e) (step : () -> a ! e) : () ! e = if cond () then let _ = step () in while cond step else ()
+@pub fun while (cond : () -> Bool ! e) (step : () -> a ! e) : () ! e =
+  if cond () then let _ = step () in while cond step else ()
 
--- --- tests --------------------------------------------------------------------
+-- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue)
 
@@ -112,9 +119,14 @@ fun fibs n =
   assertEq (sumTo 100) 5050 "summed in a cell"
 
 @test fun arraysAreWrittenInPlace () =
-  let a = assertEq (reversed [1, 2, 3, 4, 5]) [5, 4, 3, 2, 1] "reversed in place" in
+  let a =
+    assertEq (reversed [1, 2, 3, 4, 5]) [5, 4, 3, 2, 1] "reversed in place"
+  in
   let b = assertEq (reversed []) [] "nothing to reverse" in
-  assertEq (fibs 10) [0, 1, 1, 2, 3, 5, 8, 13, 21, 34] "each from the two before"
+  assertEq
+    (fibs 10)
+    [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
+    "each from the two before"
 
 @test fun freezeAndThawCopy () =
   let (frozen, after) =
@@ -124,14 +136,22 @@ fun fibs n =
       let _ = set a 0 99 in
       (snapshot, freeze a))
   in
-  let a = assertEq frozen #[1, 2, 3] "a later write does not reach a frozen copy" in
+  let a =
+    assertEq frozen #[1, 2, 3] "a later write does not reach a frozen copy"
+  in
   assertEq after #[99, 2, 3] "but does reach the array"
 
 @test fun runStNests () =
   let got =
     runSt (\() ->
       let outer = newRef 1 in
-      let inner = runSt (\() -> let r = newRef 10 in let _ = modifyRef outer (\x -> x + 1) in getRef r) in
+      let inner =
+        runSt
+          (\() ->
+            let r = newRef 10 in
+            let _ = modifyRef outer (\x -> x + 1) in
+            getRef r)
+      in
       getRef outer + inner)
   in
   assertEq got 12 "an inner runSt may use the outer one's cells"

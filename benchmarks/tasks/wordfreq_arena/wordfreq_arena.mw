@@ -56,7 +56,9 @@ fun bump text starts lens counts (at : Int) (n : Int) =
 fun before text starts lens counts (a : Int) (b : Int) =
   if St.get counts a != St.get counts b then St.get counts a > St.get counts b
   else
-    let n = if St.get lens a < St.get lens b then St.get lens a else St.get lens b in
+    let n =
+      if St.get lens a < St.get lens b then St.get lens a else St.get lens b
+    in
     let rec go (i : Int) =
       if i >= n then St.get lens a < St.get lens b
       else
@@ -73,15 +75,23 @@ fun main () =
     let lens = St.newArray cap 0 in
     let counts = St.newArray cap 0 in
     let rec skip (i : Int) =
-      if i < size and (byteOf text i == 32 or byteOf text i == 10) then skip (i + 1) else i in
+      if i < size and (byteOf text i == 32 or byteOf text i == 10)
+      then skip (i + 1)
+      else i in
       let rec stop (i : Int) =
-        if i < size and byteOf text i != 32 and byteOf text i != 10 then stop (i + 1) else i in
+        if i < size and byteOf text i != 32 and byteOf text i != 10
+        then stop (i + 1)
+        else i in
         let rec words (i : Int) =
           if i >= size then ()
           else
             let from = skip i in
             let to = stop from in
-            let _ = if to > from then bump text starts lens counts from (to - from) else () in
+            let _ =
+              if to > from
+              then bump text starts lens counts from (to - from)
+              else ()
+            in
             if to >= size then () else words to in
             let _ = words 0 in
             -- The ten commonest, kept in order as the table is walked. A slot's place
@@ -90,27 +100,43 @@ fun main () =
             let n = St.newRef 0 in
             let rec insert (slot : Int) =
               let rec back (at : Int) =
-                if at > 0 and before text starts lens counts slot (St.get best (at - 1)) then back (at - 1) else at in
+                if at > 0
+                and before text starts lens counts slot (St.get best (at - 1))
+                then back (at - 1)
+                else at in
                 let at = back (St.getRef n) in
                 if at >= 10 then ()
                 else
                   let rec shift (j : Int) =
-                    if j <= at then () else let _ = St.set best j (St.get best (j - 1)) in shift (j - 1) in
-                    let last = if St.getRef n < 10 then St.getRef n else 9 in
-                    let _ = shift last in
-                    let _ = St.set best at slot in
-                    if St.getRef n < 10 then St.setRef n (St.getRef n + 1) else () in
-                    let rec walk (i : Int) =
-                      if i >= cap then ()
-                      else
-                        let _ = if St.get counts i != 0 then insert i else () in
-                        walk (i + 1) in
-                        let _ = walk 0 in
-                        let rec collect (i : Int) acc =
-                          if i >= St.getRef n then acc
-                          else
-                            let slot = St.get best i in
-                            let w = Str.slice text (St.get starts slot) (St.get starts slot + St.get lens slot) in
-                            collect (i + 1) (V.pushBack acc "${w}:${St.get counts slot}") in
-                            collect 0 V.empty) in
+                    if j <= at
+                    then ()
+                    else
+                      let _ = St.set best j (St.get best (j - 1)) in
+                      shift (j - 1) in
+                      let last = if St.getRef n < 10 then St.getRef n else 9 in
+                      let _ = shift last in
+                      let _ = St.set best at slot in
+                      if St.getRef n < 10
+                      then St.setRef n (St.getRef n + 1)
+                      else () in
+                      let rec walk (i : Int) =
+                        if i >= cap then ()
+                        else
+                          let _ =
+                            if St.get counts i != 0 then insert i else ()
+                          in
+                          walk (i + 1) in
+                          let _ = walk 0 in
+                          let rec collect (i : Int) acc =
+                            if i >= St.getRef n then acc
+                            else
+                              let slot = St.get best i in
+                              let w =
+                                Str.slice
+                                text
+                                (St.get starts slot)
+                                (St.get starts slot + St.get lens slot)
+                              in
+                              collect (i + 1) (V.pushBack acc "${w}:${St.get counts slot}") in
+                              collect 0 V.empty) in
   println (Str.join " " top)

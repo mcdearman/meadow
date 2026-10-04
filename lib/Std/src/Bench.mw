@@ -94,7 +94,7 @@ use Std.Time (Time)
   @pub unitsPerSecond : Int,
 }
 
--- --- running ------------------------------------------------------------------
+-- --- running -----------------------------------------------------------------
 
 -- Call `act` `n` times, discarding each result.
 --
@@ -132,7 +132,8 @@ fun collect k n act acc =
   else collect (k - 1) n act (pushBack acc (timeLoop n act))
 
 -- Measure `act` under `config`, counting `units` of work per call.
-@pub fun benchUnitsWith (config : BenchConfig) (name : String) (units : Int) (act : () -> b ! { Time | e }) : Report ! { Time | e } =
+@pub fun benchUnitsWith (config : BenchConfig) (name : String) (units : Int)
+    (act : () -> b ! { Time | e }) : Report ! { Time | e } =
   let _ = warmUp (monotonic () + config.warmupNanos) act in
   let n = calibrate 1 act config.sampleNanos in
   let overhead = loopOverhead n in
@@ -152,16 +153,22 @@ fun collect k n act acc =
   }
 
 -- Measure `act` under `config`.
-@pub fun benchWith (config : BenchConfig) (name : String) (act : () -> b ! { Time | e }) : Report ! { Time | e } = benchUnitsWith config name 1 act
+@pub fun benchWith (config : BenchConfig) (name : String)
+    (act : () -> b ! { Time | e }) : Report ! { Time | e } =
+  benchUnitsWith config name 1 act
 
 -- Measure `act` under `defaultConfig`.
-@pub fun bench (name : String) (act : () -> b ! { Time | e }) : Report ! { Time | e } = benchUnitsWith defaultConfig name 1 act
+@pub fun bench (name : String) (act : () -> b ! { Time | e })
+    : Report ! { Time | e } =
+  benchUnitsWith defaultConfig name 1 act
 
 -- Measure `act` under `defaultConfig`, counting `units` of work per call. The
 -- throughput column then reports units rather than calls.
-@pub fun benchUnits (name : String) (units : Int) (act : () -> b ! { Time | e }) : Report ! { Time | e } = benchUnitsWith defaultConfig name units act
+@pub fun benchUnits (name : String) (units : Int) (act : () -> b ! { Time | e })
+    : Report ! { Time | e } =
+  benchUnitsWith defaultConfig name units act
 
--- --- statistics ---------------------------------------------------------------
+-- --- statistics --------------------------------------------------------------
 
 -- The middle value of an already-sorted vector, or 0 if it is empty. For an
 -- even count this takes the lower of the two middles rather than averaging
@@ -169,7 +176,7 @@ fun collect k n act acc =
 @pub fun middle (sorted : [n]) : n =
   if isEmpty sorted then 0 else getOr 0 sorted (len sorted / 2)
 
--- --- reporting ----------------------------------------------------------------
+-- --- reporting ---------------------------------------------------------------
 
 -- A duration, in whichever unit reads best: `Std.Time.formatNanos`.
 @pub fun formatNanos (ns : Int) : String = T.formatNanos ns
@@ -201,7 +208,9 @@ fun pad3 n =
 -- Padded to `width` characters -- not bytes, which `µs` has one more of.
 fun padTo width s =
   let n = S.charLength s in
-  if n >= width then S.concatAll [s, " "] else S.concatAll [s, S.repeat " " (width - n)]
+  if n >= width
+  then S.concatAll [s, " "]
+  else S.concatAll [s, S.repeat " " (width - n)]
 
 @pub def header : String =
   S.concatAll
@@ -225,7 +234,7 @@ fun padTo width s =
 --   fun main () = runAll [bench "a" f, bench "b" g]
 @pub fun runAll (reports : [Report]) : () ! { Console | e } = report reports
 
--- --- tests --------------------------------------------------------------------
+-- --- tests -------------------------------------------------------------------
 --
 -- The statistics and the formatting only. Nothing here times anything: a test
 -- that measured real elapsed time would be exactly the flaky test this module
@@ -289,5 +298,7 @@ fun padTo width s =
         , unitsPerCall = 1
         , unitsPerSecond = 1000000
       } in
-      let _ = assertEq (throughput r) 1000000000 "units win when there are units" in
+      let _ =
+        assertEq (throughput r) 1000000000 "units win when there are units"
+      in
       assertEq (throughput plain) 1000000 "calls otherwise"

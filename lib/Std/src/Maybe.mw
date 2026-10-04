@@ -4,13 +4,17 @@ use Maybe.*
 @derive(Debug, Display)
 @pub data Maybe a = None | Just a
 
-@pub fun isSome (o : Maybe a) : Bool = match o with | None -> False | Just x -> True
+@pub fun isSome (o : Maybe a) : Bool =
+  match o with | None -> False | Just x -> True
 
-@pub fun isNone (o : Maybe a) : Bool = match o with | None -> True | Just x -> False
+@pub fun isNone (o : Maybe a) : Bool =
+  match o with | None -> True | Just x -> False
 
-@pub fun unwrapOr (default : a) (o : Maybe a) : a = match o with | None -> default | Just x -> x
+@pub fun unwrapOr (default : a) (o : Maybe a) : a =
+  match o with | None -> default | Just x -> x
 
-@pub fun orElse (fallback : Maybe a) (o : Maybe a) : Maybe a = match o with | None -> fallback | Just x -> o
+@pub fun orElse (fallback : Maybe a) (o : Maybe a) : Maybe a =
+  match o with | None -> fallback | Just x -> o
 
 @pub fun map (f : a -> b ! e) (o : Maybe a) : Maybe b ! e =
   match o with
@@ -45,14 +49,18 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 @test fun unwrapOrAndOrElse () =
   let a = assertEq (unwrapOr 0 (Just 5)) 5 "unwrapOr Just" in
   let b = assertEq (unwrapOr 0 None) 0 "unwrapOr None" in
-  let c = assertEq (orElse (Just 2) (Just 1)) (Just 1) "orElse keeps the first Just" in
+  let c =
+    assertEq (orElse (Just 2) (Just 1)) (Just 1) "orElse keeps the first Just"
+  in
   let d = assertEq (orElse (Just 2) None) (Just 2) "orElse falls back" in
   assertEq (orElse None None) None "orElse of two Nones"
 
 @test fun mapAndAndThen () =
   let a = assertEq (map (\n -> n + 1) (Just 1)) (Just 2) "map Just" in
   let b = assertEq (map (\n -> n + 1) None) None "map None" in
-  let c = assertEq (andThen (\n -> Just (n + 1)) (Just 1)) (Just 2) "andThen Just" in
+  let c =
+    assertEq (andThen (\n -> Just (n + 1)) (Just 1)) (Just 2) "andThen Just"
+  in
   -- The function may itself say `None`, which is the point of `andThen`.
   let d = assertEq (andThen (\n -> None) (Just 1)) None "andThen can fail" in
   assertEq (andThen (\n -> Just n) None) None "andThen None"

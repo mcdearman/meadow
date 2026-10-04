@@ -18,13 +18,16 @@ use Either.*
 @derive(Debug, Display, PartialEq, Eq, PartialOrd, Ord)
 @pub data Either a b = Left a | Right b
 
-@pub fun isLeft (e : Either a b) : Bool = match e with | Left a -> True | Right b -> False
+@pub fun isLeft (e : Either a b) : Bool =
+  match e with | Left a -> True | Right b -> False
 
-@pub fun isRight (e : Either a b) : Bool = match e with | Left a -> False | Right b -> True
+@pub fun isRight (e : Either a b) : Bool =
+  match e with | Left a -> False | Right b -> True
 
 -- Collapse both sides to one type: `either f g` is the `Either` eliminator, the
 -- way `match` would do it but as a value.
-@pub fun either (onLeft : a -> b ! e) (onRight : c -> b ! e) (e : Either a c) : b ! e =
+@pub fun either (onLeft : a -> b ! e) (onRight : c -> b ! e) (e : Either a c)
+    : b ! e =
   match e with
   | Left a -> onLeft a
   | Right b -> onRight b
@@ -51,7 +54,8 @@ use Either.*
   | Right b -> Right b
 
 -- Map both sides at once, each with its own function.
-@pub fun bimap (f : a -> b ! e) (g : c -> d ! e) (e : Either a c) : Either b d ! e =
+@pub fun bimap (f : a -> b ! e) (g : c -> d ! e) (e : Either a c)
+    : Either b d ! e =
   match e with
   | Left a -> Left (f a)
   | Right b -> Right (g b)
@@ -96,10 +100,16 @@ use Either.*
 -- --- collections ------------------------------------------------------------
 
 @pub fun lefts (es : [Either a b]) : [a] =
-  V.foldl (\acc e -> match e with | Left a -> V.pushBack acc a | Right b -> acc) V.empty es
+  V.foldl
+    (\acc e -> match e with | Left a -> V.pushBack acc a | Right b -> acc)
+    V.empty
+    es
 
 @pub fun rights (es : [Either a b]) : [b] =
-  V.foldl (\acc e -> match e with | Left a -> acc | Right b -> V.pushBack acc b) V.empty es
+  V.foldl
+    (\acc e -> match e with | Left a -> acc | Right b -> V.pushBack acc b)
+    V.empty
+    es
 
 -- Both at once, in one pass, each side keeping its original order.
 @pub fun partitionEithers (es : [Either a b]) : ([a], [b]) =
@@ -136,8 +146,15 @@ use Std.Result.Result.*
   assertEq (bimap (\x -> x + 1) (\y -> y * 2) (Right 4)) (Right 8) "bimap Right"
 
 @test fun andThenAndSwap () =
-  let a = assertEq (andThen (\x -> Right (x + 1)) (Right 1)) (Right 2) "andThen" in
-  let b = assertEq (andThen (\x -> Left "no") (Right 1)) (Left "no") "the function may fail" in
+  let a =
+    assertEq (andThen (\x -> Right (x + 1)) (Right 1)) (Right 2) "andThen"
+  in
+  let b =
+    assertEq
+      (andThen (\x -> Left "no") (Right 1))
+      (Left "no")
+      "the function may fail"
+  in
   let c = assertEq (swap (Left 1)) (Right 1) "swap Left" in
   assertEq (swap (swap (Right 1))) (Right 1) "swap is an involution"
 
@@ -152,5 +169,7 @@ use Std.Result.Result.*
   let es = [Left 1, Right "a", Left 2, Right "b"] in
   let a = assertEq (lefts es) [1, 2] "lefts" in
   let b = assertEq (rights es) ["a", "b"] "rights" in
-  let c = assertEq (partitionEithers es) ([1, 2], ["a", "b"]) "partitionEithers" in
+  let c =
+    assertEq (partitionEithers es) ([1, 2], ["a", "b"]) "partitionEithers"
+  in
   assertEq (partitionEithers []) ([], []) "partition of nothing"

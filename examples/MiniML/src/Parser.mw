@@ -35,9 +35,12 @@ fun symbol s = L.symbol sc s
 -- A keyword is a word that is not the start of a longer identifier, so `let`
 -- does not match the first three characters of `letter`.
 fun keyword s =
-  P.thenSkip (C.string s) (P.notFollowedBy (P.satisfy isIdentChar)) |> P.try |> lexeme
+  P.thenSkip (C.string s) (P.notFollowedBy (P.satisfy isIdentChar))
+    |> P.try
+    |> lexeme
 
-def reserved = ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"]
+def reserved =
+  ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"]
 
 -- An identifier, refusing the reserved words so `let` cannot be a variable.
 --
@@ -53,13 +56,16 @@ fun ident =
                         (P.satisfy isIdentStart)
                         (P.takeWhileP isIdentChar)))
         (\name ->
-          if V.elem name reserved then P.fail "`${name}` is a keyword, not a name"
+          if V.elem name reserved
+          then P.fail "`${name}` is a keyword, not a name"
           else P.pure name)))
 
 fun intLit = L.decimal |> lexeme |> P.map (\n -> Int n)
 
 fun boolLit =
-  P.alt (P.mapTo (Bool True) (keyword "true")) (P.mapTo (Bool False) (keyword "false"))
+  P.alt
+    (P.mapTo (Bool True) (keyword "true"))
+    (P.mapTo (Bool False) (keyword "false"))
 
 -- --- the grammar ----------------------------------------------------------
 --

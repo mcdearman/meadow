@@ -18,7 +18,7 @@ use Std.Maybe as M
 use Std.Maybe.Maybe.*
 use Std.Result.Result.*
 
--- --- what the Rust compiler writes ---------------------------------------------------
+-- --- what the Rust compiler writes -------------------------------------------
 --
 -- A word says what each thing is, and it comes first: `lam 3 var 3` is a
 -- function of binder 3 answering it. A list is in brackets. Numbers are
@@ -155,7 +155,7 @@ syntax! {
 -- The language the grammar implies: every number and name still its text.
 lang! { Printed from CoreText }
 
--- --- the language ------------------------------------------------------------------
+-- --- the language ------------------------------------------------------------
 
 -- Core: a binder is a number, a name or a text is itself, and a literal is
 -- its value.
@@ -175,8 +175,19 @@ lang! {
   Term + Ctor { name : String, args : [Term] }
   Term + Prim { op : String, args : [Term] }
   Term + Perform { eff : String, op : String, arg : Term }
-  Term + Handle { body : Term, clauses : [Clause], retId : Maybe Int, ret : Maybe Term }
-  Clause + Clause { eff : String, op : String, param : Int, resume : Int, body : Term }
+  Term + Handle {
+    body : Term,
+    clauses : [Clause],
+    retId : Maybe Int,
+    ret : Maybe Term
+  }
+  Clause + Clause {
+    eff : String,
+    op : String,
+    param : Int,
+    resume : Int,
+    body : Term
+  }
   Term + Join { id : Int, params : [Int], rhs : Term, body : Term }
   Term + Jump { id : Int, args : [Term] }
   Lit + LInt { value : Int }
@@ -198,24 +209,50 @@ lang! {
 -- float; everything else is as it was.
 pass! {
   read : Printed -> Core
-    | File { entry, defs, named } -> File { entry = number entry, defs = defs, named = named }
+    | File { entry, defs, named } ->
+        File { entry = number entry, defs = defs, named = named }
     | Def { id, body } -> Def { id = number id, body = body }
-    | Named { name, labels } -> Named { name = unquoted name, labels = V.map unquoted labels }
+    | Named { name, labels } ->
+        Named { name = unquoted name, labels = V.map unquoted labels }
     | Var { id } -> Var { id = number id }
     | Lam { param, body } -> Lam { param = number param, body = body }
-    | Let { id, value, body } -> Let { id = number id, value = value, body = body }
+    | Let { id, value, body } ->
+        Let { id = number id, value = value, body = body }
     | Bind { id, value } -> Bind { id = number id, value = value }
     | Proj { tuple, index } -> Proj { tuple = tuple, index = number index }
     | Field { label, value } -> Field { label = unquoted label, value = value }
     | Sel { target, label } -> Sel { target = target, label = unquoted label }
-    | Extend { target, label, value } -> Extend { target = target, label = unquoted label, value = value }
+    | Extend { target, label, value } ->
+        Extend { target = target, label = unquoted label, value = value }
     | Ctor { name, args } -> Ctor { name = unquoted name, args = args }
     | Prim { op, args } -> Prim { op = unquoted op, args = args }
-    | Perform { eff, op, arg } -> Perform { eff = unquoted eff, op = unquoted op, arg = arg }
-    | Handle { body, clauses, retId, ret } -> Handle { body = body, clauses = clauses, retId = M.map number retId, ret = ret }
+    | Perform { eff, op, arg } ->
+        Perform { eff = unquoted eff, op = unquoted op, arg = arg }
+    | Handle { body, clauses, retId, ret } ->
+        Handle
+          {
+            body = body,
+            clauses = clauses,
+            retId = M.map number retId,
+            ret = ret
+          }
     | Clause { eff, op, param, resume, body } ->
-        Clause { eff = unquoted eff, op = unquoted op, param = number param, resume = number resume, body = body }
-    | Join { id, params, rhs, body } -> Join { id = number id, params = V.map number params, rhs = rhs, body = body }
+        Clause
+          {
+            eff = unquoted eff,
+            op = unquoted op,
+            param = number param,
+            resume = number resume,
+            body = body
+          }
+    | Join { id, params, rhs, body } ->
+        Join
+          {
+            id = number id,
+            params = V.map number params,
+            rhs = rhs,
+            body = body
+          }
     | Jump { id, args } -> Jump { id = number id, args = args }
     | LInt { value } -> LInt { value = number value }
     | LBig { value } -> LBig { value = number value }
@@ -229,7 +266,13 @@ pass! {
     | PAs { id, pat } -> PAs { id = number id, pat = pat }
     | PCtor { name, args } -> PCtor { name = unquoted name, args = args }
     | PField { label, pat } -> PField { label = unquoted label, pat = pat }
-    | Arm { pat, guard, body } -> Arm { pat = pat, guard = M.map (\g -> coreGuardCondIn out g) guard, body = body }
+    | Arm { pat, guard, body } ->
+        Arm
+          {
+            pat = pat,
+            guard = M.map (\g -> coreGuardCondIn out g) guard,
+            body = body
+          }
 }
 
 -- The program `input` writes, or what is wrong with it.
@@ -244,18 +287,25 @@ pass! {
        | Just (at, why) -> Err "${why}, at byte ${show at}"
        | None -> Err "it does not parse")
 
--- --- reading the text ----------------------------------------------------------------
+-- --- reading the text --------------------------------------------------------
 
 fun number (s : String) : Int = M.unwrapOr 0 (S.toInt s)
 
 -- A quoted string's text: its quotes off, and each `\xNN` the byte it names.
-fun unquoted (s : String) : String = unescaped (stringSlice s 1 (stringByteLength s - 1)) 0 0 ""
+fun unquoted (s : String) : String =
+  unescaped (stringSlice s 1 (stringByteLength s - 1)) 0 0 ""
 
 fun unescaped (s : String) (run : Int) (i : Int) (acc : String) : String =
   if i >= stringByteLength s then acc ++ stringSlice s run i
   else if toInt (stringByteAt s i) == 92 then
-    let code = hex (toInt (stringByteAt s (i + 2))) * 16 + hex (toInt (stringByteAt s (i + 3))) in
-    unescaped s (i + 4) (i + 4) (acc ++ stringSlice s run i ++ C.toString (C.fromCode code))
+    let code =
+      hex (toInt (stringByteAt s (i + 2))) * 16 + hex (toInt (stringByteAt s (i + 3)))
+    in
+    unescaped
+      s
+      (i + 4)
+      (i + 4)
+      (acc ++ stringSlice s run i ++ C.toString (C.fromCode code))
   else unescaped s run (i + 1) acc
 
 fun hex (b : Int) : Int = if b >= 65 then b - 55 else b - 48

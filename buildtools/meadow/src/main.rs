@@ -230,12 +230,12 @@ enum Cmd {
         /// Write the result to stdout instead of back to the file.
         #[arg(long)]
         stdout: bool,
-        /// Cut lines longer than this many characters, where there is a
-        /// place to cut them -- after a definition's `=`, an arm or a
+        /// How many characters a line may be: one longer is cut where there
+        /// is a place to cut it -- after a definition's `=`, an arm or a
         /// pipeline step to a line, an argument to a line. A string or a
-        /// comment is never cut. Without it, no token leaves its line.
-        #[arg(long, value_name = "COLUMNS")]
-        width: Option<usize>,
+        /// comment is never cut. `0` cuts nothing: no token leaves its line.
+        #[arg(long, value_name = "COLUMNS", default_value_t = 80)]
+        width: usize,
     },
     /// Create a package: a `Meadow.toml` and a `src/Main.mw` that runs.
     ///
@@ -884,7 +884,7 @@ fn command() {
                 paths,
                 check,
                 stdout,
-                width,
+                width: (width > 0).then_some(width),
             }) {
                 // `--check` is for CI: a file that needs formatting is a failure.
                 Ok(changed) => {

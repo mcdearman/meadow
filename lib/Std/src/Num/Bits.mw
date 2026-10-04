@@ -56,10 +56,12 @@ fun bitsCtzGo x w n =
 @pub fun countTrailingZeros (x : n) : Int = bitsCtzGo x (bitWidth x) 0
 
 -- Rotate left by `n` (0 up to the width), at `x`'s width.
-@pub fun rotateLeft (x : n) (n : Int) : n = bitOr (x << n) (ushr x (bitWidth x - n))
+@pub fun rotateLeft (x : n) (n : Int) : n =
+  bitOr (x << n) (ushr x (bitWidth x - n))
 
 -- Rotate right by `n` (0 up to the width).
-@pub fun rotateRight (x : n) (n : Int) : n = bitOr (ushr x n) (x << (bitWidth x - n))
+@pub fun rotateRight (x : n) (n : Int) : n =
+  bitOr (ushr x n) (x << (bitWidth x - n))
 
 -- --- tests -------------------------------------------------------------------
 
@@ -83,7 +85,10 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 @test fun byteExtractionAndAssembly () =
   let a = assertEq (byteOf 0 0x12345678) (toUInt8 0x78) "byte 0" in
   let b = assertEq (byteOf 3 0x12345678) (toUInt8 0x12) "byte 3" in
-  assertEq (fromBytes4 (toUInt8 0x78) (toUInt8 0x56) (toUInt8 0x34) (toUInt8 0x12)) (toUInt32 0x12345678) "fromBytes4"
+  assertEq
+    (fromBytes4 (toUInt8 0x78) (toUInt8 0x56) (toUInt8 0x34) (toUInt8 0x12))
+    (toUInt32 0x12345678)
+    "fromBytes4"
 
 @test fun countingZerosAtEachWidth () =
   let a = assertEq (countLeadingZeros (toInt 1)) 63 "clz of an Int" in
@@ -96,10 +101,25 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 @test fun rotationsComeBackAround () =
   let a = assertEq (rotateLeft (toInt 1) 1) (toInt 2) "rotateLeft" in
   let b = assertEq (rotateRight (toInt 2) 1) (toInt 1) "rotateRight" in
-  let c = assertEq (rotateLeft (toUInt8 0x81) 1) (toUInt8 0x03) "a UInt8 wraps at eight bits" in
-  assertEq (rotateRight (rotateLeft (toInt 0x1234) 9) 9) (toInt 0x1234) "a rotation is reversible"
+  let c =
+    assertEq
+      (rotateLeft (toUInt8 0x81) 1)
+      (toUInt8 0x03)
+      "a UInt8 wraps at eight bits"
+  in
+  assertEq
+    (rotateRight (rotateLeft (toInt 0x1234) 9) 9)
+    (toInt 0x1234)
+    "a rotation is reversible"
 
 @test fun shiftsKnowTheirSign () =
-  let a = assertEq (toInt8 (0 - 128) >> 7) (toInt8 (0 - 1)) "arithmetic on a signed type" in
-  let b = assertEq (toUInt8 128 >> 7) (toUInt8 1) "logical on an unsigned one" in
+  let a =
+    assertEq
+      (toInt8 (0 - 128) >> 7)
+      (toInt8 (0 - 1))
+      "arithmetic on a signed type"
+  in
+  let b =
+    assertEq (toUInt8 128 >> 7) (toUInt8 1) "logical on an unsigned one"
+  in
   assertEq (toInt8 (0 - 128) >>> 7) (toInt8 1) "ushr is logical everywhere"

@@ -56,7 +56,9 @@ fun applyOp op l r =
   else if op == "-" then Value.Int (asInt l - asInt r)
   else if op == "*" then Value.Int (asInt l * asInt r)
   else if op == "/" then
-    (if asInt r == 0 then raise "division by zero" else Value.Int (asInt l / asInt r))
+    (if asInt r == 0
+      then raise "division by zero"
+      else Value.Int (asInt l / asInt r))
   else if op == "==" then Value.Bool (asInt l == asInt r)
   else if op == "<" then Value.Bool (asInt l < asInt r)
   else if op == ">" then Value.Bool (asInt l > asInt r)
@@ -74,7 +76,8 @@ fun eval env e =
       let fv = eval env f in
       let av = eval env a in
       (match fv with
-       | Value.Closure param body closed -> eval ((param, newRef av) :: closed) body
+       | Value.Closure param body closed ->
+           eval ((param, newRef av) :: closed) body
        | other -> raise (S.concat "not a function: " (showValue other)))
   | Expr.Let name rhs body -> eval ((name, newRef (eval env rhs)) :: env) body
   | Expr.LetRec name param rhs body ->

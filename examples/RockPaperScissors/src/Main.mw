@@ -76,7 +76,10 @@ fun round () =
         | Just you ->
             let me = randomChoice () in
             let o = judge you me in
-            let _ = println (S.concatAll ["I played ", choiceName me, ". ", outcomeLine o]) in
+            let _ =
+              println
+                (S.concatAll ["I played ", choiceName me, ". ", outcomeLine o])
+            in
             Just o
 
 fun tally wins losses draws =
@@ -98,7 +101,7 @@ fun game () =
 
 fun main () = game ()
 
--- --- tests --------------------------------------------------------------------
+-- --- tests -------------------------------------------------------------------
 
 @test fun beatingIsACycle () =
   -- Every choice beats exactly one other and loses to exactly one, so following
@@ -111,7 +114,10 @@ fun main () = game ()
       , (Scissors, Rock, Lose)
       , (Paper, Paper, Draw)
     ] in
-    assertEq (map (\(a, b, _) -> judge a b) cases) (map (\(_, _, o) -> o) cases) "judged"
+    assertEq
+      (map (\(a, b, _) -> judge a b) cases)
+      (map (\(_, _, o) -> o) cases)
+      "judged"
 
 @test fun inputIsForgiving () =
   let got = map parseChoice ["ROCK", " p ", "Scissors", "banana"] in

@@ -30,7 +30,7 @@ use Std.Collections.Vector as V
   nextSeed : () -> Int,
 }
 
--- --- the pure generator -------------------------------------------------------
+-- --- the pure generator ------------------------------------------------------
 --
 -- `step s` is `(value, nextState)`. Threading the state by hand is the honest
 -- interface; `withSeed` below hides it behind the effect.
@@ -73,7 +73,7 @@ fun posMod v m =
   let r = v % m in
   if r < 0 then r + m else r
 
--- --- handling -----------------------------------------------------------------
+-- --- handling ----------------------------------------------------------------
 
 -- Run `act` with the pure generator, starting from `n`. The same `n` gives the
 -- same numbers, on every machine and every run.
@@ -90,7 +90,8 @@ fun posMod v m =
   } (seed n)
 
 -- Like `withSeed`, but also hands back the final state so a run can be continued.
-@pub fun withSeedFrom (n : Int) (act : () -> a ! { Random | e }) : (a, Int) ! e =
+@pub fun withSeedFrom (n : Int) (act : () -> a ! { Random | e }) :
+    (a, Int) ! e =
   handle act () with {
     nextInt () k -> \s -> match step s with | (v, s2) -> (k v) s2,
     nextSeed () k -> \s -> match step s with | (v, s2) -> (k v) s2,
@@ -102,11 +103,12 @@ fun posMod v m =
     return x -> \s -> (x, s)
   } (seed n)
 
--- --- derived ------------------------------------------------------------------
+-- --- derived -----------------------------------------------------------------
 
 -- An effect operation takes exactly one argument, so `intBetween` takes a pair.
 -- This is the curried form to actually call.
-@pub fun between (lo : Int) (hi : Int) : Int ! { Random | e } = intBetween (lo, hi)
+@pub fun between (lo : Int) (hi : Int) : Int ! { Random | e } =
+  intBetween (lo, hi)
 
 @pub fun bool () : Bool ! { Random | e } = between 0 2 == 1
 
@@ -143,7 +145,12 @@ use Std.Collections.Vector (vecFromArray)
 use Std.Maybe.Maybe.*
 
 @test fun aSeedGivesTheSameRunTwice () =
-  let a = assertEq (withSeed 42 (\u2 -> between 1 7)) (withSeed 42 (\u2 -> between 1 7)) "same seed" in
+  let a =
+    assertEq
+      (withSeed 42 (\u2 -> between 1 7))
+      (withSeed 42 (\u2 -> between 1 7))
+      "same seed"
+  in
   assertEq
     (withSeed 7 (\u2 -> V.map (\i -> nextInt ()) [0, 1, 2]))
     (withSeed 7 (\u2 -> V.map (\i -> nextInt ()) [0, 1, 2]))
@@ -191,7 +198,9 @@ use Std.Maybe.Maybe.*
   assertTrue (V.all (\x -> V.elem x shuffled) v) "every element survives"
 
 @test fun chooseIsAMemberOrNothing () =
-  let a = assertEq (withSeed 3 (\u2 -> choose (V.empty))) None "choose of empty" in
+  let a =
+    assertEq (withSeed 3 (\u2 -> choose (V.empty))) None "choose of empty"
+  in
   assertTrue (withSeed 3 (\u2 -> V.elem 0 [0] == True)) "a one-element vector"
 
 @test fun withSeedFromHandsBackTheState () =

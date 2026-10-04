@@ -42,7 +42,9 @@ fun worker jobs results =
 fun pool (size : Int) work =
   let jobs = Thread.newChannel () in
   let results = Thread.newChannel () in
-  let workers = V.map (\i -> Thread.spawn (\() -> worker jobs results)) (V.range 0 size) in
+  let workers =
+    V.map (\i -> Thread.spawn (\() -> worker jobs results)) (V.range 0 size)
+  in
   let _ = V.forEach (\n -> Thread.send jobs (Just n)) work in
   -- One stop per worker, after the work: a channel keeps its order.
   let _ = V.forEach (\w -> Thread.send jobs None) workers in
@@ -52,15 +54,22 @@ fun pool (size : Int) work =
 
 -- The longest sequence among the answers.
 fun longest answers =
-  V.foldl (\best a -> match (best, a) with | ((bn, bs), (n, s)) -> if s > bs then (n, s) else (bn, bs)) (0, 0) answers
+  V.foldl
+    (\best a -> match (best, a) with
+                | ((bn, bs), (n, s)) -> if s > bs then (n, s) else (bn, bs))
+    (0, 0)
+    answers
 
 fun describeLongest answers =
   match longest answers with
-  | (n, steps) -> S.concatAll ["longest: ", S.fromInt n, " takes ", S.fromInt steps, " steps"]
+  | (n, steps) ->
+      S.concatAll
+        ["longest: ", S.fromInt n, " takes ", S.fromInt steps, " steps"]
 
 fun describeFib t =
   match t with
-  | (n, task) -> S.concatAll ["fib ", S.fromInt n, " = ", S.fromInt (Thread.await task)]
+  | (n, task) ->
+      S.concatAll ["fib ", S.fromInt n, " = ", S.fromInt (Thread.await task)]
 
 -- --- a pipeline --------------------------------------------------------------
 
@@ -97,7 +106,9 @@ fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
 fun main () =
   let _ = println "== a worker pool of 4, over 1..10000" in
   let answers = pool 4 (V.range 1 10001) in
-  let _ = println (S.concatAll ["answered ", S.fromInt (V.len answers), " jobs"]) in
+  let _ =
+    println (S.concatAll ["answered ", S.fromInt (V.len answers), " jobs"])
+  in
   let _ = println (describeLongest answers) in
 
   let _ = println "== a pipeline: square, add one, halve" in

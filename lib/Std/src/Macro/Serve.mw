@@ -31,15 +31,20 @@ use Std.Macro.Wire.*
 -- `show` writes it.
 
 -- Run the macro `run` on what the input gives it, and write its answer out.
-@pub fun serve (run : [TokenTree] -> [TokenTree] ! { Expand | e }) : () ! { Console | e } =
+@pub fun serve (run : [TokenTree] -> [TokenTree] ! { Expand | e }) :
+    () ! { Console | e } =
   match readLine () with
   | None -> ()
   | Just given ->
       match fst (readWire given 0) with
       | Node _ parts ->
           let settled = wholeOf (arrayGet parts 0) == 1 in
-          let scope = V.map binding (V.fromArray (childrenOf (arrayGet parts 1))) in
-          writeOutput (writeWire (expanding settled scope run (treesOf (arrayGet parts 2))))
+          let scope =
+            V.map binding (V.fromArray (childrenOf (arrayGet parts 1)))
+          in
+          writeOutput
+            (writeWire
+              (expanding settled scope run (treesOf (arrayGet parts 2))))
       | _ -> ()
 
 -- `w` as text.
@@ -53,7 +58,9 @@ fun pieces (w : Wire) (acc : [String]) : [String] =
   | Node tag xs ->
       V.foldl
         (\a x -> pieces x a)
-        (V.pushBack acc "N${show (stringByteLength tag)}:${tag}${show (arrayLen xs)};")
+        (V.pushBack
+          acc
+          "N${show (stringByteLength tag)}:${tag}${show (arrayLen xs)};")
         (V.fromArray xs)
 
 -- The `Wire` written at byte `i` of `s`, and the byte after it.
@@ -69,37 +76,55 @@ fun pieces (w : Wire) (acc : [String]) : [String] =
   else if b == 70 then
     let semi = upTo s (i + 1) 59 in
     let e = upTo s (i + 1) 101 in
-    (Frac (scaled (toFloat (numberIn s (i + 1) e)) (numberIn s (e + 1) semi)), semi + 1)
+    (
+      Frac (scaled (toFloat (numberIn s (i + 1) e)) (numberIn s (e + 1) semi)),
+      semi + 1
+    )
   else if b == 78 then
     let colon = upTo s (i + 1) 58 in
     let n = numberIn s (i + 1) colon in
     let semi = upTo s (colon + 1 + n) 59 in
-    let kids = readMany s (semi + 1) (numberIn s (colon + 1 + n) semi) V.empty in
-    (Node (stringSlice s (colon + 1) (colon + 1 + n)) (V.toArray (fst kids)), snd kids)
+    let kids =
+      readMany s (semi + 1) (numberIn s (colon + 1 + n) semi) V.empty
+    in
+    (
+      Node (stringSlice s (colon + 1) (colon + 1 + n)) (V.toArray (fst kids)),
+      snd kids
+    )
   else (Text "", stringByteLength s)
 
 fun readMany (s : String) (i : Int) (n : Int) (acc : [Wire]) : ([Wire], Int) =
   if n <= 0 then (acc, i)
-  else match readWire s i with | (w, j) -> readMany s j (n - 1) (V.pushBack acc w)
+  else match readWire s i with
+  | (w, j) -> readMany s j (n - 1) (V.pushBack acc w)
 
-fun byteOf (s : String) (i : Int) : Int = if i < stringByteLength s then toInt (stringByteAt s i) else 0 - 1
+fun byteOf (s : String) (i : Int) : Int =
+  if i < stringByteLength s then toInt (stringByteAt s i) else 0 - 1
 
 -- The first byte from `i` on that is `b`, or the end.
-fun upTo (s : String) (i : Int) (b : Int) : Int = if i >= stringByteLength s or byteOf s i == b then i else upTo s (i + 1) b
+fun upTo (s : String) (i : Int) (b : Int) : Int =
+  if i >= stringByteLength s or byteOf s i == b then i else upTo s (i + 1) b
 
-fun numberIn (s : String) (from : Int) (to : Int) : Int = match S.toInt (stringSlice s from to) with | Just n -> n | None -> 0
+fun numberIn (s : String) (from : Int) (to : Int) : Int =
+  match S.toInt (stringSlice s from to) with | Just n -> n | None -> 0
 
 -- `x` times two to the `e`: exact, one doubling or halving at a time.
 fun scaled (x : Float) (e : Int) : Float =
-  if e > 0 then scaled (x *. 2.0) (e - 1) else if e < 0 then scaled (x *. 0.5) (e + 1) else x
+  if e > 0
+  then scaled (x *. 2.0) (e - 1)
+  else if e < 0
+  then scaled (x *. 0.5) (e + 1)
+  else x
 
-fun childrenOf (w : Wire) : #[Wire] = match w with | Node _ xs -> xs | _ -> V.toArray V.empty
+fun childrenOf (w : Wire) : #[Wire] =
+  match w with | Node _ xs -> xs | _ -> V.toArray V.empty
 
 fun wholeOf (w : Wire) : Int = match w with | Whole n -> n | _ -> 0
 
 fun textOf (w : Wire) : String = match w with | Text s -> s | _ -> ""
 
-fun fracOf (w : Wire) : Float = match w with | Frac x -> x | Whole n -> toFloat n | _ -> 0.0
+fun fracOf (w : Wire) : Float =
+  match w with | Frac x -> x | Whole n -> toFloat n | _ -> 0.0
 
 fun binding (w : Wire) : (String, Datum) =
   match w with
@@ -117,11 +142,16 @@ fun treeOf (w : Wire) : TokenTree =
   | Node "Chr" xs -> Chr (textOf (arrayGet xs 0)) (locOf (arrayGet xs 1))
   | Node "Num" xs -> Num (wholeOf (arrayGet xs 0)) (locOf (arrayGet xs 1))
   | Node "Real" xs -> Real (fracOf (arrayGet xs 0)) (locOf (arrayGet xs 1))
-  | Node "Group" xs -> Group (delimOf (textOf (arrayGet xs 0))) (treesOf (arrayGet xs 1)) (locOf (arrayGet xs 2))
+  | Node "Group" xs ->
+      Group
+        (delimOf (textOf (arrayGet xs 0)))
+        (treesOf (arrayGet xs 1))
+        (locOf (arrayGet xs 2))
   | Node "Code" xs -> Code (textOf (arrayGet xs 0))
   | _ -> Fail "the compiler sent a token this cannot read" Nowhere
 
-fun delimOf (opened : String) : Delim = if opened == "(" then Paren else if opened == "[" then Bracket else Brace
+fun delimOf (opened : String) : Delim =
+  if opened == "(" then Paren else if opened == "[" then Bracket else Brace
 
 fun locOf (w : Wire) : Loc =
   match w with
@@ -138,7 +168,10 @@ fun datumOf (w : Wire) : Datum =
   | Node "Bool" xs -> Datum.Bool (wholeOf (arrayGet xs 0) == 1)
   | Node "List" xs -> Datum.List (V.map datumOf (V.fromArray xs))
   | Node "Rec" xs -> Datum.Rec (V.map binding (V.fromArray xs))
-  | Node "Tag" xs -> Datum.Tag (textOf (arrayGet xs 0)) (V.map datumOf (V.fromArray (childrenOf (arrayGet xs 1))))
+  | Node "Tag" xs ->
+      Datum.Tag
+        (textOf (arrayGet xs 0))
+        (V.map datumOf (V.fromArray (childrenOf (arrayGet xs 1))))
   | Node "Code" xs -> Datum.Code (treesOf (arrayGet xs 0))
   | _ -> Datum.Bool False
 
@@ -147,7 +180,15 @@ fun datumOf (w : Wire) : Datum =
 use Std.Test (assertEq)
 
 @test fun aWireWrittenOutReadsBackAsItWas () =
-  let w = Node "Answered" #[Node "" #[Node "Word" #[Text "a:b;", Node "At" #[Whole 3, Whole (0 - 9)]]], Text "", Node "" #[]] in
+  let w =
+    Node
+      "Answered"
+      #[
+        Node "" #[Node "Word" #[Text "a:b;", Node "At" #[Whole 3, Whole (0 - 9)]]],
+        Text "",
+        Node "" #[]
+      ]
+  in
   assertEq (fst (readWire (writeWire w) 0)) w "the same wire"
 
 -- A float comes in exactly, as an integer and a power of two, and goes out as

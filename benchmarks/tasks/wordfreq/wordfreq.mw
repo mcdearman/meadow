@@ -13,13 +13,16 @@ use Std.Sort as Sort
 -- count is one probe and one write in place.
 fun countLine t (line : String) =
   V.foldl
-    (\acc w -> if Str.isEmpty w then () else HT.insertWith (\a b -> a + b) w 1 t)
+    (\acc w -> if Str.isEmpty w
+      then ()
+      else HT.insertWith (\a b -> a + b) w 1 t)
     ()
     (Str.split " " line)
 
 fun rank a b =
   match (a, b) with
-  | ((wa, ca), (wb, cb)) -> if ca == cb then Str.compare wa wb else compare cb ca
+  | ((wa, ca), (wb, cb)) ->
+      if ca == cb then Str.compare wa wb else compare cb ca
 
 fun main () =
   let text = Fs.readToStringOr "" "work/corpus.txt" in
@@ -28,4 +31,5 @@ fun main () =
     let _ = V.foldl (\acc line -> countLine t line) () (Str.lines text) in
     HT.toVec t) in
   let top = V.take (Sort.sortBy rank counts) 10 in
-  println (Str.join " " (V.map (\p -> match p with | (w, c) -> "${w}:${c}") top))
+  println
+    (Str.join " " (V.map (\p -> match p with | (w, c) -> "${w}:${c}") top))

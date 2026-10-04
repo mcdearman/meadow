@@ -65,11 +65,13 @@ def lastShift = 60
 
 @pub fun isEmpty (m : HashMap a b) : Bool = size m == 0
 
--- --- arrays -------------------------------------------------------------------
+-- --- arrays ------------------------------------------------------------------
 
-fun arrayInsert xs i x = arrayConcat (arrayPush (arraySlice xs 0 i) x) (arraySlice xs i (arrayLen xs))
+fun arrayInsert xs i x =
+  arrayConcat (arrayPush (arraySlice xs 0 i) x) (arraySlice xs i (arrayLen xs))
 
-fun arrayRemove xs i = arrayConcat (arraySlice xs 0 i) (arraySlice xs (i + 1) (arrayLen xs))
+fun arrayRemove xs i =
+  arrayConcat (arraySlice xs 0 i) (arraySlice xs (i + 1) (arrayLen xs))
 
 fun arrayFold f acc xs =
   let n = arrayLen xs in
@@ -85,14 +87,14 @@ fun pairIndex k pairs =
     else go (i + 1)
   in go 0
 
--- --- slots --------------------------------------------------------------------
+-- --- slots -------------------------------------------------------------------
 
 -- The bit for `h` at `shift`, and where that slot sits in the packed array.
 fun bitAt h shift = 1 << bitAnd (h >>> shift) 31
 
 fun slotIndex bitmap bit = popCount (bitAnd bitmap (bit - 1))
 
--- --- reading ------------------------------------------------------------------
+-- --- reading -----------------------------------------------------------------
 
 -- The value for `k`, if there is one.
 @pub fun lookup (k : a) (m : HashMap a b) : Maybe b = lookupHashed (hash k) k m
@@ -125,10 +127,11 @@ fun lookupIn h shift k node =
   | Just v -> v
   | None -> default
 
--- --- writing ------------------------------------------------------------------
+-- --- writing -----------------------------------------------------------------
 
 -- Add `k`, or replace what it held.
-@pub fun insert (k : a) (v : b) (m : HashMap a b) : HashMap a b = insertHashed (hash k) k v m
+@pub fun insert (k : a) (v : b) (m : HashMap a b) : HashMap a b =
+  insertHashed (hash k) k v m
 
 fun insertHashed h k v m =
   match m with
@@ -168,12 +171,16 @@ fun split shift h1 k1 v1 h2 k2 v2 =
   else
     let i1 = bitAnd (h1 >>> shift) 31 in
     let i2 = bitAnd (h2 >>> shift) 31 in
-    if i1 == i2 then Bitmap (1 << i1) #[Child (split (shift + bitsPerLevel) h1 k1 v1 h2 k2 v2)]
-    else if i1 < i2 then Bitmap (bitOr (1 << i1) (1 << i2)) #[Entry h1 k1 v1, Entry h2 k2 v2]
+    if i1 == i2
+    then
+      Bitmap (1 << i1) #[Child (split (shift + bitsPerLevel) h1 k1 v1 h2 k2 v2)]
+    else if i1 < i2
+    then Bitmap (bitOr (1 << i1) (1 << i2)) #[Entry h1 k1 v1, Entry h2 k2 v2]
     else Bitmap (bitOr (1 << i1) (1 << i2)) #[Entry h2 k2 v2, Entry h1 k1 v1]
 
 -- Remove `k`, if it is there.
-@pub fun delete (k : a) (m : HashMap a b) : HashMap a b = deleteHashed (hash k) k m
+@pub fun delete (k : a) (m : HashMap a b) : HashMap a b =
+  deleteHashed (hash k) k m
 
 fun deleteHashed h k m =
   match m with
@@ -223,47 +230,59 @@ fun collapse node =
   | None -> m
 
 -- `insert`, combining with an existing value as `f new old`.
-@pub fun insertWith (f : a -> a -> a ! e) (k : b) (v : a) (m : HashMap b a) : HashMap b a ! e =
+@pub fun insertWith (f : a -> a -> a ! e) (k : b) (v : a) (m : HashMap b a)
+    : HashMap b a ! e =
   match lookup k m with
   | Just old -> insert k (f v old) m
   | None -> insert k v m
 
 -- Decide what `k` holds from what it held: `f` gets `Just` the value or `None`,
 -- and answers `Just` a value to store or `None` to remove the key.
-@pub fun alter (f : Maybe a -> Maybe a ! e) (k : b) (m : HashMap b a) : HashMap b a ! e =
+@pub fun alter (f : Maybe a -> Maybe a ! e) (k : b) (m : HashMap b a)
+    : HashMap b a ! e =
   match f (lookup k m) with
   | Just v -> insert k v m
   | None -> delete k m
 
--- --- whole maps ---------------------------------------------------------------
+-- --- whole maps --------------------------------------------------------------
 
 -- Fold over every entry as `f acc key value`. The order is the hashes' order,
 -- which is arbitrary but the same for the same contents.
-@pub fun foldl (f : a -> b -> c -> a ! e) (acc : a) (m : HashMap b c) : a ! e = match m with | HashMap n root -> foldNode f acc root
+@pub fun foldl (f : a -> b -> c -> a ! e) (acc : a) (m : HashMap b c) : a ! e =
+  match m with | HashMap n root -> foldNode f acc root
 
 fun foldNode f acc node =
   match node with
-  | Collision ch pairs -> arrayFold (\a p -> match p with | (k, v) -> f a k v) acc pairs
+  | Collision ch pairs ->
+      arrayFold (\a p -> match p with | (k, v) -> f a k v) acc pairs
   | Bitmap bitmap slots ->
       arrayFold
-        (\a s -> match s with | Entry h k v -> f a k v | Child sub -> foldNode f a sub)
+        (\a s -> match s with
+                 | Entry h k v -> f a k v
+                 | Child sub -> foldNode f a sub)
         acc
         slots
 
 -- Every `(key, value)` pair, in the fold's order.
-@pub fun toVec (m : HashMap a b) : [(a, b)] = foldl (\acc k v -> V.pushBack acc (k, v)) V.empty m
+@pub fun toVec (m : HashMap a b) : [(a, b)] =
+  foldl (\acc k v -> V.pushBack acc (k, v)) V.empty m
 
-@pub fun keys (m : HashMap a b) : [a] = foldl (\acc k v -> V.pushBack acc k) V.empty m
+@pub fun keys (m : HashMap a b) : [a] =
+  foldl (\acc k v -> V.pushBack acc k) V.empty m
 
-@pub fun values (m : HashMap a b) : [b] = foldl (\acc k v -> V.pushBack acc v) V.empty m
+@pub fun values (m : HashMap a b) : [b] =
+  foldl (\acc k v -> V.pushBack acc v) V.empty m
 
 -- Later pairs win when a key repeats.
-@pub fun fromVec (pairs : [(a, b)]) : HashMap a b = V.foldl (\m p -> match p with | (k, v) -> insert k v m) empty pairs
+@pub fun fromVec (pairs : [(a, b)]) : HashMap a b =
+  V.foldl (\m p -> match p with | (k, v) -> insert k v m) empty pairs
 
 -- The same, as a `List`.
-@pub fun toList (m : HashMap a b) : List (a, b) = List.reverse (foldl (\acc k v -> (k, v) :: acc) [;] m)
+@pub fun toList (m : HashMap a b) : List (a, b) =
+  List.reverse (foldl (\acc k v -> (k, v) :: acc) [;] m)
 
-@pub fun fromList (pairs : List (a, b)) : HashMap a b = List.foldl (\m p -> match p with | (k, v) -> insert k v m) empty pairs
+@pub fun fromList (pairs : List (a, b)) : HashMap a b =
+  List.foldl (\m p -> match p with | (k, v) -> insert k v m) empty pairs
 
 -- Transform every value, keeping the keys and the shape.
 @pub fun map (f : a -> b ! e) (m : HashMap c a) : HashMap c b ! e =
@@ -273,29 +292,41 @@ fun foldNode f acc node =
 fun mapNode f node =
   match node with
   | Collision ch pairs ->
-      Collision ch (arrayFold (\acc p -> match p with | (k, v) -> arrayPush acc (k, f v)) #[] pairs)
+      Collision
+        ch
+        (arrayFold
+          (\acc p -> match p with | (k, v) -> arrayPush acc (k, f v))
+          #[]
+          pairs)
   | Bitmap bitmap slots ->
       Bitmap
         bitmap
         (arrayFold
           (\acc s ->
-            arrayPush acc (match s with | Entry h k v -> Entry h k (f v) | Child sub -> Child (mapNode f sub)))
+            arrayPush
+              acc
+              (match s with | Entry h k v -> Entry h k (f v) | Child sub -> Child (mapNode f sub)))
           #[]
           slots)
 
 -- The entries `keep key value` accepts.
-@pub fun filter (keep : a -> b -> Bool ! e) (m : HashMap a b) : HashMap a b ! e = foldl (\acc k v -> if keep k v then acc else delete k acc) m m
+@pub fun filter (keep : a -> b -> Bool ! e) (m : HashMap a b)
+    : HashMap a b ! e =
+  foldl (\acc k v -> if keep k v then acc else delete k acc) m m
 
 -- Every entry of both; where a key is in both, `b`'s value wins.
-@pub fun union (a : HashMap a b) (b : HashMap a b) : HashMap a b = foldl (\acc k v -> insert k v acc) a b
+@pub fun union (a : HashMap a b) (b : HashMap a b) : HashMap a b =
+  foldl (\acc k v -> insert k v acc) a b
 
 -- Run `f key value` on every entry, for its effect.
-@pub fun forEach (f : a -> b -> () ! e) (m : HashMap a b) : () ! e = foldl (\u k v -> f k v) () m
+@pub fun forEach (f : a -> b -> () ! e) (m : HashMap a b) : () ! e =
+  foldl (\u k v -> f k v) () m
 
 -- Yield every `(key, value)` pair, for `Std.Stream`.
-@pub fun toStream (m : HashMap a b) : () ! { Yield (a, b) | e } = forEach (\k v -> yield (k, v)) m
+@pub fun toStream (m : HashMap a b) : () ! { Yield (a, b) | e } =
+  forEach (\k v -> yield (k, v)) m
 
--- --- tests --------------------------------------------------------------------
+-- --- tests -------------------------------------------------------------------
 
 use Std.Test (assertEq, assertTrue, assertFalse)
 use Std.Sort (sort)
@@ -321,7 +352,12 @@ def sample = fromVec [("one", 1), ("two", 2), ("three", 3)]
   let a = assertEq (lookup "two" m) None "deleted" in
   let b = assertEq (lookup "three" m) (Just 3) "the rest survive" in
   let c = assertEq (size m) 2 "size drops" in
-  let d = assertEq (size (delete "nine" sample)) 3 "deleting a missing key changes nothing" in
+  let d =
+    assertEq
+      (size (delete "nine" sample))
+      3
+      "deleting a missing key changes nothing"
+  in
   assertTrue (isEmpty (delete "one" (singleton "one" 1))) "down to empty"
 
 @test fun manyKeysSurviveGrowthAndShrinking () =
@@ -329,30 +365,65 @@ def sample = fromVec [("one", 1), ("two", 2), ("three", 3)]
   let n = 2000 in
   let full = V.foldl (\m i -> insert i (i * i) m) empty (V.range 0 n) in
   let a = assertEq (size full) n "every key counted once" in
-  let b = assertTrue (V.all (\i -> lookup i full == Just (i * i)) (V.range 0 n)) "every key found" in
+  let b =
+    assertTrue
+      (V.all (\i -> lookup i full == Just (i * i)) (V.range 0 n))
+      "every key found"
+  in
   let c = assertEq (lookup n full) None "and nothing else" in
   let half = V.foldl (\m i -> delete (i * 2) m) full (V.range 0 (n / 2)) in
   let d = assertEq (size half) (n / 2) "half deleted" in
-  let e = assertTrue (V.all (\i -> lookup i half == (if i % 2 == 0 then None else Just (i * i))) (V.range 0 n)) "the right half" in
-  assertEq (sort (keys half)) (V.map (\i -> i * 2 + 1) (V.range 0 (n / 2))) "keys"
+  let e =
+    assertTrue
+      (V.all
+        (\i -> lookup i half == (if i % 2 == 0 then None else Just (i * i)))
+        (V.range 0 n))
+      "the right half"
+  in
+  assertEq
+    (sort (keys half))
+    (V.map (\i -> i * 2 + 1) (V.range 0 (n / 2)))
+    "keys"
 
 @test fun theShapeDependsOnlyOnTheContents () =
   -- Built forwards, backwards, and with extra keys added and taken away again:
   -- the same entries, so the same map.
   let forwards = V.foldl (\m i -> insert i i m) empty (V.range 0 300) in
-  let backwards = V.foldl (\m i -> insert (299 - i) (299 - i) m) empty (V.range 0 300) in
-  let detour = V.foldl (\m i -> delete (i + 1000) m) (V.foldl (\m i -> insert (i + 1000) 0 m) forwards (V.range 0 300)) (V.range 0 300) in
+  let backwards =
+    V.foldl (\m i -> insert (299 - i) (299 - i) m) empty (V.range 0 300)
+  in
+  let detour =
+    V.foldl
+      (\m i -> delete (i + 1000) m)
+      (V.foldl (\m i -> insert (i + 1000) 0 m) forwards (V.range 0 300))
+      (V.range 0 300)
+  in
   let a = assertTrue (forwards == backwards) "insertion order" in
   assertTrue (forwards == detour) "deleting what was added"
 
 @test fun anyStructuredValueIsAKey () =
-  let a = assertEq (lookup (1, "a") (singleton (1, "a") 1)) (Just 1) "a tuple" in
+  let a =
+    assertEq (lookup (1, "a") (singleton (1, "a") 1)) (Just 1) "a tuple"
+  in
   -- A literal and a pushed vector are equal with different shapes inside.
-  let b = assertEq (lookup (V.pushBack [1] 2) (singleton [1, 2] 2)) (Just 2) "a vector, however it was built" in
-  let c = assertEq (lookup (Just "x") (singleton (Just "x") 3)) (Just 3) "a constructor" in
+  let b =
+    assertEq
+      (lookup (V.pushBack [1] 2) (singleton [1, 2] 2))
+      (Just 2)
+      "a vector, however it was built"
+  in
+  let c =
+    assertEq
+      (lookup (Just "x") (singleton (Just "x") 3))
+      (Just 3)
+      "a constructor"
+  in
   let d = assertEq (lookup (2 :: [;]) (singleton [2;] 5)) (Just 5) "a list" in
   let who = Person { name = "ada" } in
-  assertEq (lookup who (singleton (Person { name = "ada" }) 4)) (Just 4) "a record"
+  assertEq
+    (lookup who (singleton (Person { name = "ada" }) 4))
+    (Just 4)
+    "a record"
 
 -- A key is anything `PartialEq`: a record of its own derives it.
 @derive(PartialEq)
@@ -363,23 +434,53 @@ record Person = { name : String }
   -- have to be told apart by `==` in a collision node, and deleting them must
   -- collapse it again.
   let h = 12345 in
-  let m = V.foldl (\acc i -> insertHashed h i (i * 10) acc) empty (V.range 0 5) in
+  let m =
+    V.foldl (\acc i -> insertHashed h i (i * 10) acc) empty (V.range 0 5)
+  in
   let a = assertEq (size m) 5 "five colliding keys" in
-  let b = assertTrue (V.all (\i -> lookupHashed h i m == Just (i * 10)) (V.range 0 5)) "each found" in
-  let c = assertEq (lookupHashed h 9 m) None "a colliding key that is not there" in
+  let b =
+    assertTrue
+      (V.all (\i -> lookupHashed h i m == Just (i * 10)) (V.range 0 5))
+      "each found"
+  in
+  let c =
+    assertEq (lookupHashed h 9 m) None "a colliding key that is not there"
+  in
   let m2 = insertHashed h 3 99 m in
   let d = assertEq (lookupHashed h 3 m2) (Just 99) "replaced in place" in
   let d2 = assertEq (size m2) 5 "without growing" in
   let few = V.foldl (\acc i -> deleteHashed h i acc) m (V.range 1 5) in
   let e = assertEq (size few) 1 "four deleted" in
   let f = assertEq (lookupHashed h 0 few) (Just 0) "the last one left" in
-  assertTrue (few == insertHashed h 0 0 empty) "collapsed back to a single entry"
+  assertTrue
+    (few == insertHashed h 0 0 empty)
+    "collapsed back to a single entry"
 
 @test fun updatesInPlace () =
-  let a = assertEq (lookup "one" (adjust "one" (\v -> v + 1) sample)) (Just 2) "adjust" in
-  let b = assertEq (adjust "nine" (\v -> v + 1) sample) sample "adjust of a missing key" in
-  let c = assertEq (lookup "one" (insertWith (\new old -> new + old) "one" 10 sample)) (Just 11) "insertWith" in
-  let d = assertEq (lookup "nine" (alter (\o -> Just 9) "nine" sample)) (Just 9) "alter adds" in
+  let a =
+    assertEq
+      (lookup "one" (adjust "one" (\v -> v + 1) sample))
+      (Just 2)
+      "adjust"
+  in
+  let b =
+    assertEq
+      (adjust "nine" (\v -> v + 1) sample)
+      sample
+      "adjust of a missing key"
+  in
+  let c =
+    assertEq
+      (lookup "one" (insertWith (\new old -> new + old) "one" 10 sample))
+      (Just 11)
+      "insertWith"
+  in
+  let d =
+    assertEq
+      (lookup "nine" (alter (\o -> Just 9) "nine" sample))
+      (Just 9)
+      "alter adds"
+  in
   assertEq (lookup "one" (alter (\o -> None) "one" sample)) None "alter removes"
 
 @test fun wholeMapOperations () =

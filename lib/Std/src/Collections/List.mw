@@ -55,7 +55,8 @@ fun reverseOnto acc xs =
   | Cons y _ if x == y -> True
   | Cons _ rest -> elem x rest
 
-@pub fun range (lo : n) (hi : n) : List n = if lo < hi then lo :: range (lo + 1) hi else Nil
+@pub fun range (lo : n) (hi : n) : List n =
+  if lo < hi then lo :: range (lo + 1) hi else Nil
 
 @pub fun take (n : n) (xs : List a) : List a =
   match xs with
@@ -71,13 +72,16 @@ fun reverseOnto acc xs =
 
 -- Public surface --------------------------------------------------------------
 
-@pub fun isEmpty (xs : List a) : Bool = match xs with | Nil -> True | Cons x rest -> False
+@pub fun isEmpty (xs : List a) : Bool =
+  match xs with | Nil -> True | Cons x rest -> False
 
 @pub fun singleton (x : a) : List a = Cons x Nil
 
-@pub fun head (xs : List a) : Maybe a = match xs with | Nil -> None | Cons x rest -> Just x
+@pub fun head (xs : List a) : Maybe a =
+  match xs with | Nil -> None | Cons x rest -> Just x
 
-@pub fun tail (xs : List a) : Maybe (List a) = match xs with | Nil -> None | Cons x rest -> Just rest
+@pub fun tail (xs : List a) : Maybe (List a) =
+  match xs with | Nil -> None | Cons x rest -> Just rest
 
 @pub fun last (xs : List a) : Maybe a =
   match xs with
@@ -93,7 +97,8 @@ fun reverseOnto acc xs =
 
 @pub fun notElem (x : a) (xs : List a) : Bool = not (elem x xs)
 
-@pub fun replicate (n : n) (x : a) : List a = if n < 1 then Nil else x :: replicate (n - 1) x
+@pub fun replicate (n : n) (x : a) : List a =
+  if n < 1 then Nil else x :: replicate (n - 1) x
 
 @pub fun sum (xs : List n) : n = foldl (\a b -> a + b) 0 xs
 
@@ -137,9 +142,11 @@ fun reverseOnto acc xs =
   | Cons x rest if keep x -> dropWhile keep rest
   | _ -> xs
 
-@pub fun partition (keep : a -> Bool ! e) (xs : List a) : (List a, List a) ! e = (filter keep xs, filter (\x -> not (keep x)) xs)
+@pub fun partition (keep : a -> Bool ! e) (xs : List a) : (List a, List a) ! e =
+  (filter keep xs, filter (\x -> not (keep x)) xs)
 
-@pub fun concatMap (f : a -> List b ! e) (xs : List a) : List b ! e = xs |> map f |> concat
+@pub fun concatMap (f : a -> List b ! e) (xs : List a) : List b ! e =
+  xs |> map f |> concat
 
 @pub fun zip (xs : List a) (ys : List b) : List (a, b) =
   match (xs, ys) with
@@ -147,7 +154,8 @@ fun reverseOnto acc xs =
   | (Cons a arest, Nil) -> Nil
   | (Cons a arest, Cons b brest) -> (a, b) :: zip arest brest
 
-@pub fun zipWith (f : a -> b -> c ! e) (xs : List a) (ys : List b) : List c ! e =
+@pub fun zipWith (f : a -> b -> c ! e) (xs : List a) (ys : List b)
+    : List c ! e =
   match (xs, ys) with
   | (Nil, bs) -> Nil
   | (Cons a arest, Nil) -> Nil
@@ -155,7 +163,8 @@ fun reverseOnto acc xs =
 
 @pub fun unzip (ps : List (a, b)) : (List a, List b) = (map fst ps, map snd ps)
 
-@pub fun sumBy (f : a -> n ! e) (xs : List a) : n ! e = foldl (\acc x -> acc + f x) 0 xs
+@pub fun sumBy (f : a -> n ! e) (xs : List a) : n ! e =
+  foldl (\acc x -> acc + f x) 0 xs
 
 @pub fun intercalate (sep : List a) (xs : List (List a)) : List a =
   match xs with
@@ -189,13 +198,15 @@ fun reverseOnto acc xs =
   | [;] -> ()
   | x :: rest -> let ignored = yield x in toStream rest
 
--- --- rendering -----------------------------------------------------------------
+-- --- rendering ---------------------------------------------------------------
 
 -- `[1; 2; 3]`, the way a list is written, each element as `render` says.
 fun renderWith render xs =
   let items =
     foldl
-      (\acc x -> match acc with | None -> Just (render x) | Just s -> Just (concatStrings #[s, "; ", render x]))
+      (\acc x -> match acc with
+                 | None -> Just (render x)
+                 | Just s -> Just (concatStrings #[s, "; ", render x]))
       None
       xs
   in
@@ -261,7 +272,9 @@ use Std.Yield (Yield)
 @test fun associationLists () =
   let pairs = insertAssoc "b" 2 (insertAssoc "a" 1 [;]) in
   let a = assertEq (lookupAssoc "b" pairs) (Just 2) "lookup" in
-  let b = assertEq (lookupAssoc "a" (insertAssoc "a" 9 pairs)) (Just 9) "replace" in
+  let b =
+    assertEq (lookupAssoc "a" (insertAssoc "a" 9 pairs)) (Just 9) "replace"
+  in
   let c = assertEq (lookupAssoc "a" (removeAssoc "a" pairs)) None "remove" in
   assertEq (length (insertAssoc "a" 9 pairs)) 2 "replacing keeps one"
 

@@ -398,7 +398,12 @@ impl Indenter {
         }
 
         let body = self.body();
-        if self.opened || self.stack.is_empty() {
+        if self.stack.is_empty() && author > 0 {
+            // At the top level and not a declaration: what a declaration
+            // above carries on with -- the rest of a variant's fields, say --
+            // which stays in from the margin, where its author put it.
+            author
+        } else if self.opened || self.stack.is_empty() {
             // The first line of a block, or the top level: structural.
             body
         } else {

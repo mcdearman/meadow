@@ -54,7 +54,8 @@ use Std.Collections.Vector (Vector)
   ffiReadText : (Int, Int) -> String,
 }
 
-@pub fun command (program : a) : (a, [b], Maybe c, [d]) = (program, V.empty, None, V.empty)
+@pub fun command (program : a) : (a, [b], Maybe c, [d]) =
+  (program, V.empty, None, V.empty)
 
 @pub fun withArg (a : a) (cmd : (b, [a], c, d)) : (b, [a], c, d) =
   match cmd with | (p, xs, cwd, envs) -> (p, V.pushBack xs a, cwd, envs)
@@ -69,10 +70,14 @@ use Std.Collections.Vector (Vector)
   match cmd with | (p, xs, cwd, envs) -> (p, xs, cwd, V.pushBack envs pair)
 
 -- Run `program` with `args` to completion, capturing its output.
-@pub fun run (program : String) (args : [String]) : Result String (Int, String, String) ! { Process | e } = command program |> withArgs args |> spawn
+@pub fun run (program : String) (args : [String]) : Result String
+    (Int, String, String) ! { Process | e } =
+  command program |> withArgs args |> spawn
 
 -- Run `program` with `args` to completion, inheriting stdio; just the exit code.
-@pub fun runInherit (program : String) (args : [String]) : Result String Int ! { Process | e } = command program |> withArgs args |> status
+@pub fun runInherit (program : String) (args : [String])
+    : Result String Int ! { Process | e } =
+  command program |> withArgs args |> status
 
 @pub fun outputStatus (out : (a, b, c)) : a = match out with | (s, o, e) -> s
 

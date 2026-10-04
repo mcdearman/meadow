@@ -78,20 +78,34 @@ impl Display () {
 }
 
 impl Display (a, b) where Display a, Display b {
-  fun display p = match p with | (x, y) -> concatStrings #["(", display x, ", ", display y, ")"]
+  fun display p =
+    match p with
+    | (x, y) -> concatStrings #["(", display x, ", ", display y, ")"]
 }
 
 impl Display (a, b, c) where Display a, Display b, Display c {
   fun display p =
     match p with
-    | (x, y, z) -> concatStrings #["(", display x, ", ", display y, ", ", display z, ")"]
+    | (x, y, z) ->
+        concatStrings #["(", display x, ", ", display y, ", ", display z, ")"]
 }
 
 impl Display (a, b, c, d) where Display a, Display b, Display c, Display d {
   fun display p =
     match p with
     | (w, x, y, z) ->
-        concatStrings #["(", display w, ", ", display x, ", ", display y, ", ", display z, ")"]
+        concatStrings
+          #[
+            "(",
+            display w,
+            ", ",
+            display x,
+            ", ",
+            display y,
+            ", ",
+            display z,
+            ")"
+          ]
 }
 
 fun elements xs i acc =

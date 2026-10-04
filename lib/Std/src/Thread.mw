@@ -66,7 +66,7 @@ use Std.Collections.Vector (vecFromArray)
 -- Each value goes to exactly one receiver.
 @pub fun receive (ch : Channel a) : a ! { Thread | e } = channelReceive ch
 
--- --- built on those ------------------------------------------------------------
+-- --- built on those ----------------------------------------------------------
 
 -- Run both at once, and both answers.
 @pub fun both (f : () -> a ! e) (g : () -> b ! e) : (a, b) ! { Thread | r } =
@@ -75,10 +75,12 @@ use Std.Collections.Vector (vecFromArray)
   (await a, await b)
 
 -- Wait for every thread, in order.
-@pub fun awaitAll (ts : [Task a]) : [a] ! { Thread | e } = V.map (\t -> await t) ts
+@pub fun awaitAll (ts : [Task a]) : [a] ! { Thread | e } =
+  V.map (\t -> await t) ts
 
 -- `map`, with each element on its own thread.
-@pub fun parMap (f : a -> b ! e) (xs : [a]) : [b] ! { Thread | r } = xs |> V.map (\x -> spawn (\() -> f x)) |> awaitAll
+@pub fun parMap (f : a -> b ! e) (xs : [a]) : [b] ! { Thread | r } =
+  xs |> V.map (\x -> spawn (\() -> f x)) |> awaitAll
 
 -- --- tests -------------------------------------------------------------------
 
@@ -136,13 +138,16 @@ fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
 
 effect Tally { tally : Int -> () }
 
-fun countUp (n : Int) = if n == 0 then () else let _ = tally n in countUp (n - 1)
+fun countUp (n : Int) =
+  if n == 0 then () else let _ = tally n in countUp (n - 1)
 
 @test fun aThreadMayHandleItsOwnEffects () =
   -- `Tally` is not one the runtime answers, so the thread handles it itself,
   -- and its type is none the wiser.
   let t = spawn (\() ->
     let total = newRef (toInt 0) in
-    let _ = handle countUp 4 with { tally n k -> let _ = setRef total (getRef total + n) in k () } in
+    let _ =
+      handle countUp 4 with { tally n k -> let _ = setRef total (getRef total + n) in k () }
+    in
     getRef total) in
   assertTrue (await t == 10) "handled inside the thread"

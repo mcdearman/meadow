@@ -21,7 +21,8 @@
 # its own under `target-check/`, the collector's stress runs test copies of
 # the examples, and the standard library is compiled once before anything
 # reads it. Run one of these at a time in a checkout: two would be two builds
-# of MeadowBoot in one directory.
+# of MeadowBoot in one directory. It wants about 40 GB of disk for a
+# checkout, most of it under `target-check/`, which can be deleted after.
 #
 # `--root` is for checking a checkout that does not have this script, an
 # older commit say, with this one.
@@ -138,18 +139,21 @@ fi
 
 # --- what each came to --------------------------------------------------------
 
+# Counted here and not read back from the summary: a disk that fills up
+# loses the summary, and that must not read as nothing having failed.
 failed=0
-touch "$LOGS/unsorted.txt"
+[ -f "$LOGS/unsorted.txt" ] && failed=1
+touch "$LOGS/unsorted.txt" || failed=1
 for i in "${!PIDS[@]}"; do
   if wait "${PIDS[$i]}"; then
-    echo "ok   ${NAMES[$i]}" >>"$LOGS/unsorted.txt"
+    echo "ok   ${NAMES[$i]}" >>"$LOGS/unsorted.txt" || failed=1
   else
+    failed=1
     echo "FAIL ${NAMES[$i]}" >>"$LOGS/unsorted.txt"
   fi
 done
-sort "$LOGS/unsorted.txt" >"$LOGS/summary.txt"
+sort "$LOGS/unsorted.txt" >"$LOGS/summary.txt" || failed=1
 rm -f "$LOGS/unsorted.txt"
-grep -q '^FAIL' "$LOGS/summary.txt" && failed=1
 
 cat "$LOGS/summary.txt"
 for name in $(sed -n 's/^FAIL //p' "$LOGS/summary.txt"); do

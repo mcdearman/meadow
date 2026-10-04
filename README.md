@@ -592,6 +592,12 @@ cargo install --path buildtools/meadow   # install the CLI
 there. It covers all five workspaces — there is no one `cargo test --workspace`
 that does, which is the reason it exists.
 
+`scripts/check-parallel.sh` runs the same checks side by side, each with a log
+of its own, and the release workflow's smoke test with them: about ten minutes
+on a machine with cores to spare, where `check.sh` is most of an hour. It is
+what to run on a commit before pushing it, with `--version v0.2.0` for a
+release's tag.
+
 ## Releasing
 
 Meadow has two channels, as Rust does.

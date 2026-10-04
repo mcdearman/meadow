@@ -8,6 +8,9 @@
 #   scripts/check.sh --strict        ...plus rustfmt and clippy (not clean yet)
 #   scripts/check.sh --version v0.2.0    ...plus: the tag matches the manifests
 #
+# `scripts/check-parallel.sh` runs the same checks side by side, and the
+# release workflow's smoke test with them: what to run before a push.
+#
 # Runs from anywhere; paths are resolved against the repository root.
 
 set -euo pipefail
@@ -39,31 +42,7 @@ step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 
 if [ -n "$VERSION" ]; then
   step "version"
-  want="${VERSION#v}"
-  # Every manifest that carries the toolchain's version: the workspaces, Silo's
-  # runtime, the standard library -- whose version is the toolchain's -- and
-  # the editor extension.
-  for manifest in compiler/Cargo.toml eval/Cargo.toml glade/Cargo.toml \
-    silo/Cargo.toml buildtools/Cargo.toml installer/Cargo.toml \
-    lib/Std/Meadow.toml; do
-    got=$(grep -m1 '^version = ' "$manifest" | sed 's/.*"\(.*\)".*/\1/')
-    if [ "$got" != "$want" ]; then
-      echo "  $manifest says $got, tag says $want" >&2
-      exit 1
-    fi
-    echo "  $manifest $got"
-  done
-  got=$(grep -m1 '"version"' editors/vscode/package.json | sed 's/.*: *"\(.*\)".*/\1/')
-  if [ "$got" != "$want" ]; then
-    echo "  editors/vscode/package.json says $got, tag says $want" >&2
-    exit 1
-  fi
-  echo "  editors/vscode/package.json $got"
-  if ! grep -q "^## $want " CHANGELOG.md; then
-    echo "  CHANGELOG.md has no section for $want" >&2
-    exit 1
-  fi
-  echo "  CHANGELOG.md has $want"
+  bash scripts/version-check.sh "$VERSION"
 fi
 
 # --- tests -------------------------------------------------------------------

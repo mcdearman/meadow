@@ -72,3 +72,6 @@ published once, and `master` is the nightly channel.
   A declaration a rule marked `@pub` was private.
 - A pattern synonym reached through a qualifier, `E.Lit n` after
   `use … as E`, is resolved through it.
+- Two builds that fetch the same git dependency at once take turns in its
+  cache. One could find the other's unfinished clone and report that the
+  repository "has no releases".

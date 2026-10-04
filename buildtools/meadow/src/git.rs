@@ -285,8 +285,12 @@ pub fn releases(
                 "cannot look for the releases of `{url}` while offline"
             ));
         }
-    } else {
-        fetch(&db, url, &GitRef::Default)?;
+    }
+    // Held until the tags are read, so that they are the tags of a fetch that
+    // finished.
+    let _held = DbLock::hold(&db);
+    if net != Net::Offline {
+        fetch_held(&db, url, &GitRef::Default)?;
     }
     let out = git(Some(&db), &["tag", "--list"])?;
     let mut found: Vec<(crate::semver::Version, String)> = out
@@ -301,8 +305,69 @@ pub fn releases(
 
 // --- the git commands ---------------------------------------------------------
 
+/// One build at a time in a repository's cache.
+///
+/// Two builds that want the same repository -- two `meadow`s, or two tests of
+/// one run -- would otherwise both find it missing and both clone it, the
+/// second clearing away what the first had half made; or one would list the
+/// tags of a clone the other had begun and not finished, find none, and say
+/// the repository has no releases. A file beside the cache is the lock: made
+/// by whoever holds it, removed when they are done.
+struct DbLock(std::path::PathBuf);
+
+impl DbLock {
+    fn hold(db: &Path) -> DbLock {
+        let mut name = db.as_os_str().to_os_string();
+        name.push(".lock");
+        let path = std::path::PathBuf::from(name);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let begun = std::time::Instant::now();
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Left by a build that was killed: nothing fetches for
+                    // this long. And past the wait, go on without it rather
+                    // than never build.
+                    let stale = std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > std::time::Duration::from_secs(600));
+                    if stale || begun.elapsed() > std::time::Duration::from_secs(900) {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                // Somewhere a file cannot be made: the fetch will say why.
+                Err(_) => break,
+            }
+        }
+        DbLock(path)
+    }
+}
+
+impl Drop for DbLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Clone `url` into `db` if it is not there, then fetch into it.
 fn fetch(db: &Path, url: &str, reference: &GitRef) -> Result<(), String> {
+    let _held = DbLock::hold(db);
+    fetch_held(db, url, reference)
+}
+
+/// [`fetch`], by whoever holds the cache's [`DbLock`].
+fn fetch_held(db: &Path, url: &str, reference: &GitRef) -> Result<(), String> {
     // Before git is told to fetch it: a url that is really an option, or a
     // remote-helper command, would otherwise run at build time.
     safe_url(url)?;

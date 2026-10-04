@@ -1435,6 +1435,7 @@ fn inferred_recording(
 
 #[test]
 fn every_source_infers_as_meadow_infer_infers_it() {
+    let _one_at_a_time = expansions_turn();
     let files = sources(&["lib", "examples", "benches", "bootstrap", "glade", "silo"]);
     // This compiler first, keeping what its macros expanded to, which
     // MeadowBoot is then given -- the standard library's too.
@@ -1648,6 +1649,19 @@ fn infer_dump() {
     }
 }
 
+/// The two tests that hand MeadowBoot this compiler's expansions take turns.
+///
+/// Each turns on the compiler's record of what its macros expanded to, which
+/// is one for the whole process, and each empties and fills the one
+/// directory MeadowBoot reads them from. Run together, as `cargo test` runs
+/// tests unless it is told otherwise, each read what the other had half
+/// written: eighteen files renamed differently and twenty-nine inferred
+/// differently, in a tree where none do.
+fn expansions_turn() -> std::sync::MutexGuard<'static, ()> {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    TURN.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// Where the rename test leaves what this compiler's macros expanded to, for
 /// MeadowBoot: a file a package, `Pkg.json`.
 fn expansions_dir() -> PathBuf {
@@ -1705,6 +1719,7 @@ fn rename_dump() {
 
 #[test]
 fn every_source_renames_as_meadow_rename_renames_it() {
+    let _one_at_a_time = expansions_turn();
     let files = sources(&["lib", "examples", "benches", "bootstrap", "glade", "silo"]);
     // This compiler first, keeping what its macros expanded to, which
     // MeadowBoot is then given.

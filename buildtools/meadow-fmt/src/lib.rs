@@ -1,5 +1,10 @@
 //! **The source formatter** — `meadow fmt`, and the REPL's auto-indent.
 //!
+//! Two passes. The first is all `meadow fmt` does unless it is given a width:
+//! an *indenter*, described here. The second, [`format_within`], cuts lines
+//! that are longer than the width and is described in `wrap.rs`; it only ever
+//! cuts a line between two tokens, and hands what it made back to the first.
+//!
 //! This is an *indenter*, not a pretty-printer: it never moves a token to
 //! another line and never rewrites an expression. It fixes leading whitespace,
 //! trailing whitespace, tabs and blank-line runs, and leaves everything else
@@ -41,8 +46,29 @@
 //!
 //! which no rule this small could reproduce and which is much worse flattened.
 
+mod wrap;
+
 /// One level of indentation.
 pub const UNIT: usize = 2;
+
+/// [`format`], with every line longer than `width` characters cut into lines
+/// that fit, wherever there is a place to cut it: see [`wrap`].
+pub fn format_within(src: &str, width: usize) -> String {
+    // Indented first, so that what is measured is what will be written; cut;
+    // and indented again, which places the lines the cuts made.
+    //
+    // Again until nothing moves: a cut can leave a line the indenter then
+    // puts further in than it was measured at.
+    let mut text = format(src);
+    for _ in 0..6 {
+        let next = format(&wrap::wrap(&text, width));
+        if next == text {
+            break;
+        }
+        text = next;
+    }
+    text
+}
 
 /// Format a whole source file.
 ///
@@ -163,6 +189,10 @@ struct Indenter {
     /// Whether the line before this one opened a frame — which makes the next
     /// line the first of a block, and so structurally anchored.
     opened: bool,
+    /// Whether a declaration's head is still being written: it began on a
+    /// line above and has not reached its `=`. The lines that carry it on
+    /// hang two units in, clear of the body that will hang one.
+    head: bool,
 }
 
 impl Indenter {
@@ -171,6 +201,7 @@ impl Indenter {
             stack: Vec::new(),
             nest: Vec::new(),
             opened: true,
+            head: false,
         }
     }
 
@@ -239,8 +270,24 @@ impl Indenter {
             return Line::Comment(trimmed.to_string());
         }
 
-        let indent = self.indent_for(&toks, was);
-        self.update(&toks, indent);
+        // As `indent_for` reads one: a macro call at the margin is a
+        // declaration too.
+        let declares = starts_declaration(&toks) || (was == 0 && starts_macro_call(&toks));
+        // A clause (`| f x = …`) or a variant list is not the head going
+        // on: it has a place of its own.
+        let carries_on = self.head
+            && !declares
+            && self.stack.is_empty()
+            && !matches!(toks.first_text(), "|" | "=");
+        let indent = if carries_on {
+            2 * UNIT
+        } else {
+            self.indent_for(&toks, was)
+        };
+        // The body belongs to the declaration, not to the line of its head
+        // that happens to end it.
+        self.update(&toks, if carries_on { 0 } else { indent });
+        self.head = (declares || carries_on) && !toks.has("=") && self.stack.is_empty();
         Line::Code {
             text: format!("{}{}", " ".repeat(indent), trimmed),
             indent,

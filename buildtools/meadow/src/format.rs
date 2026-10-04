@@ -14,6 +14,39 @@ pub struct Options {
     pub check: bool,
     /// Print the formatted source to stdout instead of writing it back.
     pub stdout: bool,
+    /// Cut lines longer than this many characters, where there is a place to
+    /// cut them: see `meadow_fmt::format_within`. `None` leaves every token
+    /// on the line it is on.
+    pub width: Option<usize>,
+}
+
+/// `src` formatted as `opts` ask, or why it is left alone.
+///
+/// Cutting a line moves tokens, and must move nothing else: what the
+/// compiler's lexer reads out of the result is checked against what it read
+/// out of `src`, token for token, and a file where they differ is not
+/// written. That holds the one thing layout decides -- a macro call in
+/// column 0 -- as well as everything a mistake here could do.
+fn formatted(src: &str, opts: &Options) -> Result<String, String> {
+    let Some(width) = opts.width else {
+        return Ok(fmt::format(src));
+    };
+    let out = fmt::format_within(src, width);
+    let tokens = |text: &str| {
+        use meadow_compiler::source::{Source, SourceKind};
+        let lexed =
+            meadow_compiler::lexer::tokenize(Source::new(SourceKind::Interactive, text.into()));
+        lexed
+            .tokens
+            .iter()
+            .map(|t| t.value().clone())
+            .collect::<Vec<_>>()
+    };
+    if tokens(src) == tokens(&out) {
+        Ok(out)
+    } else {
+        Err("cutting its lines would change what it says; left as it is".to_string())
+    }
 }
 
 /// Returns the number of files that were (or would be) changed.
@@ -38,7 +71,13 @@ pub fn run(opts: &Options) -> Result<usize, String> {
     let mut changed = 0;
     for file in &files {
         let src = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
-        let out = fmt::format(&src);
+        let out = match formatted(&src, opts) {
+            Ok(out) => out,
+            Err(why) => {
+                eprintln!("{}: {why}", file.display());
+                continue;
+            }
+        };
 
         if opts.stdout {
             print!("{out}");

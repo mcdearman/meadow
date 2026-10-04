@@ -2170,6 +2170,7 @@ fn native_fs(op: &str, arg: Value) -> Result<Value, RuntimeError> {
 /// Maybe String, List (String, String))`; an `Output` is `(status, stdout,
 /// stderr) : (Int, String, String)`.
 fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
+    use meadow_core::ffi;
     use std::process::Command as Proc;
 
     let sv = |s: String| Value::Str(InternedString::from(s));
@@ -2177,6 +2178,22 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
     let errv = |m: String| Value::ctor(InternedString::from("Result.Err"), vec![sv(m)]);
     let just = |v: Value| Value::ctor(InternedString::from("Maybe.Just"), vec![v]);
     let none = || Value::ctor(InternedString::from("Maybe.None"), vec![]);
+    let answered = |r: Result<Value, String>| match r {
+        Ok(v) => ok(v),
+        Err(e) => errv(e),
+    };
+    let tuple = |v: &Value, n: usize| -> Result<Vec<Value>, RuntimeError> {
+        match v {
+            Value::Tuple(t) if t.len() == n => Ok(t.to_vec()),
+            other => err(format!("Process.{op}: expected {n} things, got {other}")),
+        }
+    };
+    let as_float = |v: &Value| -> Result<f64, RuntimeError> {
+        match v {
+            Value::Float(x) => Ok(*x),
+            other => err(format!("Process.{op}: expected a Float, got {other}")),
+        }
+    };
 
     let as_str = |v: &Value| -> Result<InternedString, RuntimeError> {
         match v {
@@ -2273,6 +2290,80 @@ fn native_process(op: &str, arg: Value) -> Result<Value, RuntimeError> {
                 std::env::remove_var(&*as_str(&arg)?);
             }
             Value::Unit
+        }
+        // Calling C, for `Std.Ffi`: see `meadow_core::ffi`.
+        "ffiOpen" => answered(ffi::open(&as_str(&arg)?).map(Value::Int)),
+        "ffiSymbol" => {
+            let t = tuple(&arg, 2)?;
+            answered(ffi::symbol(as_int(&t[0])?, &as_str(&t[1])?).map(Value::Int))
+        }
+        "ffiCall" => {
+            let t = tuple(&arg, 3)?;
+            let Some(ret) = ffi::Ret::from_code(as_int(&t[1])?) else {
+                return err("Process.ffiCall: no such kind of answer".to_string());
+            };
+            let mut args = Vec::new();
+            for a in as_vector(op, &t[2])? {
+                let a = tuple(&a, 4)?;
+                args.push(match as_int(&a[0])? {
+                    0 => ffi::Arg::Int(as_int(&a[1])?),
+                    1 => ffi::Arg::Float(as_float(&a[2])?),
+                    2 => ffi::Arg::Str(as_str(&a[3])?.to_string()),
+                    _ => return err("Process.ffiCall: no such kind of argument".to_string()),
+                });
+            }
+            answered(
+                ffi::call(as_int(&t[0])?, ret, &args)
+                    .map(|(n, x, s)| Value::Tuple(vec![Value::Int(n), Value::Float(x), sv(s)])),
+            )
+        }
+        "ffiAlloc" => Value::Int(ffi::alloc(as_int(&arg)?)),
+        "ffiFree" => {
+            ffi::free(as_int(&arg)?);
+            Value::Unit
+        }
+        "ffiWriteInts" => {
+            let t = tuple(&arg, 3)?;
+            let mut values = Vec::new();
+            for v in as_vector(op, &t[2])? {
+                values.push(as_int(&v)?);
+            }
+            // Safety: the program's word that the memory is its own.
+            answered(
+                unsafe { ffi::write_ints(as_int(&t[0])?, as_int(&t[1])?, &values) }
+                    .map(|()| Value::Unit),
+            )
+        }
+        "ffiReadInts" => {
+            let t = tuple(&arg, 4)?;
+            let signed = matches!(t[2], Value::Bool(true));
+            // Safety: as above.
+            let read =
+                unsafe { ffi::read_ints(as_int(&t[0])?, as_int(&t[1])?, signed, as_int(&t[3])?) };
+            answered(read.map(|ns| vector_value(ns.into_iter().map(Value::Int).collect())))
+        }
+        "ffiWriteFloats" => {
+            let t = tuple(&arg, 3)?;
+            let mut values = Vec::new();
+            for v in as_vector(op, &t[2])? {
+                values.push(as_float(&v)?);
+            }
+            // Safety: as above.
+            answered(
+                unsafe { ffi::write_floats(as_int(&t[0])?, as_int(&t[1])?, &values) }
+                    .map(|()| Value::Unit),
+            )
+        }
+        "ffiReadFloats" => {
+            let t = tuple(&arg, 3)?;
+            // Safety: as above.
+            let read = unsafe { ffi::read_floats(as_int(&t[0])?, as_int(&t[1])?, as_int(&t[2])?) };
+            answered(read.map(|xs| vector_value(xs.into_iter().map(Value::Float).collect())))
+        }
+        "ffiReadText" => {
+            let t = tuple(&arg, 2)?;
+            // Safety: as above.
+            sv(unsafe { ffi::read_text(as_int(&t[0])?, as_int(&t[1])?) })
         }
         other => return err(format!("unhandled effect Process.{other}")),
     })

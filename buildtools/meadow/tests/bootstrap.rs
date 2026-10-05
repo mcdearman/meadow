@@ -86,7 +86,10 @@ fn meadowboot(args: &[String]) -> String {
     c.args(args);
     // Where the standard library's sources are, for the passes that build a
     // file's unit and the units it depends on.
-    c.env("MEADOWBOOT_STD", repo().join("lib").join("Std"));
+    // `run` is of programs written with no library, as the glade cases are.
+    if args.first().map(String::as_str) != Some("run") {
+        c.env("MEADOWBOOT_STD", repo().join("lib").join("Std"));
+    }
     // And what the Rust compiler's macros expanded to, where the rename test
     // wrote it.
     c.env("MEADOWBOOT_EXPANSIONS", expansions_dir());
@@ -1624,7 +1627,26 @@ fn write_prims() {
          @pub fun primScheme (name : String) : Maybe Scheme =\n  \
          match V.find (\\x -> match x with | (n, _, _) -> n == name) prims with\n  \
          | Just (_, s, _) -> s\n  \
-         | None -> None\n\n\
+         | None -> None\n\n",
+    );
+    // What each is in core -- `meadow_rt::Prim`, by the name `core_text`
+    // writes it with -- and how many arguments it takes at once: what
+    // lowering to core makes of a mention of one.
+    out.push_str(
+        "-- Each primitive that is an operation of core: its name there, and how many\n\
+         -- arguments it takes at once.\n\
+         @pub def primOps : [(String, String, Int)] =\n  [ ",
+    );
+    let ops: Vec<String> = meadow_compiler::hir::PRIMS
+        .iter()
+        .filter_map(|name| {
+            let p = meadow_compiler::core::Prim::from_name(name)?;
+            Some(format!("({name:?}, {:?}, {})", format!("{p:?}"), p.arity()))
+        })
+        .collect();
+    out.push_str(&ops.join(",\n    "));
+    out.push_str(
+        " ]\n\n\
          -- --- tests ---------------------------------------------------------------------------\n\n\
          use Std.Test (assertEq)\n\n\
          @test fun everyPrimitiveIsWrittenAsTheRustCompilerWritesIt () =\n  \
@@ -2125,6 +2147,78 @@ fn term(t: &Term, out: &mut String) {
         Term::Jump(j, args, _) => list(&format!("jump {}", j.0), args, out),
         Term::Error => out.push_str("error"),
     }
+}
+
+/// Each glade case that compiles and has a `result`, written as a package of
+/// its own under `dir` -- no library, as the case is compiled -- with what
+/// the Rust CEK machine answers for it: the file to run, and the answer.
+fn run_cases(dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    for (i, src) in glade_programs().iter().enumerate() {
+        let Ok(p) = compiled(src) else { continue };
+        if p.entry.is_none() {
+            continue;
+        }
+        let pkg = dir.join(format!("case{i:03}"));
+        std::fs::create_dir_all(pkg.join("src")).expect("a package directory");
+        std::fs::write(
+            pkg.join("Meadow.toml"),
+            "[package]\nname = \"boot\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("a manifest");
+        let file = pkg.join("src").join("Main.mw");
+        std::fs::write(&file, src).expect("a source file");
+        out.push((file, cek(&p)));
+    }
+    out
+}
+
+/// The cases of [`run_cases`] written where `MEADOWBOOT_CASES` says, each
+/// with an `expected.txt` beside its manifest: to run a build of MeadowBoot
+/// on by hand, without this test building one.
+#[test]
+#[ignore]
+fn write_run_cases() {
+    let dir = PathBuf::from(std::env::var("MEADOWBOOT_CASES").expect("MEADOWBOOT_CASES"));
+    for (file, want) in run_cases(&dir) {
+        let pkg = file.parent().and_then(Path::parent).expect("a package");
+        std::fs::write(pkg.join("expected.txt"), format!("{want}\n")).expect("an answer");
+    }
+}
+
+/// How many glade cases MeadowBoot has to compile and run to the Rust
+/// compiler's answer: what its lowering to core does today, which is not yet
+/// all of them. It goes up as the lowering learns more -- trait
+/// dictionaries, the copies a number's type chooses between -- and a case
+/// that stops agreeing is a failure whatever the count.
+const RUN_CASES_AGREEING: usize = 95;
+
+#[test]
+fn glade_cases_compiled_by_meadowboot_evaluate_as_the_rust_compiler_has_them() {
+    let dir = std::env::temp_dir().join(format!("meadowboot-run-{}", std::process::id()));
+    let cases = run_cases(&dir);
+    let wants: std::collections::HashMap<PathBuf, String> = cases.iter().cloned().collect();
+    let files: Vec<PathBuf> = cases.iter().map(|(f, _)| f.clone()).collect();
+    let theirs = per_file("run", &files);
+    let bad = differences(&theirs, |p| format!("{}\n", wants[p]));
+    let _ = std::fs::remove_dir_all(&dir);
+    let agreeing = files.len() - bad.len();
+    eprintln!("{agreeing} of {} cases agree", files.len());
+    if std::env::var_os("MEADOWBOOT_VERBOSE").is_some() {
+        for b in &bad {
+            eprintln!("{b}\n");
+        }
+    }
+    assert!(
+        agreeing >= RUN_CASES_AGREEING,
+        "{agreeing} of {} cases agree, and {RUN_CASES_AGREEING} did:\n\n{}",
+        files.len(),
+        bad.iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
 }
 
 #[test]

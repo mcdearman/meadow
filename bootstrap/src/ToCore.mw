@@ -1,0 +1,500 @@
+-- ToCore: a unit's typed modules made core -- `meadow_core`'s lowering, with
+-- the types already gone, which is the core the CEK machine runs.
+--
+-- Two passes. `bare` takes off what says nothing at run time: a pattern's
+-- annotation, and a function's written result type. What is left reaches no
+-- written type, so the second need say nothing of them. `emit` is the
+-- lowering: each expression the term it is, each pattern the pattern, and a
+-- binding its pattern and its value for whoever binds it to put together --
+-- a `let`, or a module's definitions.
+--
+-- What it does not do yet, and `meadow_core` does: the dictionaries a trait's
+-- methods are found in, the copies of a definition a number's type chooses
+-- between, a view in a pattern, an update of a record type's value, and
+-- which of several constructors of one name was meant.
+
+use Lingua (lang!, pass!)
+use Lingua.Lang (Meta, spanMeta)
+use MeadowBoot.Rename
+use MeadowBoot.Rename (Hir!)
+use MeadowBoot.Infer
+use MeadowBoot.Infer (Typed!)
+use MeadowBoot.Core
+use MeadowBoot.Core (Core!)
+use MeadowBoot.Types
+use MeadowBoot.Types.Type.*
+use MeadowBoot.Scopes (Renamed, Item, Declared)
+use MeadowBoot.Prims (primOps)
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- --- the languages -----------------------------------------------------------
+
+-- A type of inference's, as `Typed`'s nodes name it.
+type Ty = Type
+
+-- `Typed` with nothing in an expression that is a written type.
+@pub(pkg) lang! {
+  pub Bare extends Typed
+  Pat - Ann
+  Bind - Fun
+  Bind + Fun { id : Int, params : [Pat], body : Expr }
+}
+
+pass! {
+  bare : Typed -> Bare
+    | Pat.Ann { pat } -> pat
+    | Bind.Fun { id, params, body } -> Bind.Fun { id = id, params = params, body = body }
+}
+
+-- --- what lowering knows -----------------------------------------------------
+
+-- What `emit` carries: each primitive's operation in core and how many
+-- arguments it takes, by its binder; each effect operation's effect and
+-- name; each constructor's name in core and how many arguments it takes;
+-- the names of its fields, for one that has them; and the next binder
+-- nothing has, for a variable lowering makes.
+record Low s = {
+  prims : HashMap Int (String, Int),
+  ops : HashMap Int (String, String),
+  ctors : HashMap Int (String, Int),
+  fields : HashMap Int [String],
+  next : StRef s Int
+}
+
+fun fresh (cx : Low s) : Int ! { St s | e } =
+  let n = stGetRef cx.next in
+  let u = stSetRef cx.next (n + 1) in
+  n
+
+-- --- the lowering ------------------------------------------------------------
+
+pass! {
+  emit : Bare -> Core with cx from Bind, Expr
+    | Name { text } -> text
+    | Ref { id } -> id
+    | MacCall.MacCall { path } -> ()
+    | Lit.Int { text } -> ("int", text)
+    | Lit.Float { text } -> ("float", text)
+    | Lit.String { text } -> ("string", text)
+    | Lit.Char { text } -> ("char", text)
+    | Expr.Unit {} -> newCoreTermConst out here (newCoreLitLUnit out here)
+    | Expr.Hole {} -> newCoreTermIll out here
+    | Expr.MacCall { call } -> newCoreTermIll out here
+    | Expr.Lit { lit, typ } -> newCoreTermConst out here (literal out here lit typ)
+    | Expr.Var { ref } -> mention out cx here ref
+    | Lam { params, body } -> lambdas out cx here params body
+    | App { raw func, args } -> applied src out cx here func args
+    | Let { binds, body } -> V.foldr (\b acc -> bound out cx here b acc) body binds
+    | If { cond, yes, no } -> newCoreTermIf out here cond yes no
+    | Match { scrutinee, arms } -> newCoreTermCase out here scrutinee arms
+    | Arm { pat, guard, body } -> newCoreArm out here pat guard body
+    | Expr.Tuple { items } -> newCoreTermTuple out here items
+    | Expr.Array { items } -> newCoreTermArray out here items
+    | Expr.List { items } ->
+        V.foldr
+          (\x acc -> newCoreTermCtor out here "List.Cons" [x, acc])
+          (newCoreTermCtor out here "List.Nil" [])
+          items
+    | Expr.Cons { ref, raw args } -> constructed out cx here ref (consArgs src out cx ref args)
+    | Expr.Record { fields, base } ->
+        (match base with
+         | None ->
+             newCoreTermRecord out here (V.map (\f -> newCoreField out here (fst f) (snd f)) fields)
+         | Just b -> V.foldl (\t f -> newCoreTermExtend out here t (fst f) (snd f)) b fields)
+    | ExprField { name, value } -> (name, value)
+    | Update { base, fields } ->
+        V.foldl (\t f -> newCoreTermExtend out here t (fst f) (snd f)) base fields
+    | Proj { target, label } -> newCoreTermSel out here target label
+    | Handle { body, arms, ret } ->
+        newCoreTermHandle out here body arms (M.map fst ret) (M.map snd ret)
+    | HArm { op, opRef, param, resume, body } ->
+        (let binder = binderOf out cx here param body in
+         let named = M.unwrapOr ("", op) (H.lookup opRef cx.ops) in
+         newCoreClause out here (fst named) (snd named) (fst binder) resume (snd binder))
+    | Ret { pat, body } -> binderOf out cx here pat body
+    | Pat.Wild {} -> newCorePatPWild out here
+    | Pat.Unit {} -> newCorePatPLit out here (newCoreLitLUnit out here)
+    | Pat.MacCall { call } -> newCorePatPWild out here
+    | Pat.Lit { lit, typ } -> newCorePatPLit out here (literal out here lit typ)
+    | Pat.Var { id } -> newCorePatPVar out here id
+    | Pat.As { id, pat } -> newCorePatPAs out here id pat
+    | Pat.Cons { ref, raw args } ->
+        constructedPat out cx here ref (consPats src out cx here ref args)
+    | Pat.Tuple { items } -> newCorePatPTuple out here items
+    | Pat.Array { items } -> newCorePatPArray out here items
+    | Pat.Vector { items } -> newCorePatPWild out here
+    | Pat.List { items } ->
+        V.foldr
+          (\x acc -> newCorePatPCtor out here "List.Cons" [x, acc])
+          (newCorePatPCtor out here "List.Nil" [])
+          items
+    | Pat.Record { fields } -> newCorePatPRecord out here fields
+    | PatField { name, pat } -> newCorePField out here name pat
+    | Pat.View { fn, pat } -> newCorePatPWild out here
+    | Bind.Pat { pat, value } -> (pat, value, False)
+    | Bind.Fun { id, params, body } ->
+        (newCorePatPVar out here id, lambdas out cx here params body, True)
+}
+
+-- A literal as its type has it: a whole number a word of its width, a big
+-- one, or an `Int`; a fraction a `Float32` or a `Float`.
+fun literal out (m : Meta) (lit : (String, String)) (t : Type) =
+  let text = snd lit in
+  if fst lit == "int" then
+    (let n = M.unwrapOr 0 (S.toInt text) in
+     match t with
+     | Con "BigInt" [] -> newCoreLitLBig out m n
+     | Con name [] ->
+         (match widthOf name with
+          | Just w -> newCoreLitLWord out m w n
+          | None -> newCoreLitLInt out m n)
+     | _ -> newCoreLitLInt out m n)
+  else if fst lit == "float" then
+    (let x = fraction text in
+     match t with
+     | Con "Float32" [] -> newCoreLitLF32 out m x
+     | _ -> newCoreLitLF64 out m x)
+  else if fst lit == "char" then newCoreLitLChar out m (M.unwrapOr 0 (S.toInt text))
+  else newCoreLitLStr out m text
+
+-- The `Float` a literal's text writes: its digits as a whole number, over
+-- the power of ten its point says -- one division, which rounds once, so
+-- what comes of it is the nearest `Float` while the digits are few enough
+-- to be one exactly.
+fun fraction (text : String) : Float =
+  let parts = S.split "." text in
+  if V.len parts == 2 then
+    (let part = V.getOr "" parts 1 in
+     toFloat (M.unwrapOr 0 (S.toInt (V.getOr "" parts 0 ++ part))) /. tenTo (stringByteLength part))
+  else toFloat (M.unwrapOr 0 (S.toInt text))
+
+fun tenTo (k : Int) : Float = if k <= 0 then 1.0 else 10.0 *. tenTo (k - 1)
+
+-- The width a sized integer type's name says, as core writes it.
+fun widthOf (name : String) : Maybe String =
+  match name with
+  | "Int8" -> Just "I8"
+  | "Int16" -> Just "I16"
+  | "Int32" -> Just "I32"
+  | "UInt8" -> Just "U8"
+  | "UInt16" -> Just "U16"
+  | "UInt32" -> Just "U32"
+  | "UInt64" -> Just "U64"
+  | _ -> None
+
+-- A name mentioned: a primitive a function of as many arguments as it takes,
+-- an effect's operation a function that performs it, and anything else
+-- itself.
+fun mention out (cx : Low s) (m : Meta) (id : Int) =
+  match H.lookup id cx.prims with
+  | Just (op, arity) ->
+      if op == "RunSt" then
+        (let f = fresh cx in
+         newCoreTermLam out m f (newCoreTermApp out m (newCoreTermVar out m f) (unit out m)))
+      else
+        (let vars = V.map (\k -> fresh cx) (V.range 0 arity) in
+         V.foldr
+           (\v acc -> newCoreTermLam out m v acc)
+           (newCoreTermPrim out m op (V.map (\v -> newCoreTermVar out m v) vars))
+           vars)
+  | None ->
+      (match H.lookup id cx.ops with
+       | Just (eff, op) ->
+           (let x = fresh cx in
+            newCoreTermLam out m x (newCoreTermPerform out m eff op (newCoreTermVar out m x)))
+       | None -> newCoreTermVar out m id)
+
+fun unit out (m : Meta) = newCoreTermConst out m (newCoreLitLUnit out m)
+
+-- `func` applied to `args`: a primitive given all it takes at once is the
+-- operation, `runSt f` is `f ()`, and the rest are applications one at a
+-- time.
+fun applied src out (cx : Low s) (m : Meta) func args =
+  let prim =
+    if kindBareExpr src func == BareExprKind.Var then
+      H.lookup (bareRefId src (bareExprVarRef src func)) cx.prims
+    else None
+  in match prim with
+     | Just (op, arity) ->
+         if op == "RunSt" and V.len args == 1 then
+           newCoreTermApp out m (V.getOr (unit out m) args 0) (unit out m)
+         else if arity == V.len args then newCoreTermPrim out m op args
+         else V.foldl (\f a -> newCoreTermApp out m f a) (emitExpr src out cx func) args
+     | None -> V.foldl (\f a -> newCoreTermApp out m f a) (emitExpr src out cx func) args
+
+-- A function of `params`: each a variable, or a fresh one taken apart at the
+-- top of the body.
+fun lambdas out (cx : Low s) (m : Meta) params body =
+  V.foldr
+    (\p acc ->
+      (let binder = binderOf out cx m p acc in newCoreTermLam out m (fst binder) (snd binder)))
+    body
+    params
+
+-- What binds pattern `p` around `body`: the variable to bind, and the body
+-- -- under a `case` of that variable where the pattern is more than a name.
+fun binderOf out (cx : Low s) (m : Meta) p body =
+  if kindCorePatIn out p == CorePatKind.PVar then (corePatPVarIdIn out p, body)
+  else
+    (let v = fresh cx in
+     if kindCorePatIn out p == CorePatKind.PWild then (v, body)
+     else (v, newCoreTermCase out m (newCoreTermVar out m v) [newCoreArm out m p None body]))
+
+-- A `let`'s binding around what it is in scope for.
+fun bound out (cx : Low s) (m : Meta) b body =
+  match b with
+  | (p, value, isFun) ->
+      if isFun then newCoreTermLetRec out m [newCoreBind out m (corePatPVarIdIn out p) value] body
+      else if kindCorePatIn out p == CorePatKind.PVar then
+        newCoreTermLet out m (corePatPVarIdIn out p) value body
+      else if kindCorePatIn out p == CorePatKind.PWild then
+        newCoreTermLet out m (fresh cx) value body
+      else newCoreTermCase out m value [newCoreArm out m p None body]
+
+-- A constructor applied: `True` and `False` the truths they are, one given
+-- fewer arguments than it takes a function of the rest.
+fun constructed out (cx : Low s) (m : Meta) (id : Int) args =
+  match M.unwrapOr ("?", V.len args) (H.lookup id cx.ctors) with
+  | (name, arity) ->
+      if name == "Bool.True" and V.isEmpty args then
+        newCoreTermConst out m (newCoreLitLBool out m True)
+      else if name == "Bool.False" and V.isEmpty args then
+        newCoreTermConst out m (newCoreLitLBool out m False)
+      else if V.len args >= arity then newCoreTermCtor out m name args
+      else
+        (let extra = V.map (\k -> fresh cx) (V.range (V.len args) arity) in
+         V.foldr
+           (\v acc -> newCoreTermLam out m v acc)
+           (newCoreTermCtor out m name (V.append args (V.map (\v -> newCoreTermVar out m v) extra)))
+           extra)
+
+-- What a constructor is given, in the order it holds them: one with named
+-- fields given a record has each field's value, by its name.
+fun consArgs src out (cx : Low s) (id : Int) args =
+  match (H.lookup id cx.fields, V.get args 0) with
+  | (Just labels, Just r) ->
+      if V.len args == 1 and kindBareExpr src r == BareExprKind.Record then
+        (let given =
+           V.map
+             (\f -> (bareNameText src (bareExprFieldName src f), bareExprFieldValue src f))
+             (bareExprRecordFields src r)
+         in V.concatMap
+              (\l ->
+                match V.find (\g -> fst g == l) given with
+                | Just g -> [emitExpr src out cx (snd g)]
+                | None -> [])
+              labels)
+      else V.map (\a -> emitExpr src out cx a) args
+  | _ -> V.map (\a -> emitExpr src out cx a) args
+
+-- The same of a pattern: a field it does not name is anything.
+fun consPats src out (cx : Low s) (m : Meta) (id : Int) args =
+  match (H.lookup id cx.fields, V.get args 0) with
+  | (Just labels, Just r) ->
+      if V.len args == 1 and kindBarePat src r == BarePatKind.Record then
+        (let given =
+           V.map
+             (\f -> (bareNameText src (barePatFieldName src f), barePatFieldPat src f))
+             (barePatRecordFields src r)
+         in V.map
+              (\l ->
+                match V.find (\g -> fst g == l) given with
+                | Just g -> emitPat src out cx (snd g)
+                | None -> newCorePatPWild out m)
+              labels)
+      else V.map (\a -> emitPat src out cx a) args
+  | _ -> V.map (\a -> emitPat src out cx a) args
+
+fun constructedPat out (cx : Low s) (m : Meta) (id : Int) args =
+  match M.unwrapOr ("?", 0) (H.lookup id cx.ctors) with
+  | (name, _) ->
+      if name == "Bool.True" and V.isEmpty args then
+        newCorePatPLit out m (newCoreLitLBool out m True)
+      else if name == "Bool.False" and V.isEmpty args then
+        newCorePatPLit out m (newCoreLitLBool out m False)
+      else newCorePatPCtor out m name args
+
+-- --- a unit ------------------------------------------------------------------
+
+def nowhere : Meta = spanMeta 0 0
+
+-- Unit `r`, whose modules inference typed as `typed`, as one program of
+-- core entered at its `entry`; or `None` when nothing of that name is there.
+@pub fun unitCore (r : Renamed) (typed : [TypedProgram]) (entry : String) : Maybe CoreProgram =
+  let bares = V.map bare typed in
+  let items = V.concatMap (\(d : Declared) -> d.items) r.modules in
+  let shapes = V.concatMap (\p -> shapesOf p) bares in
+  let entryId =
+    V.foldl
+      (\found (i : Item) -> if i.kind == "v" and i.name == entry then Just i.id else found)
+      None
+      items
+  in M.map
+       (\e ->
+         runSt (\() ->
+           let out = newCoreBuilder () in
+           let cx =
+             Low {
+               prims = primTable r,
+               ops = opTable items,
+               ctors = ctorTable r items shapes,
+               fields = fieldTable items shapes,
+               next = stNewRef (V.len r.binders)
+             }
+           in
+           let defs = V.concatMap (\p -> moduleDefs out cx p) bares in
+           let named =
+             V.concatMap
+               (\(i : Item) ->
+                 match H.lookup i.id cx.fields with
+                 | Just labels -> [newCoreNamed out nowhere i.canon labels]
+                 | None -> [])
+               items
+           in
+           let root = newCoreFile out nowhere e defs named in
+           CoreProgram (freezeCore out) root))
+       entryId
+
+-- Each primitive's operation and how many arguments it takes, by binder.
+fun primTable (r : Renamed) : HashMap Int (String, Int) =
+  V.foldl
+    (\h p ->
+      match V.find (\o -> match o with | (n, _, _) -> n == fst p) primOps with
+      | Just (_, op, arity) -> H.insert (snd p) (op, arity) h
+      | None -> h)
+    H.empty
+    r.prims
+
+-- Each effect operation's effect and name, by binder.
+fun opTable (items : [Item]) : HashMap Int (String, String) =
+  V.foldl
+    (\h (i : Item) ->
+      if i.kind == "v" and S.startsWith "op:" i.owner then
+        H.insert i.id (S.drop i.owner 3, i.name) h
+      else h)
+    H.empty
+    items
+
+-- Each constructor's name in core and how many arguments it takes, by
+-- binder: the unit's own, by what its declarations say, and the ones every
+-- module has without a library to declare them.
+fun ctorTable (r : Renamed) (items : [Item]) shapes : HashMap Int (String, Int) =
+  let own =
+    V.foldl
+      (\h (i : Item) ->
+        if i.kind != "c" then h
+        else
+          (let arity =
+             M.unwrapOr
+               0
+               (M.map
+                  (\s -> match s with | (_, _, n, _) -> n)
+                  (V.find
+                     (\s -> match s with | (o, n, _, _) -> o == i.owner and n == i.name)
+                     shapes))
+           in H.insert i.id (i.canon, arity) h))
+      H.empty
+      items
+  in V.foldl
+       (\h k ->
+         match V.get r.binders k with
+         | Just (b : Binder) ->
+             if b.kind != "c" or b.site != "-" then h
+             else if b.name == "Nil" then H.insert k ("List.Nil", 0) h
+             else if b.name == "Cons" then H.insert k ("List.Cons", 2) h
+             else if b.name == "True" then H.insert k ("Bool.True", 0) h
+             else if b.name == "False" then H.insert k ("Bool.False", 0) h
+             else h
+         | None -> h)
+       own
+       (V.range 0 (V.len r.binders))
+
+-- The names of each constructor's fields, for those that have them.
+fun fieldTable (items : [Item]) shapes : HashMap Int [String] =
+  V.foldl
+    (\h (i : Item) ->
+      if i.kind != "c" then h
+      else
+        match V.find (\s -> match s with | (o, n, _, _) -> o == i.owner and n == i.name) shapes with
+        | Just (_, _, _, Just labels) -> H.insert i.id labels h
+        | _ -> h)
+    H.empty
+    items
+
+-- What a module's `data` and `record` declarations say of their
+-- constructors: each one's type, its name, how many arguments it takes, and
+-- its fields' names if it has them.
+fun shapesOf (p : BareProgram) : [(String, String, Int, Maybe [String])] =
+  match p with
+  | BareProgram a root -> V.concatMap (\d -> declShapes a (peeled a d)) (bareModuleDecls a root)
+
+fun peeled (a : BareArena) (d : BareDecl) : BareDecl =
+  if kindBareDecl a d == BareDeclKind.Attributed then peeled a (bareDeclAttributedDecl a d) else d
+
+fun declShapes (a : BareArena) (d : BareDecl) : [(String, String, Int, Maybe [String])] =
+  if kindBareDecl a d == BareDeclKind.Data then
+    (let owner = bareNameText a (bareDeclDataName a d) in
+     V.map
+       (\v ->
+         (let name = bareNameText a (bareVariantName a v) in
+          if bareVariantNamed a v then
+            (let labels =
+               V.map (\f -> bareNameText a (bareFieldName a f)) (bareVariantFields a v)
+             in (owner, name, V.len labels, Just labels))
+          else (owner, name, V.len (bareVariantPositional a v), None)))
+       (bareDeclDataVariants a d))
+  else if kindBareDecl a d == BareDeclKind.Record then
+    (let owner = bareNameText a (bareDeclRecordName a d) in
+     let labels = V.map (\f -> bareNameText a (bareFieldName a f)) (bareDeclRecordFields a d) in
+     [(owner, owner, V.len labels, Just labels)])
+  else []
+
+-- A module's bindings as definitions: a name its value, and a pattern a
+-- definition of the value and one of each name in it, read out of that.
+fun moduleDefs out (cx : Low s) (p : BareProgram) =
+  match p with
+  | BareProgram a root ->
+      V.concatMap
+        (\d0 ->
+          (let d = peeled a d0 in
+           if kindBareDecl a d != BareDeclKind.Bind then []
+           else
+             match emitBind a out cx (bareDeclBindBind a d) with
+             | (pat, value, _) ->
+                 if kindCorePatIn out pat == CorePatKind.PVar then
+                   [newCoreDef out nowhere (corePatPVarIdIn out pat) value]
+                 else
+                   (let v = fresh cx in
+                    V.pushFront
+                      (V.map
+                         (\x ->
+                           newCoreDef
+                             out
+                             nowhere
+                             x
+                             (newCoreTermCase
+                                out
+                                nowhere
+                                (newCoreTermVar out nowhere v)
+                                [newCoreArm out nowhere pat None (newCoreTermVar out nowhere x)]))
+                         (patVars out pat))
+                      (newCoreDef out nowhere v value))))
+        (bareModuleDecls a root)
+
+-- The variables a pattern of core binds.
+fun patVars out p =
+  let k = kindCorePatIn out p in
+  if k == CorePatKind.PVar then [corePatPVarIdIn out p]
+  else if k == CorePatKind.PAs then
+    V.pushFront (patVars out (corePatPAsPatIn out p)) (corePatPAsIdIn out p)
+  else if k == CorePatKind.PTuple then V.concatMap (patVars out) (corePatPTupleItemsIn out p)
+  else if k == CorePatKind.PArray then V.concatMap (patVars out) (corePatPArrayItemsIn out p)
+  else if k == CorePatKind.PCtor then V.concatMap (patVars out) (corePatPCtorArgsIn out p)
+  else if k == CorePatKind.PRecord then
+    V.concatMap (\f -> patVars out (corePFieldPatIn out f)) (corePatPRecordFieldsIn out p)
+  else []

@@ -821,10 +821,22 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExpo
       (V.concatMap (\(f : ModFrame) -> f.items) frames)
       (V.concatMap (\(d : Dep) -> V.map snd d.items) depCx)
   in
+  -- A unit built with no standard library has none of the constructors
+  -- every module has without asking, and they would all be the one binder
+  -- that stands for what is not there. Lowering has to tell them apart, so
+  -- such a unit has a binder for each; one with the library has its own.
+  let spare =
+    if V.any (\(i : Item) -> i.kind == "c" and i.owner == "Bool") allItems then []
+    else V.map (\n -> (n, declareBinder n "c" "-")) ["Nil", "Cons", "True", "False"]
+  in
+  let spareOf = \n -> M.unwrapOr builtinCtor (M.map snd (V.find (\x -> fst x == n) spare)) in
   let bools =
     V.foldl
       (\h (c : Item) -> if c.kind == "c" and c.owner == "Bool" then H.insert c.name c.id h else h)
-      H.empty
+      (V.foldl
+         (\h x -> if fst x == "True" or fst x == "False" then H.insert (fst x) (snd x) h else h)
+         H.empty
+         spare)
       allItems
   in
   -- The types and constructors every module has without asking: the
@@ -840,7 +852,7 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExpo
   let ctorNamed =
     \o n ->
       M.unwrapOr
-        builtinCtor
+        (spareOf n)
         (M.map
            (\(i : Item) -> i.id)
            (V.find (\(i : Item) -> i.kind == "c" and i.owner == o and i.name == n) allItems))

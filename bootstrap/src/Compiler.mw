@@ -23,6 +23,8 @@ use MeadowBoot.Lower (lowered)
 use MeadowBoot.Rename (mentionsOf)
 use MeadowBoot.Scopes (Source, Export, Renamed, DepExports, renameUnit)
 use MeadowBoot.Infer (inferUnit, Inferred)
+use MeadowBoot.ToCore (unitCore)
+use MeadowBoot.Core (CoreProgram)
 use MeadowBoot.Solve (TypeEnv, noTypes)
 use Std.Macro (Reflect)
 use Std.Json as J
@@ -81,6 +83,14 @@ database! {
              (queryFiles unit))
     | query inferred (unit : Int) : ([(String, [String])], [Export], Bool, TypeEnv) =
         inferredOf
+          (queryHome unit)
+          (queryImported unit)
+          (tableOf (queryFixities 0))
+          (V.map
+             (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None))
+             (queryFiles unit))
+    | query core (unit : Int) : Maybe CoreProgram =
+        coreOf
           (queryHome unit)
           (queryImported unit)
           (tableOf (queryFixities 0))
@@ -173,6 +183,36 @@ fun inferredOf
            r.anyVis,
            done.types
          )
+
+-- The unit at `dir` as core, entered at its `result` -- or `None`, for one
+-- with nothing of that name.
+fun coreOf
+    (dir : String)
+    (imported : [Interface])
+    (fx : HashMap String Fixity)
+    (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
+    : Maybe CoreProgram =
+  match unitOf dir imported fx files with
+  | (sources, r) ->
+      let deps =
+        V.map
+          (\(i : Interface) ->
+            DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis })
+          imported
+      in
+      let texts =
+        H.fromVec
+          (V.concatMap
+             (\x ->
+               match x with
+               | (path, text, _) ->
+                   (match V.find (\s -> fst s == path) sources with
+                    | Just (_, src) -> [(fileOf src, text)]
+                    | None -> []))
+             files)
+      in
+      let done = inferUnit r deps (V.map (\(i : Interface) -> i.types) imported) texts in
+      unitCore r done.typed "result"
 
 -- The unit at `dir` renamed: its modules, each with its path, and what
 -- renaming made of them.

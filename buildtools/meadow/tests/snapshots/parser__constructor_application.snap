@@ -70,4 +70,5 @@ Module {
             span: 0..28,
         },
     ],
+    attrs: [],
 }

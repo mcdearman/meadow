@@ -1,5 +1,5 @@
 ---
-source: meadow/tests/parser.rs
+source: tests/parser.rs
 expression: "parse_ast(\"@pub\\n@attr(Some, Set, Of, Attributes)\\nfun f x = x\\n\\\n         @pub record Person = { @pub name : String, age : Int }\\n\")"
 ---
 Module {
@@ -175,4 +175,5 @@ Module {
             span: 50..104,
         },
     ],
+    attrs: [],
 }

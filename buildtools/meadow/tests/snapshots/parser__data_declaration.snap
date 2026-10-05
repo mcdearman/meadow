@@ -95,4 +95,5 @@ Module {
             span: 0..50,
         },
     ],
+    attrs: [],
 }

@@ -1,5 +1,5 @@
 ---
-source: meadow/tests/parser.rs
+source: tests/parser.rs
 expression: "parse_ast(\"fun foo x =\\n  let y = x + 1 in\\n  if y == 0 then y else y * y\\n\")"
 ---
 Module {
@@ -152,4 +152,5 @@ Module {
             span: 0..60,
         },
     ],
+    attrs: [],
 }

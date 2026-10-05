@@ -1,5 +1,5 @@
 ---
-source: meadow/tests/parser.rs
+source: tests/parser.rs
 expression: "parse_ast(\"def e = 1 + 2 * 3 - 4 / 2 ^ 2\\n\")"
 ---
 Module {
@@ -107,4 +107,5 @@ Module {
             span: 0..29,
         },
     ],
+    attrs: [],
 }

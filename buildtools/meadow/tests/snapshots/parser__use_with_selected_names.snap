@@ -1,5 +1,5 @@
 ---
-source: meadow/tests/parser.rs
+source: tests/parser.rs
 expression: "parse_ast(\"@pub use Std.Collections.List (map, filter, foldl)\\n\")"
 ---
 Module {
@@ -59,4 +59,5 @@ Module {
             span: 0..50,
         },
     ],
+    attrs: [],
 }

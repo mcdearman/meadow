@@ -1,5 +1,5 @@
 ---
-source: meadow/tests/parser.rs
+source: tests/parser.rs
 expression: "parse_ast(\"data Thunk a = Thunk (() -> a)\\n\")"
 ---
 Module {
@@ -63,4 +63,5 @@ Module {
             span: 0..30,
         },
     ],
+    attrs: [],
 }

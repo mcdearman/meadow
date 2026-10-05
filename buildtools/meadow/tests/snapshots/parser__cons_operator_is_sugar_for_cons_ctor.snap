@@ -1,5 +1,5 @@
 ---
-source: meadow/tests/parser.rs
+source: tests/parser.rs
 expression: "parse_ast(\"def xs = 1 :: 2 :: Nil\\nfun uncons l = match l with | x :: rest -> x | Nil -> 0\\n\")"
 ---
 Module {
@@ -168,4 +168,5 @@ Module {
             span: 23..78,
         },
     ],
+    attrs: [],
 }

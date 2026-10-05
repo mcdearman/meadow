@@ -72,7 +72,9 @@ if [ -n "$VERSION" ]; then
 fi
 
 for ws in compiler eval glade buildtools installer; do
-  job "test-$ws" bash -c "cd $ws && cargo test --quiet"
+  # Every test binary, though one fails: a run is long, and what else is
+  # wrong is worth knowing from the same one.
+  job "test-$ws" bash -c "cd $ws && cargo test --quiet --no-fail-fast"
 done
 
 # As `release.yml` builds and smoke-tests a target it can run: a `meadow` for
@@ -167,6 +169,7 @@ rm -f "$LOGS/unsorted.txt"
 cat "$LOGS/summary.txt"
 for name in $(sed -n 's/^FAIL \([^ ]*\).*/\1/p' "$LOGS/summary.txt"); do
   printf '\n\033[1m== %s\033[0m (%s)\n' "$name" "$LOGS/$name.log"
+  grep -E "^failures:|^    [a-z_0-9]+$|test result: FAILED|error: test failed" "$LOGS/$name.log" | tail -60
   tail -20 "$LOGS/$name.log"
 done
 echo

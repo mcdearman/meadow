@@ -61,8 +61,7 @@ fun openArrows (i : Inf s) (t : Type) : Type ! { St s | e } =
 fun openRowEnd (i : Inf s) (row : Type) : Type ! { St s | e } =
   let z = zonk i.ar row in
   match (z, rowEnd z) with
-  | (RowExtend _ _ _, RowEmpty) ->
-      (let tail = freshEffect i.ar in rebuildRow z tail)
+  | (RowExtend _ _ _, RowEmpty) -> (let tail = freshEffect i.ar in rebuildRow z tail)
   | _ -> row
 
 fun rowEnd (t : Type) : Type = match t with | RowExtend _ _ rest -> rowEnd rest | other -> other
@@ -93,13 +92,11 @@ fun joinEffectInto (i : Inf s) (region : Type) (phi0 : Type) :
         let newer = V.any (\l -> l > level) levels in
         let waits =
           (match zonk i.ar region with
-           | Var rid ->
-               newer and rid != id and slotLevel i.ar rid >= M.unwrapOr 0 (V.last levels)
+           | Var rid -> newer and rid != id and slotLevel i.ar rid >= M.unwrapOr 0 (V.last levels)
            | _ -> False)
-        in
-        if waits
-        then stSetRef i.subsumptions (V.pushBack (stGetRef i.subsumptions) (phi, region))
-        else unifyAt i (withoutInnerState i.ar region level) phi
+        in if waits
+           then stSetRef i.subsumptions (V.pushBack (stGetRef i.subsumptions) (phi, region))
+           else unifyAt i (withoutInnerState i.ar region level) phi
     | _ -> unifyAt i region phi
 
 -- Whether `phi` is part of `region` already: the two end in one variable and
@@ -112,15 +109,13 @@ fun joinsWithin (i : Inf s) (region : Type) (phi : Type) : Bool ! { St s | e } =
            if phiEnd != regionEnd then False
            else
              (match pairLabels wantLabels have [] with
-              | Just pairs ->
-                  (let u = V.foldl (\w p -> unifyAt i (fst p) (snd p)) () pairs in True)
+              | Just pairs -> (let u = V.foldl (\w p -> unifyAt i (fst p) (snd p)) () pairs in True)
               | None -> False)
        | _ -> False)
 
 fun splitRow (row : Type) : ([(String, Type)], Type) =
   match row with
-  | RowExtend l f rest ->
-      (match splitRow rest with | (ls, e) -> (V.pushFront ls (l, f), e))
+  | RowExtend l f rest -> (match splitRow rest with | (ls, e) -> (V.pushFront ls (l, f), e))
   | other -> ([], other)
 
 -- Each of `wantLabels` with the first of `have` of its name, first come first
@@ -156,8 +151,7 @@ fun loosenParameter (i : Inf s) (t : Type) : Type ! { St s | e } =
       let ret2 = loosenParameter i ret in
       let actual = freshEffect i.ar in
       let u = stSetRef i.subsumptions (V.pushBack (stGetRef i.subsumptions) (actual, eff))
-      in
-      Fun params ret2 actual
+      in Fun params ret2 actual
   | other -> other
 
 -- Tie each argument effect recorded since `mark` into what its parameter
@@ -180,8 +174,7 @@ fun defer (i : Inf s) (node : String) (candidates : [Meaning])
       (V.pushBack
         (stGetRef i.pending)
         (Pending { node = node, candidates = candidates, ty = t, level = levelOf i.ar }))
-  in
-  t
+  in t
 
 -- Choose what can be chosen; at the end of the unit (`last`) report what
 -- still cannot.
@@ -273,15 +266,13 @@ fun choose (i : Inf s) (p : Pending) (k : Int) : () ! { St s | e } =
      | Just x -> openLatent i x
      | None ->
          (match alt with
-          | Value v ->
-              (let g = freshGlobal i.ar in let w = setScheme i v (mono g) in g)
+          | Value v -> (let g = freshGlobal i.ar in let w = setScheme i v (mono g) in g)
           | Ctor _ -> Error)) in
   let v = setLevel i.ar outer in
   unifyAt i p.ty t
 
 fun reportOverload (i : Inf s) (p : Pending) : () ! { St s | e } =
-  let u = report i "an overloaded name did not settle (${show (V.len p.candidates)} candidates)"
-  in
+  let u = report i "an overloaded name did not settle (${show (V.len p.candidates)} candidates)" in
   let r = unify i.ar p.ty Error in
   ()
 
@@ -302,8 +293,8 @@ fun solveJointly (i : Inf s) : Bool ! { St s | e } =
             (\w d ->
               (match V.find (\k -> (V.getOr (emptyPending ()) (stGetRef i.pending) k).node == fst d) (V.range 0 (V.len (stGetRef i.pending))) with
                | Just k ->
-                   (let p = V.getOr (emptyPending ()) (stGetRef i.pending) k
-                     in let x = removePending i k in
+                   (let p = V.getOr (emptyPending ()) (stGetRef i.pending) k in
+                     let x = removePending i k in
                      choose i p (snd d))
                | None -> ()))
             ()
@@ -316,8 +307,8 @@ fun solveJointly (i : Inf s) : Bool ! { St s | e } =
                 (\x node ->
                   (match V.find (\k -> (V.getOr (emptyPending ()) (stGetRef i.pending) k).node == node) (V.range 0 (V.len (stGetRef i.pending))) with
                    | Just k ->
-                       (let p = V.getOr (emptyPending ()) (stGetRef i.pending) k
-                         in let y = removePending i k in
+                       (let p = V.getOr (emptyPending ()) (stGetRef i.pending) k in
+                         let y = removePending i k in
                          let z = unify i.ar p.ty Error in
                          ())
                    | None -> ()))
@@ -325,8 +316,7 @@ fun solveJointly (i : Inf s) : Bool ! { St s | e } =
                 nodes)
             ()
             hopeless
-        in
-        not (V.isEmpty decided) or not (V.isEmpty hopeless)
+        in not (V.isEmpty decided) or not (V.isEmpty hopeless)
 
 fun emptyPending () : Pending = Pending { node = "", candidates = [], ty = Error, level = 0 }
 
@@ -347,8 +337,7 @@ fun components (n : Int) (vars : [[Int]]) : [[Int]] =
   in
   let roots = V.map (\k -> findRoot root k) (V.range 0 n) in
   let order = V.foldl (\acc r -> if V.elem r acc then acc else V.pushBack acc r) [] roots
-  in
-  V.map (\r -> V.filter (\k -> V.getOr 0 roots k == r) (V.range 0 n)) order
+  in V.map (\r -> V.filter (\k -> V.getOr 0 roots k == r) (V.range 0 n)) order
 
 fun findRoot (root : [Int]) (k : Int) : Int =
   if V.getOr k root k == k then k else findRoot root (V.getOr k root k)
@@ -372,8 +361,7 @@ fun jointGroup (i : Inf s) (ps : [Pending]) (members : [Int])
   else
     let sols = stGetRef st.solutions in
     match V.get sols 0 with
-    | None ->
-        (fst acc, V.pushBack (snd acc) (V.map (\(p : Pending) -> p.node) group))
+    | None -> (fst acc, V.pushBack (snd acc) (V.map (\(p : Pending) -> p.node) group))
     | Just first ->
         let agreed =
           V.concatMap
@@ -383,8 +371,7 @@ fun jointGroup (i : Inf s) (ps : [Pending]) (members : [Int])
                 then [((V.getOr (emptyPending ()) group j).node, k)]
                 else []))
             (V.range 0 (V.len group))
-        in
-        (V.append (fst acc) agreed, snd acc)
+        in (V.append (fst acc) agreed, snd acc)
 
 record SearchState s = { solutions : StRef s [[Int]], budget : StRef s Int, truncated : StRef s Bool
 }
@@ -440,8 +427,7 @@ fun ctorLabels (i : Inf s) (name : String) : Maybe [String] ! { St s | e } =
     (match S.indexOf "." (reverseString name) with
      | Just k -> stringSlice name 0 (stringByteLength name - k - 1)
      | None -> name)
-  in
-  M.andThen
+  in M.andThen
     (\(v : VariantSig) -> v.labels)
     (M.andThen
       (\vs -> V.find (\(v : VariantSig) -> v.name == name) vs)
@@ -484,8 +470,7 @@ fun effectAnnotation (i : Inf s) (here : Here) (whole : HirType) (row : HirRow)
   let names = collectTyvars here.a whole [] in
   let eff = effOf i here.a row (indexed names) in
   let kinds = markEffectVars (Fun [unitT ()] (unitT ()) eff) (V.replicate (V.len names) Plain)
-  in
-  substBound eff (metasFor i here names kinds)
+  in substBound eff (metasFor i here names kinds)
 
 -- A function's declared result, and what its body performs when that is
 -- said: `: R ! e`, or `: R`, a body that performs nothing.
@@ -536,8 +521,7 @@ fun bindMono (i : Inf s) (vid : Int) (t : Type) : () ! { St s | e } =
     (match schemeOf i vid with
      | Just prev -> (if V.isEmpty prev.quant then unifyAt i prev.ty t else ())
      | None -> ())
-  in
-  setScheme i vid (mono t)
+  in setScheme i vid (mono t)
 
 -- --- the languages -----------------------------------------------------------
 
@@ -658,14 +642,16 @@ pass! {
             (match cx.arm with
              | Just (st, _) -> unifyAt cx.i (typInferringPat p) st
              | None -> ())
-          in let g =
+          in
+          let g =
             M.map
               (\gt ->
                 (let gx = gt (plain cx) in
                   let v = unifyAt cx.i (typInferringExpr gx) (boolT ()) in
                   gx))
               guard
-          in let b = body (plain cx) in
+          in
+          let b = body (plain cx) in
           let w =
             (match cx.arm with
              | Just (_, result) -> unifyAt cx.i (typInferringExpr b) result
@@ -713,10 +699,11 @@ pass! {
                 outside = freshEffect cx.i.ar
               })
               cx.clause
-          in let p = param (binding cx) in
+          in
+          let p = param (binding cx) in
           let u = unifyAt cx.i (typInferringPat p) tys.arg in
-          let v = setScheme cx.i resume (mono (Fun [tys.ret] tys.result tys.outside))
-          in let b = body (plain cx) in
+          let v = setScheme cx.i resume (mono (Fun [tys.ret] tys.result tys.outside)) in
+          let b = body (plain cx) in
           let w = unifyAt cx.i (typInferringExpr b) tys.result in
           HArm { op = op, opRef = opRef, param = p, resume = resume, body = b })
     | Ret { later pat, later body } ->
@@ -725,7 +712,8 @@ pass! {
             (match cx.back with
              | Just (bodyTy, _) -> unifyAt cx.i (typInferringPat p) bodyTy
              | None -> ())
-          in let b = body (plain cx) in
+          in
+          let b = body (plain cx) in
           let v =
             (match cx.back with
              | Just (_, result) -> unifyAt cx.i (typInferringExpr b) result
@@ -735,8 +723,7 @@ pass! {
     | Pat.Unit { } -> Pat.Unit { typ = unitT () }
     | Pat.MacCall { call } -> Pat.MacCall { call = call, typ = Error }
     | Pat.Lit { lit } -> Pat.Lit { lit = lit, typ = litTypeIn cx.i out lit }
-    | Pat.Var { id } ->
-        Pat.Var { id = id, typ = bindPatVar cx id (fresh cx.i.ar) }
+    | Pat.Var { id } -> Pat.Var { id = id, typ = bindPatVar cx id (fresh cx.i.ar) }
     | Pat.As { id, pat } ->
         Pat.As
         { id = id, pat = pat, typ = bindPatVar cx id (typInferringPat pat) }
@@ -770,8 +757,8 @@ pass! {
     | Pat.View { fn, pat } ->
         (let arg = fresh cx.i.ar in
           let phi = freshEffect cx.i.ar in
-          let u = unifyAt cx.i (typInferringExpr fn) (Fun [arg] (typInferringPat pat) phi)
-          in let v = joinEffect cx.i phi in
+          let u = unifyAt cx.i (typInferringExpr fn) (Fun [arg] (typInferringPat pat) phi) in
+          let v = joinEffect cx.i phi in
           Pat.View { fn = fn, pat = pat, typ = arg })
     | Bind.Fun { id, later params, raw ret, later body } ->
         (match funBindParts cx src out id params ret body with
@@ -926,11 +913,9 @@ fun runStArg (cx : Cx s) (src : HirArena) out (body : HirExpr) =
      | _ -> False)
   in
   let pl = plain cx in
-  let x = inferExpr src out (if lam then { pl | seed = Just state } else pl) body
-  in
+  let x = inferExpr src out (if lam then { pl | seed = Just state } else pl) body in
   let bodyRow = RowExtend "St" (Tuple [state]) outside in
-  let w = unifyAt i (typInferringExprIn out x) (funcEff [unitT ()] result bodyRow)
-  in
+  let w = unifyAt i (typInferringExprIn out x) (funcEff [unitT ()] result bodyRow) in
   let x2 = solveSubsumptions i mark in
   let levels = stGetRef i.stLevels in
   let y = stSetRef i.stLevels (V.take levels (V.len levels - 1)) in
@@ -958,8 +943,7 @@ fun consParts (cx : Cx s) (src : HirArena) out (ref : InferringRef)
         let eff = freshEffect i.ar in
         let u = unifyAt i cty (Fun [aty] ret eff) in
         ret)
-  in
-  match namedRecordArg src args (ctorLabels i name) with
+  in match namedRecordArg src args (ctorLabels i name) with
   | Just (given, labels) ->
       let fields = hirExprRecordFields src given in
       let values =
@@ -983,8 +967,7 @@ fun consParts (cx : Cx s) (src : HirArena) out (ref : InferringRef)
               cty0
               values
          | None -> Error)
-      in
-      (
+      in (
         [rewrittenRecord cx src out given (V.concatMap (\v -> match v with | Just p -> [p] | None -> []) values)],
         t
       )
@@ -1008,8 +991,7 @@ fun namedRecordArg (src : HirArena) (args : [HirExpr]) (labels : Maybe [String])
   match (V.len args, labels) with
   | (1, Just ls) ->
       (match viewHirExpr src (V.getOr 0 args 0) with
-       | HirExprView.Record r ->
-           (if M.isSome r.base then None else Just (V.getOr 0 args 0, ls))
+       | HirExprView.Record r -> (if M.isSome r.base then None else Just (V.getOr 0 args 0, ls))
        | _ -> None)
   | _ -> None
 
@@ -1024,8 +1006,7 @@ fun rewrittenRecord (cx : Cx s) (src : HirArena) out (given : HirExpr)
           (match V.find (\p -> fst p == f) done with
            | Just (_, x0) -> x0
            | None -> inferExpr src out (plain cx) (hirExprFieldValue src f))
-        in
-        newInferringExprField
+        in newInferringExprField
           out
           (metaHirExprField src f)
           (inferName src out (plain cx) (hirExprFieldName src f))
@@ -1040,8 +1021,7 @@ fun rewrittenRecord (cx : Cx s) (src : HirArena) out (given : HirExpr)
           rest)
       RowEmpty
       (V.reverse fs)
-  in
-  newInferringExprRecord out (metaHirExpr src given) fs None (Record row)
+  in newInferringExprRecord out (metaHirExpr src given) fs None (Record row)
 
 -- `{ base | f = v, … }` with no base: the fields from the last written to the
 -- first, each the row so far extended.
@@ -1059,11 +1039,9 @@ fun recordParts (cx : Cx s) (src : HirArena) out
            (match requireLacks i.ar rv labels with
             | Ok _ -> ()
             | Err _ -> report i "a record would have a field twice")
-         in
-         rv
+         in rv
      | None -> RowEmpty) in
-  let backwards = V.map (\f -> inferExprField src out (plain cx) f) (V.reverse fields)
-  in
+  let backwards = V.map (\f -> inferExprField src out (plain cx) f) (V.reverse fields) in
   let row =
     V.foldl
       (\r fx ->
@@ -1073,8 +1051,7 @@ fun recordParts (cx : Cx s) (src : HirArena) out
           r)
       row0
       backwards
-  in
-  (V.reverse backwards, b, Record row)
+  in (V.reverse backwards, b, Record row)
 
 -- `{ base | x = v, … }`: a value of a record type keeps its type, each value
 -- its field's; otherwise an anonymous record with every field named.
@@ -1085,8 +1062,7 @@ fun updateParts (cx : Cx s) (src : HirArena) out base
   let pruned = zonk i.ar (typInferringExprIn out b) in
   let nominal =
     (match pruned with
-     | Con tyname _ ->
-         M.map (\acc -> (tyname, acc)) (H.lookup tyname (stGetRef i.recordFields))
+     | Con tyname _ -> M.map (\acc -> (tyname, acc)) (H.lookup tyname (stGetRef i.recordFields))
      | _ -> None)
   in
   let valueTy = \fx -> typInferringExprIn out (inferringExprFieldValueIn out fx) in
@@ -1096,43 +1072,39 @@ fun updateParts (cx : Cx s) (src : HirArena) out base
         (match H.lookup tyname (stGetRef i.variants) with
          | Just vs -> V.len vs == 1
          | None -> False)
-      in
-      if not one
-      then
-        (let fs = V.map (\f -> inferExprField src out (plain cx) f) fields in
-          let v = report i "more than one constructor, so no one record to update"
-          in (b, fs, pruned))
-      else
-        let fs =
-          V.map
-            (\f ->
-              let fx = inferExprField src out (plain cx) f in
-              let w =
-                (match H.lookup (hirNameText src (hirExprFieldName src f)) accessors with
-                 | None -> report i "no such field"
-                 | Just sc ->
-                     let accessor = instantiate i sc in
-                     let field = fresh i.ar in
-                     let eff = freshEffect i.ar in
-                     let x = unifyAt i accessor (Fun [pruned] field eff) in
-                     unifyAt i field (valueTy fx)) in
-              fx)
-          fields in
-        (b, fs, pruned)
+      in if not one
+         then
+           (let fs = V.map (\f -> inferExprField src out (plain cx) f) fields in
+             let v = report i "more than one constructor, so no one record to update"
+             in (b, fs, pruned))
+         else
+           let fs =
+             V.map
+               (\f ->
+                 let fx = inferExprField src out (plain cx) f in
+                 let w =
+                   (match H.lookup (hirNameText src (hirExprFieldName src f)) accessors with
+                    | None -> report i "no such field"
+                    | Just sc ->
+                        let accessor = instantiate i sc in
+                        let field = fresh i.ar in
+                        let eff = freshEffect i.ar in
+                        let x = unifyAt i accessor (Fun [pruned] field eff) in
+                        unifyAt i field (valueTy fx)) in
+                 fx)
+             fields in
+           (b, fs, pruned)
   | None ->
       let named =
         V.foldl
           (\acc f ->
             (let l = hirNameText src (hirExprFieldName src f) in
-              if V.any (\x -> fst x == l) acc
-              then acc
-              else V.pushBack acc (l, fresh i.ar)))
+              if V.any (\x -> fst x == l) acc then acc else V.pushBack acc (l, fresh i.ar)))
           []
           fields
       in
       let rest = freshRow i.ar in
-      let row = V.foldl (\acc x -> RowExtend (fst x) (snd x) acc) rest (V.reverse named)
-      in
+      let row = V.foldl (\acc x -> RowExtend (fst x) (snd x) acc) rest (V.reverse named) in
       let u = unifyAt i (typInferringExprIn out b) (Record row) in
       let fs =
         V.map
@@ -1161,8 +1133,7 @@ fun projType (cx : Cx s) out (target : InferringExpr) (label : InferringName)
      | Con tyname _ ->
          M.andThen (\m -> H.lookup fname m) (H.lookup tyname (stGetRef i.recordFields))
      | _ -> None)
-  in
-  match nominal with
+  in match nominal with
   | Just sc ->
       let accessor = instantiate i sc in
       let res = fresh i.ar in
@@ -1224,10 +1195,7 @@ fun handleParts (cx : Cx s) (src : HirArena) out body (arms : [HirHArm])
     rowOf
       (V.filter
         (\x -> match x with
-               | (n, info, _) ->
-                   V.any
-                     (\(o : EffOp) -> not (answered n o.name))
-                     (opsOf info))
+               | (n, info, _) -> V.any (\(o : EffOp) -> not (answered n o.name)) (opsOf info))
         handled)
   in
   let w = unifyAt i bodyEff inside in
@@ -1258,15 +1226,13 @@ fun handleParts (cx : Cx s) (src : HirArena) out body (arms : [HirHArm])
           (match found with
            | Just (o, ps) -> (substBound o.arg ps, substBound o.ret ps)
            | None -> (fresh i.ar, fresh i.ar))
-        in
-        inferHArm
+        in inferHArm
           src
           out
           { pl | clause = Just (ClauseTys { arg = fst tys, ret = snd tys, result = result, outside = outside }) }
           h)
       (V.range 0 (V.len arms)) in
-  let r = M.map (\rt -> inferRet src out { pl | back = Just (bodyTy, result) } rt) ret
-  in
+  let r = M.map (\rt -> inferRet src out { pl | back = Just (bodyTy, result) } rt) ret in
   let y = (if M.isNone ret then unifyAt i result bodyTy else ()) in
   (b, hs, r, result)
 
@@ -1277,8 +1243,7 @@ fun armEffect (i : Inf s) (a : HirArena) (h : HirHArm)
     : Maybe String ! { St s | e } =
   let op = hirNameText a (hirHArmOp a h) in
   let effects = H.toVec (stGetRef i.effects) in
-  let having = V.filter (\kv -> V.any (\(o : EffOp) -> o.name == op) (opsOf (snd kv))) effects
-  in
+  let having = V.filter (\kv -> V.any (\(o : EffOp) -> o.name == op) (opsOf (snd kv))) effects in
   let owner = opOwner i (hirRefId a (hirHArmOpRef a h)) in
   match V.find (\kv -> Just (spelling (fst kv)) == owner) having with
   | Just kv -> Just (fst kv)
@@ -1287,8 +1252,7 @@ fun armEffect (i : Inf s) (a : HirArena) (h : HirHArm)
 -- The spelled name of the effect an operation's binder belongs to.
 fun opOwner (i : Inf s) (id : Int) : Maybe String =
   match H.lookup id i.canon with
-  | Just c ->
-      (if S.startsWith "op:" c then Just (stringSlice c 3 (stringByteLength c)) else None)
+  | Just c -> (if S.startsWith "op:" c then Just (stringSlice c 3 (stringByteLength c)) else None)
   | None -> None
 
 -- A constructor pattern: its parts in turn -- or, given a record pattern for
@@ -1310,8 +1274,7 @@ fun patConsParts (cx : Cx s) (src : HirArena) out (ref : InferringRef)
         let eff = freshEffect i.ar in
         let u = unifyAt i cty (Fun [sty] ret eff) in
         ret)
-  in
-  match namedRecordPat src args (ctorLabels i name) with
+  in match namedRecordPat src args (ctorLabels i name) with
   | Just (given, labels) ->
       let fields = hirPatRecordFields src given in
       let parts =
@@ -1335,8 +1298,7 @@ fun patConsParts (cx : Cx s) (src : HirArena) out (ref : InferringRef)
               cty0
               parts
          | None -> Error)
-      in
-      (
+      in (
         [rewrittenPRecord cx src out given (V.concatMap (\p -> match p with | Just q -> [q] | None -> []) parts)],
         t
       )
@@ -1371,8 +1333,7 @@ fun rewrittenPRecord (cx : Cx s) (src : HirArena) out (given : HirPat)
           (match V.find (\q -> fst q == f) done with
            | Just (_, p0) -> p0
            | None -> inferPat src out cx (hirPatFieldPat src f))
-        in
-        newInferringPatField
+        in newInferringPatField
           out
           (metaHirPatField src f)
           (inferName src out (plain cx) (hirPatFieldName src f))
@@ -1387,8 +1348,7 @@ fun rewrittenPRecord (cx : Cx s) (src : HirArena) out (given : HirPat)
           rest)
       RowEmpty
       (V.reverse fs)
-  in
-  newInferringPatRecord out (metaHirPat src given) fs (hirPatRecordOpen src given) (Record row)
+  in newInferringPatRecord out (metaHirPat src given) fs (hirPatRecordOpen src given) (Record row)
 
 -- `{ f = p, … }`, open or not: the fields from the last written to the first.
 fun patRecordParts (cx : Cx s) (src : HirArena) out (fields : [HirPatField])
@@ -1410,8 +1370,7 @@ fun patRecordParts (cx : Cx s) (src : HirArena) out (fields : [HirPatField])
           r)
       row0
       backwards
-  in
-  (V.reverse backwards, Record row)
+  in (V.reverse backwards, Record row)
 
 -- A function binding, as `cx.mode` says: alone -- in an expression, or at the
 -- top of a module and generalized when it is done -- or as one of a group.
@@ -1465,8 +1424,7 @@ fun aloneFun (cx : Cx s) out (toplevel : Bool) (vid : Int) params
       let sc = generalizeNamed i (Just vid) fnTy True preds in
       let u12 = setScheme i vid sc in
       let u13 = if toplevel then stSetRef i.exports (V.pushBack (stGetRef i.exports) vid) else ()
-      in
-      (ps, b)
+      in (ps, b)
 
 -- One function of a recursive group: its body inferred and tied to the seed
 -- the rest of the group sees.
@@ -1556,9 +1514,7 @@ fun alonePat (cx : Cx s) out (toplevel : Bool) pat value =
                 s1))
         in
         let q = setScheme i vid sc in
-        if toplevel
-        then stSetRef i.exports (V.pushBack (stGetRef i.exports) vid)
-        else ())
+        if toplevel then stSetRef i.exports (V.pushBack (stGetRef i.exports) vid) else ())
       ()
       bound in
   (p, v)
@@ -1591,8 +1547,7 @@ fun memberPat (cx : Cx s) out (seed : [(Int, Type)]) pat value =
      | RowEmpty -> ()
      | Var _ -> ()
      | _ -> stSetRef cx.pure False)
-  in
-  (p, v)
+  in (p, v)
 
 -- --- settling ----------------------------------------------------------------
 
@@ -1603,55 +1558,39 @@ pass! {
     | Expr.Lit { lit, typ } -> Expr.Lit { lit = lit, typ = zonk ar typ }
     | Expr.Unit { typ } -> Expr.Unit { typ = zonk ar typ }
     | Expr.Hole { typ } -> Expr.Hole { typ = zonk ar typ }
-    | Expr.MacCall { call, typ } ->
-        Expr.MacCall { call = call, typ = zonk ar typ }
+    | Expr.MacCall { call, typ } -> Expr.MacCall { call = call, typ = zonk ar typ }
     | Expr.Var { ref, typ } -> Expr.Var { ref = ref, typ = zonk ar typ }
-    | Lam { params, body, typ } ->
-        Lam { params = params, body = body, typ = zonk ar typ }
-    | App { func, args, typ } ->
-        App { func = func, args = args, typ = zonk ar typ }
-    | Let { binds, body, typ } ->
-        Let { binds = binds, body = body, typ = zonk ar typ }
-    | If { cond, yes, no, typ } ->
-        If { cond = cond, yes = yes, no = no, typ = zonk ar typ }
+    | Lam { params, body, typ } -> Lam { params = params, body = body, typ = zonk ar typ }
+    | App { func, args, typ } -> App { func = func, args = args, typ = zonk ar typ }
+    | Let { binds, body, typ } -> Let { binds = binds, body = body, typ = zonk ar typ }
+    | If { cond, yes, no, typ } -> If { cond = cond, yes = yes, no = no, typ = zonk ar typ }
     | Match { scrutinee, arms, typ } ->
         Match { scrutinee = scrutinee, arms = arms, typ = zonk ar typ }
-    | Expr.Tuple { items, typ } ->
-        Expr.Tuple { items = items, typ = zonk ar typ }
-    | Expr.Array { items, typ } ->
-        Expr.Array { items = items, typ = zonk ar typ }
+    | Expr.Tuple { items, typ } -> Expr.Tuple { items = items, typ = zonk ar typ }
+    | Expr.Array { items, typ } -> Expr.Array { items = items, typ = zonk ar typ }
     | Expr.List { items, typ } -> Expr.List { items = items, typ = zonk ar typ }
-    | Expr.Cons { ref, args, typ } ->
-        Expr.Cons { ref = ref, args = args, typ = zonk ar typ }
+    | Expr.Cons { ref, args, typ } -> Expr.Cons { ref = ref, args = args, typ = zonk ar typ }
     | Expr.Record { fields, base, typ } ->
         Expr.Record { fields = fields, base = base, typ = zonk ar typ }
-    | Update { base, fields, typ } ->
-        Update { base = base, fields = fields, typ = zonk ar typ }
-    | Proj { target, label, typ } ->
-        Proj { target = target, label = label, typ = zonk ar typ }
+    | Update { base, fields, typ } -> Update { base = base, fields = fields, typ = zonk ar typ }
+    | Proj { target, label, typ } -> Proj { target = target, label = label, typ = zonk ar typ }
     | Handle { body, arms, ret, typ } ->
         Handle { body = body, arms = arms, ret = ret, typ = zonk ar typ }
     | Pat.Wild { typ } -> Pat.Wild { typ = zonk ar typ }
     | Pat.Unit { typ } -> Pat.Unit { typ = zonk ar typ }
-    | Pat.MacCall { call, typ } ->
-        Pat.MacCall { call = call, typ = zonk ar typ }
+    | Pat.MacCall { call, typ } -> Pat.MacCall { call = call, typ = zonk ar typ }
     | Pat.Lit { lit, typ } -> Pat.Lit { lit = lit, typ = zonk ar typ }
     | Pat.Var { id, typ } -> Pat.Var { id = id, typ = zonk ar typ }
-    | Pat.As { id, pat, typ } ->
-        Pat.As { id = id, pat = pat, typ = zonk ar typ }
-    | Pat.Ann { pat, ty, typ } ->
-        Pat.Ann { pat = pat, ty = ty, typ = zonk ar typ }
-    | Pat.Cons { ref, args, typ } ->
-        Pat.Cons { ref = ref, args = args, typ = zonk ar typ }
+    | Pat.As { id, pat, typ } -> Pat.As { id = id, pat = pat, typ = zonk ar typ }
+    | Pat.Ann { pat, ty, typ } -> Pat.Ann { pat = pat, ty = ty, typ = zonk ar typ }
+    | Pat.Cons { ref, args, typ } -> Pat.Cons { ref = ref, args = args, typ = zonk ar typ }
     | Pat.Tuple { items, typ } -> Pat.Tuple { items = items, typ = zonk ar typ }
     | Pat.Array { items, typ } -> Pat.Array { items = items, typ = zonk ar typ }
     | Pat.List { items, typ } -> Pat.List { items = items, typ = zonk ar typ }
-    | Pat.Vector { items, typ } ->
-        Pat.Vector { items = items, typ = zonk ar typ }
+    | Pat.Vector { items, typ } -> Pat.Vector { items = items, typ = zonk ar typ }
     | Pat.Record { fields, open, typ } ->
         Pat.Record { fields = fields, open = open, typ = zonk ar typ }
-    | Pat.View { fn, pat, typ } ->
-        Pat.View { fn = fn, pat = pat, typ = zonk ar typ }
+    | Pat.View { fn, pat, typ } -> Pat.View { fn = fn, pat = pat, typ = zonk ar typ }
 }
 
 -- A group of top-level bindings, each with where it is, inferred together
@@ -1670,8 +1609,7 @@ fun inferGroup (i : Inf s) outs (done : StRef s (HashMap String Int))
     let mark = V.len (stGetRef i.subsumptions) in
     -- Every name in the group seeded before any body: a function as the
     -- function it is, anything else as a variable.
-    let seeds = V.map (\x -> match x with | (here, b) -> seedGroup i here b) binds
-    in
+    let seeds = V.map (\x -> match x with | (here, b) -> seedGroup i here b) binds in
     let v = stSetRef i.group (V.concatMap (\s1 -> V.map fst s1) seeds) in
     let pure =
       V.foldl
@@ -1682,8 +1620,7 @@ fun inferGroup (i : Inf s) outs (done : StRef s (HashMap String Int))
               let x = stSetRef i.member (M.map fst (V.get seed 0)) in
               let cx = newCx i here (Mode.Member seed) in
               let y = written done here b (inferBind here.a (outOf outs here.m) cx b)
-              in
-              stGetRef cx.pure and acc
+              in stGetRef cx.pure and acc
           | None -> acc)
         True
         (V.range 0 (V.len binds)) in
@@ -1692,8 +1629,7 @@ fun inferGroup (i : Inf s) outs (done : StRef s (HashMap String Int))
     let y = solveSubsumptions i mark in
     let z = solveWanted i in
     let q = exitLevel i.ar in
-    let functions = V.all (\x2 -> match x2 with | (here, b) -> isFunBind here b) binds
-    in
+    let functions = V.all (\x2 -> match x2 with | (here, b) -> isFunBind here b) binds in
     let members = V.concat seeds in
     let preds = closeBinding i started members (pure and functions) in
     V.foldl
@@ -1745,8 +1681,7 @@ fun seedGroup (i : Inf s) (here : Here) (b : HirBind) :
     (match viewHirBind here.a b with
      | HirBindView.Fun r -> V.len r.params
      | _ -> 0)
-  in
-  V.map
+  in V.map
     (\vid ->
       let t =
         (if arity > 0
@@ -1788,8 +1723,7 @@ fun declEnabled (a : HirArena) (d : HirDecl) : Bool =
 -- not a test's.
 fun metaHolds (a : HirArena) (m : HirAttrMeta) : Bool =
   match viewHirAttrMeta a m with
-  | HirAttrMetaView.Word r ->
-      (let w = hirNameText a r.name in w == "windows" or w == "debug")
+  | HirAttrMetaView.Word r -> (let w = hirNameText a r.name in w == "windows" or w == "debug")
   | HirAttrMetaView.Value r ->
       let key = hirNameText a r.name in
       let v = hirNameText a r.value in
@@ -1804,9 +1738,7 @@ fun metaHolds (a : HirArena) (m : HirAttrMeta) : Bool =
       then V.all (metaHolds a) r.metas
       else if n == "any"
       then V.any (metaHolds a) r.metas
-      else if n == "not"
-      then not (V.all (metaHolds a) r.metas)
-      else False
+      else if n == "not" then not (V.all (metaHolds a) r.metas) else False
   | _ -> False
 
 -- A declared item of a module by kind, owner and name.
@@ -1836,8 +1768,7 @@ fun registerTypes (i : Inf s) (here : Here) (items : [Item]) (decls : [HirDecl])
              | _ -> [])
       decls
   in
-  let u = V.foldl (\w (x : AliasSrc) -> expandAlias i a aliases [] x.name) () aliases
-  in
+  let u = V.foldl (\w (x : AliasSrc) -> expandAlias i a aliases [] x.name) () aliases in
   -- An alias of effects: the closed row it stands for, its parameters bound.
   let w0 =
     V.foldl
@@ -1872,8 +1803,7 @@ fun registerTypes (i : Inf s) (here : Here) (items : [Item]) (decls : [HirDecl])
                | _ -> ())
       ()
       decls
-  in
-  V.foldl
+  in V.foldl
   (\w d ->
     match viewHirDecl a d with
     | HirDeclView.Data r ->
@@ -1888,13 +1818,10 @@ fun registerTypes (i : Inf s) (here : Here) (items : [Item]) (decls : [HirDecl])
               (if hirVariantNamed a v2
                 then
                   V.map
-                  (\f ->
-                    ( Just (hirNameText a (hirFieldName a f)), tyOf i a (hirFieldTy a f) vars
-                    ))
+                  (\f -> ( Just (hirNameText a (hirFieldName a f)), tyOf i a (hirFieldTy a f) vars))
                   (hirVariantFields a v2)
                 else V.map (\t -> (None, tyOf i a t vars)) (hirVariantPositional a v2))
-            in
-            recordCtorIn
+            in recordCtorIn
               i
               canon
               (canon ++ "." ++ hirNameText a (hirVariantName a v2))
@@ -1949,8 +1876,7 @@ fun registerTypes (i : Inf s) (here : Here) (items : [Item]) (decls : [HirDecl])
                         lacks = []
                       })
                  | None -> ())
-              in
-              EffOp { name = opName, arg = fst parts, ret = snd parts })
+              in EffOp { name = opName, arg = fst parts, ret = snd parts })
             r.ops in
         stSetRef
           i.effects
@@ -1990,23 +1916,22 @@ fun expandAlias (i : Inf s) (a : HirArena) (batch : [AliasSrc])
                 else ())
               ()
               mentioned
-          in
-          if V.elem name mentioned
-          then
-            stSetRef
-              i.aliases
-              (H.insert
-                name
-                (AliasDef { params = V.len r.params, body = Error })
-                (stGetRef i.aliases))
-          else if M.isSome (H.lookup name (stGetRef i.aliases)) then ()
-          else
-            stSetRef
-              i.aliases
-              (H.insert
-                name
-                (AliasDef { params = V.len r.params, body = tyOf i a r.ty (indexed r.params) })
-                (stGetRef i.aliases))
+          in if V.elem name mentioned
+             then
+               stSetRef
+                 i.aliases
+                 (H.insert
+                   name
+                   (AliasDef { params = V.len r.params, body = Error })
+                   (stGetRef i.aliases))
+             else if M.isSome (H.lookup name (stGetRef i.aliases)) then ()
+             else
+               stSetRef
+                 i.aliases
+                 (H.insert
+                   name
+                   (AliasDef { params = V.len r.params, body = tyOf i a r.ty (indexed r.params) })
+                   (stGetRef i.aliases))
 
 fun typeNames (i : Inf s) (a : HirArena) (t : HirType) (out : [String]) :
     [String] =
@@ -2029,8 +1954,7 @@ fun typeNames (i : Inf s) (a : HirArena) (t : HirType) (out : [String]) :
   | HirTypeView.Tuple r -> V.foldl (\acc x -> typeNames i a x acc) out r.items
   | HirTypeView.Vector r -> typeNames i a r.item out
   | HirTypeView.List r -> typeNames i a r.item out
-  | HirTypeView.Record r ->
-      V.foldl (\acc f -> typeNames i a (hirTypeFieldTy a f) acc) out r.fields
+  | HirTypeView.Record r -> V.foldl (\acc f -> typeNames i a (hirTypeFieldTy a f) acc) out r.fields
   | _ -> out
 
 -- A trait declaration, registered.
@@ -2055,15 +1979,14 @@ fun registerTraitDecl (i : Inf s) (a : HirArena) (items : [Item])
                     (V.range 0 (V.len params))
                | _ -> None))
             tys
-        in
-        if V.all M.isSome over
-        then
-          [Super {
-            tr = canonOf i (hirRefId a (hirBoundRef a b)) (hirNameText a (hirBoundTr a b)),
-            over = V.map (M.unwrapOr 0) over
-          }]
-        else [])
-      superBounds in
+        in if V.all M.isSome over
+           then
+             [Super {
+               tr = canonOf i (hirRefId a (hirBoundRef a b)) (hirNameText a (hirBoundTr a b)),
+               over = V.map (M.unwrapOr 0) over
+             }]
+           else [])
+         superBounds in
   let assocs =
     V.map
       (\x ->
@@ -2082,8 +2005,7 @@ fun registerTraitDecl (i : Inf s) (a : HirArena) (items : [Item])
       in
       let dflt =
         V.find (\id -> V.getOr "" i.names id == mname) (V.concatMap (\b -> boundBy a b) defaults)
-      in
-      (mname, var, hirMethodSigTy a ms, dflt))
+      in (mname, var, hirMethodSigTy a ms, dflt))
     sigs in
   registerTrait i a canon params supers assocs methods (canon ++ ".#dict")
 
@@ -2102,8 +2024,7 @@ fun registerImpls (i : Inf s) (here : Here) (decls : [HirDecl])
     sortOn
       (\x -> traitDepth i (canonOf i (hirRefId a (snd x).trRef) (hirNameText a (snd x).tr)) 0)
       impls
-  in
-  V.foldl
+  in V.foldl
     (\w x ->
       match x with
       | (d, r) ->
@@ -2115,8 +2036,7 @@ fun registerImpls (i : Inf s) (here : Here) (decls : [HirDecl])
                 ( assocCanon shape (hirNameText a (hirAssocDefName a ad)), hirAssocDefTy a ad
                 ))
               r.assocs
-          in
-          registerImpl
+          in registerImpl
             i
             a
             tr
@@ -2130,8 +2050,7 @@ fun registerImpls (i : Inf s) (here : Here) (decls : [HirDecl])
 -- An associated type's canonical name, among a trait's, by its spelling.
 fun assocCanon (shape : Maybe TraitShape) (name : String) : String =
   match shape with
-  | Just (sh : TraitShape) ->
-      M.unwrapOr name (V.find (\x -> spelling x == name) sh.assocs)
+  | Just (sh : TraitShape) -> M.unwrapOr name (V.find (\x -> spelling x == name) sh.assocs)
   | None -> name
 
 -- The bodies inside a module's traits and `impl`s: each default, and each
@@ -2144,8 +2063,7 @@ fun inferTraits (i : Inf s) outs (done : StRef s (HashMap String Int))
     (\w d ->
       let within = { here | scope = "${show here.m}:${show d}" } in
       match viewHirDecl a d with
-      | HirDeclView.Trait r ->
-          V.foldl (\x b -> topBind i outs done within b) () r.defaults
+      | HirDeclView.Trait r -> V.foldl (\x b -> topBind i outs done within b) () r.defaults
       | HirDeclView.Impl r ->
           inferImpl
             i
@@ -2193,8 +2111,7 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
                        }
                      in
                      let x = stSetRef i.methodSigs (H.insert vid sc (stGetRef i.methodSigs))
-                     in
-                     topBind i outs done here b
+                     in topBind i outs done here b
                  | None -> ())
                ()
                methods in
@@ -2224,37 +2141,34 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
                      found.preds
                    )
                  else instantiateWithPreds i found)
-             in
-             (match inst with
-              | (instTy, given) ->
-                  let x = stSetRef i.givens given in
-                  let over = (match instTy with | Con _ args -> args | _ -> [])
-                  in
-                  let y =
-                    V.foldl
-                      (\z (sup : Super) ->
-                        (let k =
-                            B.push
-                              i.wanted
-                              (Wanted {
-                                pred = Pred {
-                                  tr = sup.tr,
-                                  tys = V.map (\j -> V.getOr Error over j) sup.over,
-                                  assocs = superAssocs i tr (V.drop over shape.params) sup.tr sup.over
-                                },
-                                owner = Just dict,
-                                sol = None
-                              })
-                          in ()))
-                      ()
-                      shape.supers
-                  in
-                  let z = solveWanted i in
-                  let q = exitLevel i.ar in
-                  let s1 = stSetRef i.methodSigs (H.insert dict found (stGetRef i.methodSigs))
-                  in
-                  let s2 = closeBinding i started [(dict, instTy)] True in
-                  stSetRef i.methodSigs (H.delete dict (stGetRef i.methodSigs)))
+             in (match inst with
+                 | (instTy, given) ->
+                     let x = stSetRef i.givens given in
+                     let over = (match instTy with | Con _ args -> args | _ -> []) in
+                     let y =
+                       V.foldl
+                         (\z (sup : Super) ->
+                           (let k =
+                               B.push
+                                 i.wanted
+                                 (Wanted {
+                                   pred = Pred {
+                                     tr = sup.tr,
+                                     tys = V.map (\j -> V.getOr Error over j) sup.over,
+                                     assocs = superAssocs i tr (V.drop over shape.params) sup.tr sup.over
+                                   },
+                                   owner = Just dict,
+                                   sol = None
+                                 })
+                             in ()))
+                         ()
+                         shape.supers
+                     in
+                     let z = solveWanted i in
+                     let q = exitLevel i.ar in
+                     let s1 = stSetRef i.methodSigs (H.insert dict found (stGetRef i.methodSigs)) in
+                     let s2 = closeBinding i started [(dict, instTy)] True in
+                     stSetRef i.methodSigs (H.delete dict (stGetRef i.methodSigs)))
        | _ -> ())
   | _ -> ()
 
@@ -2305,8 +2219,7 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
         (\k -> ( V.getOr (emptyMod ()) i.mods k, V.getOr (emptyDeclared ()) r.modules k, k ))
         (V.range 0 (V.len i.mods))
     in
-    let tables = V.map (\x -> match x with | (md, _, k) -> (modArena md, rootDecls r k)) mods
-    in
+    let tables = V.map (\x -> match x with | (md, _, k) -> (modArena md, rootDecls r k)) mods in
     let bindings = V.map (\x -> (fst x, bindingsOf (fst x) (snd x))) tables in
     let order = moduleOrder bindings H.empty in
     let dicts = implDicts r in
@@ -2331,8 +2244,7 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
         ()
         order
     in
-    let u7 = V.foldl (\w k -> declarations i k (rootDecls r k) (declaredOf r k).items) () order
-    in
+    let u7 = V.foldl (\w k -> declarations i k (rootDecls r k) (declaredOf r k).items) () order in
     -- The unit's bindings as one graph, each module's grouped first.
     let grouped =
       V.map
@@ -2369,8 +2281,7 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
     let u10 = solveOverloads i True in
     let quantified =
       V.foldl
-        (\h (g : Generalized) ->
-          V.foldl (\h2 v -> H.insert v True h2) h g.vars)
+        (\h (g : Generalized) -> V.foldl (\h2 v -> H.insert v True h2) h g.vars)
         H.empty
         (H.values (stGetRef i.generalized))
     in
@@ -2392,12 +2303,10 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int))
         H.empty
         (stGetRef i.exports)
     in
-    let dumps = V.map (\k -> dumpModule i r k general texts) (V.range 0 (V.len r.modules))
-    in
+    let dumps = V.map (\k -> dumpModule i r k general texts) (V.range 0 (V.len r.modules)) in
     let typed =
       V.map (\k -> writtenModule i r outs (stGetRef done) k) (V.range 0 (V.len r.programs))
-    in
-    Inferred { dumps = dumps, schemes = exported, types = ownTypes i, typed = typed })
+    in Inferred { dumps = dumps, schemes = exported, types = ownTypes i, typed = typed })
 
 -- Module `k` as inference wrote it, every type settled.
 fun writtenModule (i : Inf s) (r : Renamed) outs (done : HashMap String Int)
@@ -2437,8 +2346,7 @@ fun writtenDecl (cx : Cx s) (src : HirArena) out (done : HashMap String Int)
               inner)
           (writtenDecl cx src out done r.decl)
       else None
-  | HirDeclView.Bind r ->
-      Just (newInferringDeclBind out meta (writtenBind cx src out done r.bind))
+  | HirDeclView.Bind r -> Just (newInferringDeclBind out meta (writtenBind cx src out done r.bind))
   | HirDeclView.Trait r ->
       Just
         (newInferringDeclTrait
@@ -2486,8 +2394,7 @@ fun checkMain (i : Inf s) (r : Renamed) : () ! { St s | e } =
         then V.filter (\(it : Item) -> it.kind == "v" and it.name == "main") d.items
         else [])
       r.modules
-  in
-  match V.get mains 0 with
+  in match V.get mains 0 with
   | None -> ()
   | Just (it : Item) ->
       (match H.lookup it.id (stGetRef i.generalized) with
@@ -2511,12 +2418,11 @@ fun fits (i : Inf s) (a : Type) (b : Type) : Bool ! { St s | e } =
 -- What `main` performs that nobody would answer, said.
 fun unanswered (i : Inf s) (eff : Type) : () ! { St s | e } =
   let names = V.filter (\l -> not (V.elem l runtimeEffects)) (V.map fst (labelsOf eff))
-  in
-  if V.isEmpty names then ()
-  else
-    report
-      i
-      "`main` performs ${S.join ", " (V.map (\l -> "`${spelling l}`") names)}, which nothing would handle"
+  in if V.isEmpty names then ()
+     else
+       report
+         i
+         "`main` performs ${S.join ", " (V.map (\l -> "`${spelling l}`") names)}, which nothing would handle"
 
 fun emptyMod () : Mod = Mod { a = emptyArena (), file = "" }
 
@@ -2612,9 +2518,7 @@ fun canonTable (r : Renamed) : HashMap Int String =
   V.foldl
     (\h (it : Item) -> if S.startsWith "op:" it.owner
       then H.insert it.id it.owner h
-      else if S.isEmpty it.canon
-      then h
-      else H.insert it.id it.canon h)
+      else if S.isEmpty it.canon then h else H.insert it.id it.canon h)
     H.empty
     (V.append own r.depItems)
 
@@ -2625,9 +2529,7 @@ fun entriesOf (r : Renamed) : [Int] =
       then
         V.concatMap
         (\(it : Item) ->
-          if it.kind == "v" and it.name == "main" and S.isEmpty it.owner
-          then [it.id]
-          else [])
+          if it.kind == "v" and it.name == "main" and S.isEmpty it.owner then [it.id] else [])
         d.items
       else [])
     r.modules
@@ -2686,8 +2588,7 @@ fun loadTypes (i : Inf s) (t : TypeEnv) : () ! { St s | e } =
         (\h (e : Entry AssocOwner) -> H.insert e.key e.value h)
         (stGetRef i.assocOf)
         t.assocOf)
-  in
-  stSetRef
+  in stSetRef
     i.impls
     (V.foldl (\h (e : Entry ImplDef) -> H.insert e.key e.value h) (stGetRef i.impls) t.impls)
 
@@ -2696,8 +2597,7 @@ fun loadTypes (i : Inf s) (t : TypeEnv) : () ! { St s | e } =
 -- along.
 fun ownTypes (i : Inf s) : TypeEnv ! { St s | e } =
   let entries = \h -> V.map (\kv -> Entry { key = fst kv, value = snd kv }) (H.toVec h)
-  in
-  TypeEnv {
+  in TypeEnv {
     ctors = entries (stGetRef i.ctors),
     variants = entries (stGetRef i.variants),
     fields = V.map (\kv -> Entry { key = fst kv, value = V.map (\f -> Entry { key = fst f, value = snd f }) (H.toVec (snd kv)) }) (H.toVec (stGetRef i.recordFields)),
@@ -2798,16 +2698,14 @@ fun dumpModule (i : Inf s) (r : Renamed) (k : Int)
             id
         in
         let from = siteOffset b.site in
-        let to = if b.until >= 0 then b.until else from + stringByteLength b.name
-        in
+        let to = if b.until >= 0 then b.until else from + stringByteLength b.name in
         -- What is written there: a name, or a macro's call -- a derive's
         -- spans nothing, and reads as nothing.
         let written =
           (match text with
            | Just t -> stringSlice t from to
            | None -> if to > from then b.name else "")
-        in
-        (
+        in (
           (from, to),
           "${show from} ${show to} ${written} : ${M.unwrapOr "?" (M.map showScheme (H.lookup id schemes))}"
         ))
@@ -2818,6 +2716,5 @@ fun dumpModule (i : Inf s) (r : Renamed) (k : Int)
 
 fun siteOffset (site : String) : Int =
   match S.indexOf "@" site with
-  | Just at ->
-      M.unwrapOr 0 (S.toInt (stringSlice site (at + 1) (stringByteLength site)))
+  | Just at -> M.unwrapOr 0 (S.toInt (stringSlice site (at + 1) (stringByteLength site)))
   | None -> 0

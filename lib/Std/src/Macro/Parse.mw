@@ -94,8 +94,7 @@ impl TraversableStream Tokens {
         else
           (match V.get v from with
            | Just t -> startOf t
-           | None ->
-               (match V.get v (V.len v - 1) with | Just t -> endOf t | None -> nowhere))
+           | None -> (match V.get v (V.len v - 1) with | Just t -> endOf t | None -> nowhere))
 }
 
 def nowhere : (Int, Int) = (0 - 1, 0 - 1)
@@ -206,7 +205,6 @@ def sample : [TokenTree] =
     P.skipThen
       ident
       (P.skipThen (punct "=") (P.skipThen ident (group Paren (P.skipThen ident number))))
-  in
-  match parseTokens wanted sample with
+  in match parseTokens wanted sample with
   | Ok got -> assertEq 0 1 "it should not parse"
   | Err e -> assertEq (V.map spanOf e) [At 12 13] "at the `c`"

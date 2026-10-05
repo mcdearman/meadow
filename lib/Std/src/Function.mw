@@ -30,5 +30,4 @@ use Std.Test (assertEq)
 
 @test fun applyIsJustApplication () = assertEq (apply (\n -> n * 3) 4) 12 "apply"
 
-@test fun twiceAppliesTwice () =
-  assertEq (twice (\n -> n * 3) 2) 18 "twice"
+@test fun twiceAppliesTwice () = assertEq (twice (\n -> n * 3) 2) 18 "twice"

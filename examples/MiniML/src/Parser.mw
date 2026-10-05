@@ -34,10 +34,7 @@ fun symbol s = L.symbol sc s
 
 -- A keyword is a word that is not the start of a longer identifier, so `let`
 -- does not match the first three characters of `letter`.
-fun keyword s =
-  P.thenSkip (C.string s) (P.notFollowedBy (P.satisfy isIdentChar))
-    |> P.try
-    |> lexeme
+fun keyword s = P.thenSkip (C.string s) (P.notFollowedBy (P.satisfy isIdentChar)) |> P.try |> lexeme
 
 def reserved = ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"]
 

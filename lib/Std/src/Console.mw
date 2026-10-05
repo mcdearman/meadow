@@ -148,8 +148,7 @@ fun readAllLoop acc =
 
 @test fun printAndPrintlnWriteTheirText () =
   let got = withOutput (\() -> let _ = print "a" in let _ = println "b" in println 42)
-  in
-  assertEq got ((), "ab\n42\n") "a String as itself, anything else as show renders it"
+  in assertEq got ((), "ab\n42\n") "a String as itself, anything else as show renders it"
 
 @test fun withOutputKeepsTheResult () =
   assertEq (withOutput (\() -> let _ = print "x" in 7)) (7, "x") "the value and the text"
@@ -189,13 +188,11 @@ fun readAllLoop acc =
   let (got, written) =
     withOutput (\() -> withInput ["no", "maybe", "yes"] (\() -> promptUntil "?" "again" parse)) in
   let a = assertEq got (Just True) "keeps asking past the answers that do not parse"
-  in
-  assertEq written "?again\n?again\n?" "asked three times, told off twice"
+  in assertEq written "?again\n?again\n?" "asked three times, told off twice"
 
 @test fun promptUntilGivesUpAtEndOfInput () =
   -- Otherwise a piped-in file that never satisfies `parse` would spin forever.
   let parse = \s -> match s with | "yes" -> Just True | _ -> None in
   let (got, written) =
     withOutput (\() -> withInput ["no", "no"] (\() -> promptUntil "?" "again" parse))
-  in
-  assertEq got None "runs out rather than looping"
+  in assertEq got None "runs out rather than looping"

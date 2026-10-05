@@ -215,20 +215,17 @@ fun cFunction (name : String) =
 @test fun aStringGoesInAndAnIntegerComesBack () =
   match cFunction "strlen" with
   | Err why -> assertEq why "" "the C library has strlen"
-  | Ok strlen ->
-      assertEq (callInt strlen [Arg.String "héllo"]) (Ok 6) "its bytes, counted by C"
+  | Ok strlen -> assertEq (callInt strlen [Arg.String "héllo"]) (Ok 6) "its bytes, counted by C"
 
 @test fun anIntegerGoesIn () =
   match cFunction "labs" with
   | Err why -> assertEq why "" "the C library has labs"
-  | Ok labs ->
-      assertEq (callInt labs [Arg.Int (0 - 7)]) (Ok 7) "its absolute value"
+  | Ok labs -> assertEq (callInt labs [Arg.Int (0 - 7)]) (Ok 7) "its absolute value"
 
 @test fun aFloatComesBack () =
   match cFunction "atof" with
   | Err why -> assertEq why "" "the C library has atof"
-  | Ok atof ->
-      assertEq (callFloat atof [Arg.String "2.5"]) (Ok 2.5) "the number it reads"
+  | Ok atof -> assertEq (callFloat atof [Arg.String "2.5"]) (Ok 2.5) "the number it reads"
 
 @test fun aStringComesBackAndANullOneIsEmpty () =
   match cFunction "getenv" with
@@ -239,8 +236,7 @@ fun cFunction (name : String) =
           (callString getenv [Arg.String "MEADOW_NO_SUCH_VARIABLE"])
           (Ok "")
           "null is the empty string"
-      in
-      assertTrue (callString getenv [Arg.String "PATH"] != Ok "") "and PATH is set"
+      in assertTrue (callString getenv [Arg.String "PATH"] != Ok "") "and PATH is set"
 
 @test fun cFillsMemoryThatIsReadBack () =
   match cFunction "memset" with
@@ -264,8 +260,7 @@ fun cFunction (name : String) =
     assertTrue
       (match open "/no/such/library.dylib" with | Err _ -> True | Ok _ -> False)
       "no such library"
-  in
-  match libc () with
+  in match libc () with
   | Err why -> assertEq why "" "the C library opens"
   | Ok l ->
       assertTrue

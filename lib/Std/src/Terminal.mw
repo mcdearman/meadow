@@ -156,9 +156,7 @@ fun codeOf (n : Int) (text : String) : Code =
   else if n == 12 then End
   else if n == 13 then PageUp
   else if n == 14 then PageDown
-  else if n == 15 then Insert
-  else if n >= 100 then Function (n - 100)
-  else Escape
+  else if n == 15 then Insert else if n >= 100 then Function (n - 100) else Escape
 
 fun encode (event : Maybe Event) : (Int, String, Int) =
   match event with
@@ -168,24 +166,23 @@ fun encode (event : Maybe Event) : (Int, String, Int) =
   | Just (Pasted text) -> (21, text, 0)
   | Just (Pressed k) ->
       let held = (if k.shift then 1 else 0) + (if k.alt then 2 else 0) + (if k.ctrl then 4 else 0)
-      in
-      (match k.code with
-       | Character text -> (1, text, held)
-       | Enter -> (2, "", held)
-       | Tab -> (3, "", held)
-       | Backspace -> (4, "", held)
-       | Delete -> (5, "", held)
-       | Escape -> (6, "", held)
-       | Up -> (7, "", held)
-       | Down -> (8, "", held)
-       | Left -> (9, "", held)
-       | Right -> (10, "", held)
-       | Home -> (11, "", held)
-       | End -> (12, "", held)
-       | PageUp -> (13, "", held)
-       | PageDown -> (14, "", held)
-       | Insert -> (15, "", held)
-       | Function f -> (100 + f, "", held))
+      in (match k.code with
+          | Character text -> (1, text, held)
+          | Enter -> (2, "", held)
+          | Tab -> (3, "", held)
+          | Backspace -> (4, "", held)
+          | Delete -> (5, "", held)
+          | Escape -> (6, "", held)
+          | Up -> (7, "", held)
+          | Down -> (8, "", held)
+          | Left -> (9, "", held)
+          | Right -> (10, "", held)
+          | Home -> (11, "", held)
+          | End -> (12, "", held)
+          | PageUp -> (13, "", held)
+          | PageDown -> (14, "", held)
+          | Insert -> (15, "", held)
+          | Function f -> (100 + f, "", held))
 
 -- --- tests -------------------------------------------------------------------
 
@@ -226,11 +223,9 @@ use Std.Test (assertEq)
       Function 5
     ]
   in
-  let held = V.map (\c -> Key { code = c, ctrl = True, alt = False, shift = True }) keys
-  in
+  let held = V.map (\c -> Key { code = c, ctrl = True, alt = False, shift = True }) keys in
   let got = withEvents (V.map (\k -> Pressed k) held) (\() -> V.map (\k -> nextKey ()) held)
-  in
-  assertEq got (V.map (\k -> Just k) held) "its code and what was held"
+  in assertEq got (V.map (\k -> Just k) held) "its code and what was held"
 
 @test fun nextKeyPassesOverWhatIsNotAKey () =
   let got = withEvents [Resized, Pasted "p", Pressed (key Up)] (\() ->

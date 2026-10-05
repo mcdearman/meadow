@@ -205,10 +205,7 @@ impl VisualStream String {
     let n = charCode c in
     if n == 10 then "newline"
     else if n == 13 then "carriage return"
-    else if n == 9 then "tab"
-    else if n == 32 then "space"
-    else if n == 0 then "null"
-    else debug c
+    else if n == 9 then "tab" else if n == 32 then "space" else if n == 0 then "null" else debug c
 
   fun showTokens input cs =
     if V.len cs == 1 then showToken input (V.getOr ' ' cs 0)
@@ -304,8 +301,7 @@ fun orElse a b =
   else if ob > oa then b
   else
     match (a, b) with
-    | (Trivial o u1 e1, Trivial _ u2 e2) ->
-        Trivial o (orElse u1 u2) (V.append e1 e2)
+    | (Trivial o u1 e1, Trivial _ u2 e2) -> Trivial o (orElse u1 u2) (V.append e1 e2)
     | (Fancy o m1, Fancy _ m2) -> Fancy o (V.append m1 m2)
     | (Fancy _ _, _) -> a
     | (_, Fancy _ _) -> b
@@ -368,8 +364,7 @@ use Parser.*
 -- What the second half of a `bind` answers, given the first half's.
 fun andThen c off2 hs reply =
   match reply with
-  | Done c2 b off3 hs2 ->
-      Done (c or c2) b off3 (if c2 then hs2 else V.append hs hs2)
+  | Done c2 b off3 hs2 -> Done (c or c2) b off3 (if c2 then hs2 else V.append hs hs2)
   | Failed c2 e -> Failed (c or c2) (if c2 then e else withHints off2 hs e)
 
 -- Run `p`, then the parser `f` builds from its result.
@@ -482,8 +477,7 @@ fun andThen c off2 hs reply =
     | Failed False e ->
         (match runP q input off with
          | Failed False e2 -> Failed False (mergeError e e2)
-         | Done False b off2 hs ->
-             Done False b off2 (V.append (hintsOf off e) hs)
+         | Done False b off2 hs -> Done False b off2 (V.append (hintsOf off e) hs)
          | other -> other))
 
 -- The first of `ps` that succeeds.
@@ -523,10 +517,8 @@ fun found input off =
 @pub fun label (what : String) (p : Parser s a) : Parser s a =
   Parser (\input off ->
     match runP p input off with
-    | Failed False (Trivial o u _) if o == off ->
-        Failed False (Trivial o u [Label what])
-    | Done False a off2 hs ->
-        Done False a off2 (if V.isEmpty hs then hs else [Label what])
+    | Failed False (Trivial o u _) if o == off -> Failed False (Trivial o u [Label what])
+    | Done False a off2 hs -> Done False a off2 (if V.isEmpty hs then hs else [Label what])
     | other -> other)
 
 -- `p`, saying nothing about what it wanted when it fails or what it would
@@ -568,8 +560,7 @@ fun found input off =
       | Just (t, next) ->
           (match f t with
            | Just a -> Done True a next []
-           | None ->
-               Failed False (Trivial off (Just (Tokens (tokenToChunk t))) expected)))
+           | None -> Failed False (Trivial off (Just (Tokens (tokenToChunk t))) expected)))
 
 -- Any single token; fails only at the end of input.
 @pub fun anySingle : Stream s => Parser s (Token s)
@@ -616,8 +607,7 @@ fun rest input off = fst (takeWhile input (\t -> True) off)
     Parser (\input off ->
       match take1 input off with
       | None -> Done False () off []
-      | Just (t, _) ->
-          Failed False (Trivial off (Just (Tokens (tokenToChunk t))) [EndOfInput]))
+      | Just (t, _) -> Failed False (Trivial off (Just (Tokens (tokenToChunk t))) [EndOfInput]))
 
 -- The longest run of tokens satisfying `f`, possibly empty. Never fails.
 --
@@ -677,8 +667,7 @@ fun manyLoop p input acc off consumed =
   | Failed True e -> Failed True e
   | Failed False e -> Done consumed acc off (hintsOf off e)
   | Done True a off2 _ -> manyLoop p input (V.pushBack acc a) off2 True
-  | Done False _ _ _ ->
-      Failed consumed (Fancy off ["a repeated parser that consumes nothing"])
+  | Done False _ _ _ -> Failed consumed (Fancy off ["a repeated parser that consumes nothing"])
 
 -- Zero or more of `p`, stopping at the first failure that consumed nothing --
 -- whose wishes it hints.
@@ -698,9 +687,7 @@ fun manyLoop p input acc off consumed =
 @pub fun skipSome (p : Parser s a) : Parser s () = p |> some |> void
 
 fun countLoop n p acc =
-  if n <= 0
-  then pure acc
-  else bind p (\x -> countLoop (n - 1) p (V.pushBack acc x))
+  if n <= 0 then pure acc else bind p (\x -> countLoop (n - 1) p (V.pushBack acc x))
 
 -- Exactly `n` of `p`.
 @pub fun count (n : n) (p : Parser s a) : Parser s [a] = countLoop n p V.empty
@@ -735,8 +722,7 @@ fun tillLoop p stop input acc off consumed =
   | Failed False e1 ->
       (match runP p input off with
        | Failed c2 e2 -> Failed (consumed or c2) (mergeError e1 e2)
-       | Done True a off2 _ ->
-           tillLoop p stop input (V.pushBack acc a) off2 True
+       | Done True a off2 _ -> tillLoop p stop input (V.pushBack acc a) off2 True
        | Done False _ _ _ ->
            Failed consumed (Fancy off ["a repeated parser that consumes nothing"]))
 
@@ -790,8 +776,7 @@ fun orList xs =
           | None -> ""
         in
         let wants = expected |> V.map showItem |> dedupe in
-        let x = if V.isEmpty wants then "" else S.concatAll ["expecting ", orList wants, "\n"]
-        in
+        let x = if V.isEmpty wants then "" else S.concatAll ["expecting ", orList wants, "\n"] in
         let text = S.concat u x in
         if S.isEmpty text then "unknown parse error\n" else text
 
@@ -819,8 +804,7 @@ fun orList xs =
       match takeN input width off with
       | Just (_, next) -> next
       | None -> off
-    in
-    sourceSpan input off stop
+    in sourceSpan input off stop
 
 -- --- tests -------------------------------------------------------------------
 
@@ -835,8 +819,7 @@ fun errorOf r =
 
 @test fun aStringIsAStreamOfChars () =
   let a = assertEq (take1 "héllo" 1) (Just ('é', 3)) "a two-byte character" in
-  let b = assertEq (takeN "héllo" 2 0) (Just ("hé", 3)) "two characters, three bytes"
-  in
+  let b = assertEq (takeN "héllo" 2 0) (Just ("hé", 3)) "two characters, three bytes" in
   let c = assertEq (takeWhile "abc123" isAlpha 0) ("abc", 3) "a run" in
   assertEq (take1 "" 0) None "the end"
 
@@ -848,8 +831,7 @@ fun errorOf r =
   let a = assertEq (runParser (single 'a') "abc") (Ok 'a') "single" in
   let b = assertEq (runParser (chunk "ab") "abc") (Ok "ab") "chunk" in
   let c = assertEq (runParser (takeWhile1P "a digit" isDigit) "123x") (Ok "123") "takeWhile1P"
-  in
-  assertEq (runParser (many (single 'a')) "aab") (Ok ['a', 'a']) "many"
+  in assertEq (runParser (many (single 'a')) "aab") (Ok ['a', 'a']) "many"
 
 @test fun errorsSayWhatWasFoundAndWanted () =
   let a = assertEq (errorOf (runParser (single 'a') "b")) "unexpected 'b'\nexpecting 'a'" "a token"
@@ -869,8 +851,7 @@ fun errorOf r =
   let alts = alt (single 'a') (single 'b') in
   let d =
     assertEq (errorOf (runParser alts "c")) "unexpected 'c'\nexpecting 'a' or 'b'" "alternatives"
-  in
-  assertEq
+  in assertEq
     (errorOf (runParser (single 'a') "\n"))
     "unexpected newline\nexpecting 'a'"
     "a newline by name"
@@ -883,8 +864,7 @@ fun errorOf r =
   let lz = skipThen (single 'l') (single 'z') in
   let a = assertFalse (isOk (runParser (alt lz (single 'l')) "let")) "committed" in
   let b = assertEq (runParser (alt (try lz) (single 'l')) "let") (Ok 'l') "try un-consumes"
-  in
-  assertEq (runParser (alt (chunk "letter") (chunk "let")) "lets") (Ok "let") "chunk is atomic"
+  in assertEq (runParser (alt (chunk "letter") (chunk "let")) "lets") (Ok "let") "chunk is atomic"
 
 @test fun hintsJoinWhatTheNextParserWanted () =
   let digit = label "a digit" (satisfy isDigit) in
@@ -893,8 +873,7 @@ fun errorOf r =
   in
   let sign = optional (single '-') in
   let opt = runParser (skipThen sign digit) "x" in
-  let b = assertEq (errorOf opt) "unexpected 'x'\nexpecting a digit or '-'" "after optional"
-  in
+  let b = assertEq (errorOf opt) "unexpected 'x'\nexpecting a digit or '-'" "after optional" in
   let run = runParser (thenSkip (takeWhile1P "a digit" isDigit) eof) "12x" in
   assertEq (errorOf run) "unexpected 'x'\nexpecting end of input or a digit" "after takeWhile1P"
 

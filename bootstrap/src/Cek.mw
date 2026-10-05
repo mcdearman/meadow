@@ -181,8 +181,7 @@ fun eval (m : Machine) (t : CoreTerm) (env : Map (Ref Value)) (k : List Frame) =
       else (let u = fill scope j (Closure params rhs scope) in go m (Eval body scope) k)
   -- The join point applied to each argument in turn: the frames of
   -- `((j a) b)`, under `j`.
-  | CoreTermJump j args ->
-      variable m j env (V.foldr (\x acc -> EvalArg x env :: acc) k args)
+  | CoreTermJump j args -> variable m j env (V.foldr (\x acc -> EvalArg x env :: acc) k args)
   | CoreTermLetRec binds body ->
       let pairs = V.map (\b -> (coreBindId a b, coreBindValue a b)) binds in
       let scope = V.foldl (\e b -> define e (fst b) Unit) env pairs in
@@ -196,8 +195,7 @@ fun eval (m : Machine) (t : CoreTerm) (env : Map (Ref Value)) (k : List Frame) =
   | CoreTermPrim op xs -> start m (Shape.Prim op) xs env k
   | CoreTermRecord fs ->
       (match V.get fs 0 with
-       | Just first ->
-           go m (Eval (coreFieldValue a first) env) (BuildRecord [] fs env :: k)
+       | Just first -> go m (Eval (coreFieldValue a first) env) (BuildRecord [] fs env :: k)
        | None -> go m (Ret (Record [])) k)
   | CoreTermProj x i -> go m (Eval x env) (Proj i :: k)
   | CoreTermSel x l -> go m (Eval x env) (Sel l :: k)
@@ -206,8 +204,7 @@ fun eval (m : Machine) (t : CoreTerm) (env : Map (Ref Value)) (k : List Frame) =
   | CoreTermPerform e o x -> go m (Eval x env) (PerformWith e o :: k)
   | CoreTermHandle body clauses retId r ->
       let returned = (match (retId, r) with | (Just v, Just b) -> Just (v, b) | _ -> None)
-      in
-      go m (Eval body env) (HandleMark clauses returned env :: k)
+      in go m (Eval body env) (HandleMark clauses returned env :: k)
   | CoreTermIll -> Err "evaluating an ill-formed expression"
 
 -- A sequence of sub-expressions, left to right, then what they make.
@@ -249,8 +246,7 @@ fun ret (m : Machine) (v : Value) (f : Frame) (k : List Frame) =
   | Build s done pending env ->
       let all = V.pushBack done v in
       (match V.get pending 0 with
-       | Just next ->
-           go m (Eval next env) (Build s all (V.drop pending 1) env :: k)
+       | Just next -> go m (Eval next env) (Build s all (V.drop pending 1) env :: k)
        | None ->
            (match s with
             | Shape.Tuple -> go m (Ret (Tuple all)) k
@@ -269,8 +265,7 @@ fun ret (m : Machine) (v : Value) (f : Frame) (k : List Frame) =
       let all = withField label v done in
       let later = V.drop pending 1 in
       (match V.get later 0 with
-       | Just next ->
-           go m (Eval (coreFieldValue m.arena next) env) (BuildRecord all later env :: k)
+       | Just next -> go m (Eval (coreFieldValue m.arena next) env) (BuildRecord all later env :: k)
        | None -> go m (Ret (Record all)) k)
   | Proj i ->
       (match v with
@@ -297,8 +292,7 @@ fun ret (m : Machine) (v : Value) (f : Frame) (k : List Frame) =
   | PerformWith e o -> perform m e o v k
   | Cache var ->
       let u = (match Map.lookup var m.root with | Just r -> setRef r v | None -> ())
-      in
-      go m (Ret v) k
+      in go m (Ret v) k
   | HandleMark _ r henv ->
       (match r with
        | Just (param, body) -> go m (Eval body (define henv param v)) k
@@ -313,8 +307,7 @@ fun fill (scope : Map (Ref Value)) (var : Int) (v : Value) =
 fun withField (label : String) (v : Value) (fs : [(String, Value)]) :
     [(String, Value)] =
   if V.any (\f -> fst f == label) fs
-  then V.map (\f -> if fst f == label then (label, v) else f) fs
-  else V.pushBack fs (label, v)
+  then V.map (\f -> if fst f == label then (label, v) else f) fs else V.pushBack fs (label, v)
 
 fun select (m : Machine) (label : String) (v : Value) (k : List Frame) =
   match v with
@@ -325,10 +318,9 @@ fun select (m : Machine) (label : String) (v : Value) (k : List Frame) =
   | Ctor name vals ->
       let named = V.find (\f -> fst f == name) m.fields in
       let at = (match named with | Just (_, fs) -> indexOf label fs 0 | None -> 0 - 1)
-      in
-      (match V.get vals at with
-       | Just x -> go m (Ret x) k
-       | None -> Err "`${ctorSpelling name}` has no field `${label}`")
+      in (match V.get vals at with
+          | Just x -> go m (Ret x) k
+          | None -> Err "`${ctorSpelling name}` has no field `${label}`")
   | other -> Err "cannot select `.${label}` from ${display other}"
 
 -- Where `x` is in `xs`, from `i` on, or -1.
@@ -350,8 +342,7 @@ fun arms_ (m : Machine) (arms : [CoreArm]) (env : Map (Ref Value)) (from : Int)
        | Just scope ->
            (match coreArmGuard a arm with
             | None -> go m (Eval (coreArmBody a arm) scope) k
-            | Just g ->
-                go m (Eval g scope) (Guard arms env (from + 1) v scope :: k)))
+            | Just g -> go m (Eval g scope) (Guard arms env (from + 1) v scope :: k)))
 
 -- The scope `p` matching `v` makes of `env`, or `None`.
 fun matched (a : CoreArena) (p : CorePat) (v : Value) (env : Map (Ref Value))
@@ -371,10 +362,7 @@ fun matched (a : CoreArena) (p : CorePat) (v : Value) (env : Map (Ref Value))
        | _ -> None)
   | CorePatPCtor name ps ->
       (match v with
-       | Ctor vname vs ->
-           if name == vname and V.len ps == V.len vs
-           then all a ps vs env
-           else None
+       | Ctor vname vs -> if name == vname and V.len ps == V.len vs then all a ps vs env else None
        | _ -> None)
   | CorePatPRecord fs ->
       (match v with
@@ -400,8 +388,7 @@ fun all (a : CoreArena) (ps : [CorePat]) (vs : [Value]) (env : Map (Ref Value))
 
 fun litMatches (a : CoreArena) (l : CoreLit) (v : Value) : Bool =
   match (a, l) with
-  | CoreLitLInt n ->
-      (match v with | Int b -> n == b | _ -> equal (literal a l) v)
+  | CoreLitLInt n -> (match v with | Int b -> n == b | _ -> equal (literal a l) v)
   | CoreLitLBig _ -> equal (literal a l) v
   | CoreLitLWord _ _ -> equal (literal a l) v
   | CoreLitLF64 x -> (match v with | Float y -> x == y | _ -> False)
@@ -454,8 +441,7 @@ fun perform (m : Machine) (e : String) (o : String) (arg : Value)
       let cont = Cont (newRef (Just taken)) in
       let scope =
         define (define henv (coreClauseParam a clause) arg) (coreClauseResume a clause) cont
-      in
-      go m (Eval (coreClauseBody a clause) scope) outer
+      in go m (Eval (coreClauseBody a clause) scope) outer
 
 -- The frames down to the first handler for `e.o`, that handler's frame last;
 -- what is under it; its clause; and its scope.
@@ -529,8 +515,7 @@ fun prim (op : String) (args : [Value]) : Result String Value ! { Mut | e } =
   | "StringByteLength" ->
       (match a with
        | Str s -> Ok (Int (stringByteLength s))
-       | other ->
-           Err "stringByteLength: expected a String, got ${display other}")
+       | other -> Err "stringByteLength: expected a String, got ${display other}")
   | "StringSlice" ->
       (match (a, b, c) with
        | (Str s, Int x, Int y) -> Ok (Str (stringSlice s x y))
@@ -581,8 +566,7 @@ fun prim (op : String) (args : [Value]) : Result String Value ! { Mut | e } =
        | (Array xs, Int i) ->
            (match V.get xs i with
             | Just x -> Ok x
-            | None ->
-                Err "arrayGet: index ${show i} out of bounds (len ${show (V.len xs)})")
+            | None -> Err "arrayGet: index ${show i} out of bounds (len ${show (V.len xs)})")
        | _ -> Err "arrayGet: expected an Array")
   | "ArrayGetOr" ->
       (match (b, c) with
@@ -647,16 +631,14 @@ fun prim (op : String) (args : [Value]) : Result String Value ! { Mut | e } =
            if n >= 0
            then Ok (Mut (newRef (V.map (\_ -> b) (V.range 0 n))))
            else Err "stNewArray: expected a length of zero or more, got ${display a}"
-       | other ->
-           Err "stNewArray: expected a length of zero or more, got ${display other}")
+       | other -> Err "stNewArray: expected a length of zero or more, got ${display other}")
   | "StGetArray" ->
       (match (a, b) with
        | (Mut r, Int i) ->
            let cells = getRef r in
            (match V.get cells i with
             | Just x -> Ok x
-            | None ->
-                Err "stGetArray: index ${show i} out of bounds (len ${show (V.len cells)})")
+            | None -> Err "stGetArray: index ${show i} out of bounds (len ${show (V.len cells)})")
        | _ -> Err "stGetArray: expected a mutable array")
   | "StSetArray" ->
       (match (a, b) with
@@ -696,8 +678,7 @@ fun prim (op : String) (args : [Value]) : Result String Value ! { Mut | e } =
       (match a with
        | Ref r -> (let u = setRef r b in Ok Unit)
        | other -> Err "setRef: expected a Ref, got ${display other}")
-  | other ->
-      Err "MeadowBoot's CEK machine does not have the primitive `${other}` yet"
+  | other -> Err "MeadowBoot's CEK machine does not have the primitive `${other}` yet"
 
 -- Toward zero, as Rust's `as i64` has it.
 fun truncated (x : Float) : Int = if x >=. 0.0 then floor x else 0 - floor (0.0 -. x)
@@ -765,8 +746,7 @@ fun integral (what : String) (op : String) (a : Value) (b : Value) =
   | (Big x, Big y) -> made Big (arith op x y)
   | (Big x, Int y) -> made Big (arith op x (toBigInt y))
   | (Int x, Big y) -> made Big (arith op (toBigInt x) y)
-  | _ ->
-      Err "`${what}` expects two integers of one type, got ${display a} and ${display b}"
+  | _ -> Err "`${what}` expects two integers of one type, got ${display a} and ${display b}"
 
 fun ordered (what : String) (op : String) (a : Value) (b : Value) =
   let ok = \x -> Ok (Bool x) in
@@ -796,8 +776,7 @@ fun ordered (what : String) (op : String) (a : Value) (b : Value) =
   | (Big x, Big y) -> ok (compared op x y)
   | (Big x, Int y) -> ok (compared op x (toBigInt y))
   | (Int x, Big y) -> ok (compared op (toBigInt x) y)
-  | _ ->
-      Err "`${what}` expects two integers of one type, got ${display a} and ${display b}"
+  | _ -> Err "`${what}` expects two integers of one type, got ${display a} and ${display b}"
 
 fun negated (a : Value) =
   match a with
@@ -875,20 +854,12 @@ fun asFloat (a : Value) =
 fun floatArith (op : String) (x : f) (y : f) : f =
   if op == "AddF"
   then x +. y
-  else if op == "SubF"
-  then x -. y
-  else if op == "MulF"
-  then x *. y
-  else x /. y
+  else if op == "SubF" then x -. y else if op == "MulF" then x *. y else x /. y
 
 fun floatCompare (op : String) (x : f) (y : f) : Bool =
   if op == "LtF"
   then x <. y
-  else if op == "GtF"
-  then x >. y
-  else if op == "LeF"
-  then x <=. y
-  else x >=. y
+  else if op == "GtF" then x >. y else if op == "LeF" then x <=. y else x >=. y
 
 fun fractional (what : String) (op : String) (a : Value) (b : Value) =
   let f = \x y -> floatArith op x y in
@@ -898,8 +869,7 @@ fun fractional (what : String) (op : String) (a : Value) (b : Value) =
   | (F32 x, F32 y) -> Ok (F32 (g x y))
   | (F32 x, Float y) -> Ok (F32 (g x (toFloat32 y)))
   | (Float x, F32 y) -> Ok (F32 (g (toFloat32 x) y))
-  | _ ->
-      Err "`${what}` expects two floats of one type, got ${display a} and ${display b}"
+  | _ -> Err "`${what}` expects two floats of one type, got ${display a} and ${display b}"
 
 fun fractionalOrder (what : String) (op : String) (a : Value) (b : Value) =
   let f = \x y -> floatCompare op x y in
@@ -909,8 +879,7 @@ fun fractionalOrder (what : String) (op : String) (a : Value) (b : Value) =
   | (F32 x, F32 y) -> Ok (Bool (g x y))
   | (F32 x, Float y) -> Ok (Bool (g x (toFloat32 y)))
   | (Float x, F32 y) -> Ok (Bool (g (toFloat32 x) y))
-  | _ ->
-      Err "`${what}` expects two floats of one type, got ${display a} and ${display b}"
+  | _ -> Err "`${what}` expects two floats of one type, got ${display a} and ${display b}"
 
 -- Structural, as `meadow_eval`'s `value_eq`: a cell by which one it is.
 fun equal (a : Value) (b : Value) : Bool =
@@ -1015,10 +984,8 @@ fun hashInto (v : Value) (h : Int) =
         (sortOn fst fs)
   | Compact x -> hashInto x (tagged h 12)
   | Ref _ -> Err "cannot hash a Ref: it has no structure to compare by"
-  | Mut _ ->
-      Err "cannot hash a mutable array: it has no structure to compare by"
-  | Closure _ _ _ ->
-      Err "cannot hash a function: it has no structure to compare by"
+  | Mut _ -> Err "cannot hash a mutable array: it has no structure to compare by"
+  | Closure _ _ _ -> Err "cannot hash a function: it has no structure to compare by"
   | Cont _ -> Err "cannot hash a function: it has no structure to compare by"
   | Lazy _ -> Err "hash: a top-level value that was never evaluated"
   | other ->
@@ -1039,10 +1006,7 @@ fun floatBits (x : Float) : Int =
     let negative = x <. 0.0 in
     let a = if negative then 0.0 -. x else x in
     let magnitude = if a == 1.0 /. 0.0 then 9218868437227405312 else finiteBits a
-    in
-    if negative
-    then bitOr magnitude (0 - 9223372036854775807 - 1)
-    else magnitude
+    in if negative then bitOr magnitude (0 - 9223372036854775807 - 1) else magnitude
 
 fun finiteBits (a : Float) : Int =
   match normalised a 0 with
@@ -1055,9 +1019,7 @@ fun finiteBits (a : Float) : Int =
 -- float, `e` at -1074 and `m` smaller.
 fun normalised (a : Float) (e : Int) : (Float, Int) =
   if a >=. 9007199254740992.0 then normalised (a *. 0.5) (e + 1)
-  else if a <. 4503599627370496.0 and e > 0 - 1074
-  then normalised (a *. 2.0) (e - 1)
-  else (a, e)
+  else if a <. 4503599627370496.0 and e > 0 - 1074 then normalised (a *. 2.0) (e - 1) else (a, e)
 
 -- --- display -----------------------------------------------------------------
 
@@ -1091,8 +1053,7 @@ fun displayed (v : Value) = match v with | Str s -> s | other -> display other
         (match listItems v [] with
          | Just items -> "[" ++ joined "; " items ++ "]"
          | None -> "${bare name}(..)")
-      else if V.isEmpty xs then bare name
-      else "${bare name}(" ++ joined ", " xs ++ ")"
+      else if V.isEmpty xs then bare name else "${bare name}(" ++ joined ", " xs ++ ")"
   | Closure _ _ _ -> "<closure>"
   | Cont _ -> "<continuation>"
   | Ref r -> "ref ${display (getRef r)}"
@@ -1127,10 +1088,7 @@ fun ctorSpelling (name : String) : String =
 
 fun afterLast (sep : String) (s : String) : String =
   match lastIndex sep s 0 (0 - 1) with
-  | i ->
-      if i < 0
-      then s
-      else stringSlice s (i + stringByteLength sep) (stringByteLength s)
+  | i -> if i < 0 then s else stringSlice s (i + stringByteLength sep) (stringByteLength s)
 
 fun lastIndex (sep : String) (s : String) (from : Int) (found : Int) : Int =
   match S.indexOfFrom sep s from with

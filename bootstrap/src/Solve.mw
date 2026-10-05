@@ -218,10 +218,8 @@ use Sol.*
 
 fun describe (i : Inf s) (err : UnifyError) : String ! { St s | e } =
   match err with
-  | Mismatch a b ->
-      "type mismatch: `${showType (zonk i.ar a)}` vs `${showType (zonk i.ar b)}`"
-  | Occurs a b ->
-      "infinite type: `${showType (zonk i.ar a)}` occurs in `${showType (zonk i.ar b)}`"
+  | Mismatch a b -> "type mismatch: `${showType (zonk i.ar a)}` vs `${showType (zonk i.ar b)}`"
+  | Occurs a b -> "infinite type: `${showType (zonk i.ar a)}` occurs in `${showType (zonk i.ar b)}`"
   | NotANumber integer t ->
       "type mismatch: `${showType (zonk i.ar t)}` is not ${if integer then "an integer type" else "a float type"}"
   | Escape -> "state from inside a `runSt` escapes it"
@@ -257,8 +255,7 @@ fun describe (i : Inf s) (err : UnifyError) : String ! { St s | e } =
     (classes : Bool) (preds : [Pred]) : Scheme ! { St s | e } =
   let level = levelOf i.ar in
   -- A name still waiting on its overload has a type that is not settled.
-  let u = V.foldl (\w (p : Pending) -> holdBack i.ar p.ty level) () (stGetRef i.pending)
-  in
+  let u = V.foldl (\w (p : Pending) -> holdBack i.ar p.ty level) () (stGetRef i.pending) in
   let z = zonk i.ar t in
   let v = if classes then () else holdBackClasses i.ar z level in
   match quantifyFrom i.ar z (Just level) noneQuantified classes with
@@ -277,16 +274,13 @@ fun describe (i : Inf s) (err : UnifyError) : String ! { St s | e } =
                                             ))))
           ([], q)
           preds
-      in
-      match scrutinee with
+      in match scrutinee with
       | (qpreds, qall) ->
           let lacks =
             V.concatMap
               (\kv ->
                 (let ls = lacksOf i.ar (fst kv) in
-                  if V.isEmpty ls
-                  then []
-                  else [Lacking { at = snd kv, labels = ls }]))
+                  if V.isEmpty ls then [] else [Lacking { at = snd kv, labels = ls }]))
               (H.toVec qall.map)
           in
           let sc = Scheme { quant = qall.kinds, preds = qpreds, ty = body, lacks = sortLacks lacks }
@@ -301,8 +295,7 @@ fun describe (i : Inf s) (err : UnifyError) : String ! { St s | e } =
                     (Generalized { scheme = sc, vars = varsOf qall })
                     (stGetRef i.generalized))
              | None -> ())
-          in
-          sc
+          in sc
 
 fun quantifyEach (i : Inf s) (ts : [Type]) (q : Quantified) (level : Int)
     (classes : Bool) : ([Type], Quantified) ! { St s | e } =
@@ -358,19 +351,16 @@ fun varsOf (q : Quantified) : [Int] =
                (\acc l -> V.foldl (\o x -> collectTyvars a x o) acc (hirLabelArgs a l))
                res
                (hirRowLabels a row)
-           in
-           (match hirRowTail a row with
-            | Just tl -> addVar labels (hirNameText a tl)
-            | None -> labels)
+           in (match hirRowTail a row with
+               | Just tl -> addVar labels (hirNameText a tl)
+               | None -> labels)
        | None -> res)
-  | HirTypeView.Tuple r ->
-      V.foldl (\acc x -> collectTyvars a x acc) out r.items
+  | HirTypeView.Tuple r -> V.foldl (\acc x -> collectTyvars a x acc) out r.items
   | HirTypeView.Vector r -> collectTyvars a r.item out
   | HirTypeView.List r -> collectTyvars a r.item out
   | HirTypeView.Record r ->
       let fs = V.foldl (\acc f -> collectTyvars a (hirTypeFieldTy a f) acc) out r.fields
-      in
-      (match r.tail with | Just tl -> addVar fs (hirNameText a tl) | None -> fs)
+      in (match r.tail with | Just tl -> addVar fs (hirNameText a tl) | None -> fs)
 
 fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out else V.pushBack out n
 
@@ -393,8 +383,7 @@ fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out e
       conNamed i name args
   | HirTypeView.Fun r ->
       let eff = (match r.row with | Just row -> effOf i a row params | None -> RowEmpty)
-      in
-      funcEff (V.map (\x -> tyOf i a x params) r.params) (tyOf i a r.result params) eff
+      in funcEff (V.map (\x -> tyOf i a x params) r.params) (tyOf i a r.result params) eff
   | HirTypeView.Tuple r -> Tuple (V.map (\x -> tyOf i a x params) r.items)
   | HirTypeView.Vector r -> vectorT (tyOf i a r.item params)
   | HirTypeView.List r -> listT (tyOf i a r.item params)
@@ -406,8 +395,7 @@ fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out e
               | Just k -> Bound k
               | None -> Error)
          | None -> RowEmpty)
-      in
-      Record
+      in Record
         (V.foldl
           (\acc f ->
             RowExtend
@@ -433,8 +421,7 @@ fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out e
   else if name == "Ref" then Con "Ref" [V.getOr (unitT ()) args 0]
   else
     match H.lookup name (stGetRef i.aliases) with
-    | Just (d : AliasDef) ->
-        (if d.params == V.len args then substBound d.body args else Error)
+    | Just (d : AliasDef) -> (if d.params == V.len args then substBound d.body args else Error)
     | None -> Con name args
 
 -- A written effect row as a type.
@@ -442,8 +429,7 @@ fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out e
     (params : HashMap String Int) : Type ! { St s | e } =
   let tail =
     (match hirRowTail a row with
-     | Just tl ->
-         M.unwrapOr RowEmpty (M.map (\k -> Bound k) (H.lookup (hirNameText a tl) params))
+     | Just tl -> M.unwrapOr RowEmpty (M.map (\k -> Bound k) (H.lookup (hirNameText a tl) params))
      | None -> RowEmpty)
   in
   let labels =
@@ -502,8 +488,7 @@ fun isRow (t : Type) : Bool =
   match t with
   | Fun args ret eff ->
       let k1 = markEffectVars ret (V.foldl (\ks x -> markEffectVars x ks) kinds args)
-      in
-      markRowEnd eff k1 Effect
+      in markRowEnd eff k1 Effect
   | Con _ args -> V.foldl (\ks x -> markEffectVars x ks) kinds args
   | Tuple args -> V.foldl (\ks x -> markEffectVars x ks) kinds args
   | Record row -> markRowEnd row kinds Row

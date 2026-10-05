@@ -34,11 +34,7 @@ use Std.Maybe.Maybe.*
   if i < 0 then name else stringSlice name 0 i
 
 fun lastMark (s : String) (i : Int) : Int =
-  if i < 0
-  then 0 - 1
-  else if stringSlice s i (i + 1) == "#"
-  then i
-  else lastMark s (i - 1)
+  if i < 0 then 0 - 1 else if stringSlice s i (i + 1) == "#" then i else lastMark s (i - 1)
 
 fun unmark b (n : Int) =
   let t = astNameTextIn b n in
@@ -56,8 +52,7 @@ fun decl b (d : Int) =
   -- A top-level binding is an item: its name is not hygienic, though its
   -- parameters and body are.
   | AstDeclView.Bind r -> (let u = itemBinder b r.bind in bind b r.bind)
-  | AstDeclView.Sig r ->
-      (let u = unmark b r.name in let v = ty b r.ty in each (bound b) r.bounds)
+  | AstDeclView.Sig r -> (let u = unmark b r.name in let v = ty b r.ty in each (bound b) r.bounds)
   | AstDeclView.Trait r ->
       let u = unmark b r.name in
       let v = each (unmark b) r.params in
@@ -71,8 +66,7 @@ fun decl b (d : Int) =
         each
           (\s -> (let z = unmark b (astMethodSigNameIn b s) in ty b (astMethodSigTyIn b s)))
           r.sigs
-      in
-      each (\x -> (let z = funName b x in bind b x)) r.defaults
+      in each (\x -> (let z = funName b x in bind b x)) r.defaults
   | AstDeclView.Impl r ->
       let u = unmark b r.tr in
       let v = each (ty b) r.tys in
@@ -84,8 +78,7 @@ fun decl b (d : Int) =
               let z = each (ty b) (astAssocDefArgsIn b a) in
               ty b (astAssocDefTyIn b a)))
           r.assocs
-      in
-      each (\m -> (let z = itemBinder b m in bind b m)) r.methods
+      in each (\m -> (let z = itemBinder b m in bind b m)) r.methods
   | AstDeclView.Data r ->
       let u = unmark b r.name in
       let v = each (unmark b) r.params in
@@ -107,8 +100,7 @@ fun decl b (d : Int) =
         each
           (\l -> (let y = unmark b (astLabelNameIn b l) in each (ty b) (astLabelArgsIn b l)))
           (astRowLabelsIn b r.row)
-      in
-      maybe (unmark b) (astRowTailIn b r.row)
+      in maybe (unmark b) (astRowTailIn b r.row)
   | AstDeclView.Use r ->
       let u = each (unmark b) r.path in
       let v = each (unmark b) r.names in
@@ -211,8 +203,7 @@ fun expr b (e : Int) =
   | AstExprView.Qual r -> unmark b r.name
   -- `e.label`: the label is the record's.
   | AstExprView.Proj r -> (let u = expr b r.target in unmark b r.label)
-  | AstExprView.Record r ->
-      (let u = each (fieldE b) r.fields in maybe (expr b) r.base)
+  | AstExprView.Record r -> (let u = each (fieldE b) r.fields in maybe (expr b) r.base)
   | AstExprView.Update r -> (let u = expr b r.base in each (fieldE b) r.fields)
   | AstExprView.Handle r ->
       let u = expr b r.body in
@@ -224,13 +215,11 @@ fun expr b (e : Int) =
               let x = pat b (astHArmParamIn b a) in
               expr b (astHArmBodyIn b a)))
           r.arms
-      in
-      maybe (\x -> (let y = pat b (astRetPatIn b x) in expr b (astRetBodyIn b x))) r.ret
+      in maybe (\x -> (let y = pat b (astRetPatIn b x) in expr b (astRetBodyIn b x))) r.ret
   | AstExprView.Lam r -> (let u = each (pat b) r.params in expr b r.body)
   | AstExprView.App r -> (let u = expr b r.func in each (expr b) r.args)
   | AstExprView.Let r -> (let u = each (bind b) r.binds in expr b r.body)
-  | AstExprView.If r ->
-      (let u = expr b r.cond in let v = expr b r.yes in expr b r.no)
+  | AstExprView.If r -> (let u = expr b r.cond in let v = expr b r.yes in expr b r.no)
   | AstExprView.Match r ->
       let u = expr b r.scrutinee in
       each

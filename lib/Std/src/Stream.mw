@@ -30,10 +30,7 @@ use Std.Collections.Vector as V
 
 -- Every yielded value, in order, as a `List`.
 @pub fun toList (producer : () -> a ! { Yield b | e }) : List b ! e =
-  handle producer () with {
-    yield x k -> x :: k (),
-    return r -> [;]
-  }
+  handle producer () with { yield x k -> x :: k (), return r -> [;] }
 
 -- Run `producer`, calling `f` on each value and discarding the results. The
 -- point of a stream: nothing is collected, so this is constant space in the
@@ -76,10 +73,7 @@ use Std.Collections.Vector as V
 
 -- The first yielded value, if there is one.
 @pub fun first (producer : () -> a ! { Yield b | e }) : Maybe b ! e =
-  handle producer () with {
-    yield x k -> Just x,
-    return r -> None
-  }
+  handle producer () with { yield x k -> Just x, return r -> None }
 
 -- Whether any yielded value satisfies `pred`. Stops at the first one that does.
 @pub fun any (pred : a -> Bool ! e) (producer : () -> b ! { Yield a | e })
@@ -174,22 +168,19 @@ fun countdown n = if n <= 0 then () else let ignored = yield n in countdown (n -
   let a = assertEq (take 3 (\u2 -> range 0 1000000)) [0, 1, 2] "take" in
   let b = assertEq (take 0 (\u2 -> range 0 10)) [] "take nothing" in
   let c = assertEq (take 9 (\u2 -> range 0 2)) [0, 1] "take more than is yielded"
-  in
-  assertEq (takeWhile (\x -> x < 3) (\u2 -> range 0 1000000)) [0, 1, 2] "takeWhile"
+  in assertEq (takeWhile (\x -> x < 3) (\u2 -> range 0 1000000)) [0, 1, 2] "takeWhile"
 
 @test fun searchingAlsoStopsEarly () =
   let a = assertEq (first (\u2 -> range 5 1000000)) (Just 5) "first" in
   let b = assertEq (first (\u2 -> ())) None "first of nothing" in
   let c = assertEq (find (\x -> x > 2) (\u2 -> range 0 1000000)) (Just 3) "find" in
   let d = assertTrue (any (\x -> x > 2) (\u2 -> range 0 1000000)) "any" in
-  let e = assertFalse (any (\x -> x > 9) (\u2 -> range 0 5)) "any, none matching"
-  in
+  let e = assertFalse (any (\x -> x > 9) (\u2 -> range 0 5)) "any, none matching" in
   let f = assertTrue (all (\x -> x < 5) (\u2 -> range 0 5)) "all" in
   assertFalse (all (\x -> x < 3) (\u2 -> range 0 1000000)) "all stops at the first failure"
 
 @test fun mapAndFilterAreProducersThemselves () =
-  let a = assertEq (toVec (\u2 -> map (\x -> x * 2) (\u3 -> range 0 3))) [0, 2, 4] "map"
-  in
+  let a = assertEq (toVec (\u2 -> map (\x -> x * 2) (\u3 -> range 0 3))) [0, 2, 4] "map" in
   let b = assertEq (toVec (\u2 -> filter (\x -> x % 2 == 0) (\u3 -> range 0 6))) [0, 2, 4] "filter"
   in
   -- The interesting part: one composes onto the other.
@@ -215,5 +206,4 @@ fun countdown n = if n <= 0 then () else let ignored = yield n in countdown (n -
 
 @test fun collectionsConvertBackAndForth () =
   let a = assertEq (toVec (\u2 -> V.toStream [1, 2, 3])) [1, 2, 3] "Vector.toStream"
-  in
-  assertEq (toList (\u2 -> ofVec [1, 2, 3])) [1; 2; 3] "vector to stream to list"
+  in assertEq (toList (\u2 -> ofVec [1, 2, 3])) [1; 2; 3] "vector to stream to list"

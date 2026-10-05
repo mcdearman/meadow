@@ -72,11 +72,9 @@ fun occursAdjust id level t =
       (match getRef r with
        | Tv.Unbound n l ->
            if n == id then raise "occurs check: a type would contain itself"
-           else if l > level then setRef r (Tv.Unbound n level)
-           else ()
+           else if l > level then setRef r (Tv.Unbound n level) else ()
        | Tv.Link inner -> occursAdjust id level inner)
-  | Ty.Fun a b ->
-      let ignored = occursAdjust id level a in occursAdjust id level b
+  | Ty.Fun a b -> let ignored = occursAdjust id level a in occursAdjust id level b
   | other -> ()
 
 fun unify a b =
@@ -101,8 +99,7 @@ fun unify a b =
            setRef r (Tv.Link other)
        | Tv.Link inner -> unify inner other)
   | (other, Ty.Var r) -> unify (Ty.Var r) other
-  | (x, y) ->
-      raise (S.concatAll ["cannot unify ", typeName x, " with ", typeName y])
+  | (x, y) -> raise (S.concatAll ["cannot unify ", typeName x, " with ", typeName y])
 
 -- --- generalization and instantiation -------------------------------------
 
@@ -112,8 +109,7 @@ fun freeAbove level t acc =
   match force t with
   | Ty.Var r ->
       (match getRef r with
-       | Tv.Unbound n l ->
-           if l > level and not (V.elem n acc) then V.pushBack acc n else acc
+       | Tv.Unbound n l -> if l > level and not (V.elem n acc) then V.pushBack acc n else acc
        | Tv.Link inner -> freeAbove level inner acc)
   | Ty.Fun a b -> freeAbove level b (freeAbove level a acc)
   | other -> acc
@@ -167,8 +163,7 @@ fun infer counter env level e =
   | Expr.Lam param body ->
       let argT = newTv counter level in
       let bodyT = infer counter ((param, Scheme.Forall V.empty argT) :: env) level body
-      in
-      Ty.Fun argT bodyT
+      in Ty.Fun argT bodyT
   | Expr.App f a ->
       let fT = infer counter env level f in
       let aT = infer counter env level a in

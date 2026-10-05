@@ -82,9 +82,7 @@ fun delimOf (s : Syntax Grouped) : Delim =
   let k = R.kindOf s in
   if k == Grouped.NodeParenGroup
   then Paren
-  else if k == Grouped.NodeBrackGroup
-  then Brack
-  else Brace
+  else if k == Grouped.NodeBrackGroup then Brack else Brace
 
 -- A group's trees: what is between its brackets.
 @pub fun treesIn (t : Tree) : [Tree] = match t with | Delimited _ _ _ ts -> ts | Leaf _ -> []
@@ -134,9 +132,7 @@ fun fragmentOf (name : String) : Maybe Fragment =
   else if name == "ident" then Just Ident
   else if name == "lit" then Just Lit
   else if name == "expr" then Just Expr
-  else if name == "pat" then Just Pat
-  else if name == "item" then Just Item
-  else None
+  else if name == "pat" then Just Pat else if name == "item" then Just Item else None
 
 fun isParsed (k : Fragment) : Bool =
   match k with | Expr -> True | Pat -> True | Item -> True | _ -> False
@@ -179,11 +175,7 @@ use Repeat.*
 fun countOf (t : Tok) : Maybe Repeat =
   if t.text == "*"
   then Just Any
-  else if t.text == "+"
-  then Just AtLeastOne
-  else if t.text == "?"
-  then Just AtMostOne
-  else None
+  else if t.text == "+" then Just AtLeastOne else if t.text == "?" then Just AtMostOne else None
 
 -- --- reading a matcher -------------------------------------------------------
 
@@ -221,8 +213,7 @@ fun piecesFrom (trees : [Tree]) (i : Int) (acc : [Piece]) : Result Invalid
 -- What follows the `$` at `i`, and how many trees it took.
 fun dollar (trees : [Tree]) (i : Int) (d : Tok) : Result Invalid (Piece, Int) =
   let lone = Err (invalid "a `\$` on its own" "expected a name, a `(`, or another `\$`" d)
-  in
-  match V.get trees (i + 1) with
+  in match V.get trees (i + 1) with
   | Just (Leaf t) ->
       if isDollar t then Ok (Escaped, 2)
       else
@@ -232,27 +223,25 @@ fun dollar (trees : [Tree]) (i : Int) (d : Tok) : Result Invalid (Piece, Int) =
                (match V.get trees (i + 2) with
                 | Just (Leaf c) -> c.text == ":"
                 | _ -> False)
-             in
-             if not colon then Ok (Var name Tt, 2)
-             else
-               (match V.get trees (i + 3) with
-                | Just (Leaf k) ->
-                    (match M.andThen fragmentOf (identOf k) with
-                     | Just kind -> Ok (Var name kind, 4)
-                     | None ->
-                         Err
-                           (invalid "`${k.text}` is not a fragment kind" "the kinds are `tt`, `ident`, `lit`, `expr`, `pat` and `item`" k))
-                | _ ->
-                    Err
-                      (invalid "`\$${name} :` does not say what may stand there" "a fragment kind belongs here" t))
+             in if not colon then Ok (Var name Tt, 2)
+                else
+                  (match V.get trees (i + 3) with
+                   | Just (Leaf k) ->
+                       (match M.andThen fragmentOf (identOf k) with
+                        | Just kind -> Ok (Var name kind, 4)
+                        | None ->
+                            Err
+                              (invalid "`${k.text}` is not a fragment kind" "the kinds are `tt`, `ident`, `lit`, `expr`, `pat` and `item`" k))
+                   | _ ->
+                       Err
+                         (invalid "`\$${name} :` does not say what may stand there" "a fragment kind belongs here" t))
          | None -> lone)
   | Just (Delimited Paren o _ inside) ->
       (match pieces inside with
        | Err e -> Err e
        | Ok ps ->
            (match repeatOf trees (i + 2) o with
-            | Ok (sep, rep) ->
-                Ok (Repeated ps sep rep, if M.isSome sep then 4 else 3)
+            | Ok (sep, rep) -> Ok (Repeated ps sep rep, if M.isSome sep then 4 else 3)
             | Err e -> Err e))
   | _ -> lone
 
@@ -260,8 +249,7 @@ fun dollar (trees : [Tree]) (i : Int) (d : Tok) : Result Invalid (Piece, Int) =
 fun repeatOf (trees : [Tree]) (i : Int) (o : Tok) : Result Invalid
     (Maybe Tok, Repeat) =
   let tokenAt = \k -> match V.get trees k with | Just (Leaf t) -> Just t | _ -> None
-  in
-  match tokenAt i with
+  in match tokenAt i with
   | None ->
       Err
         (invalid "a repetition that does not say how many" "expected `*`, `+` or `?` after this" o)
@@ -336,8 +324,7 @@ fun checkOne (ps : [Piece]) (i : Int) (after : Ends) : Maybe Invalid =
       checkFollow
         inside
         (match sep with
-         | Just t ->
-             (if follows t and endedAfter ps i after then Separator t else Unended)
+         | Just t -> (if follows t and endedAfter ps i after then Separator t else Unended)
          | None -> Unended)
   | Just (Var name kind) ->
       if isParsed kind and not (endedAfter ps i after) then
@@ -385,13 +372,11 @@ fun matchFrom (ps : [Piece]) (trees : [Tree]) (i : Int) (at : Int)
   | None -> if at == V.len trees then Just out else None
   | Just (Exact want) ->
       (match V.get trees at with
-       | Just (Leaf t) ->
-           if same t want then matchFrom ps trees (i + 1) (at + 1) out else None
+       | Just (Leaf t) -> if same t want then matchFrom ps trees (i + 1) (at + 1) out else None
        | _ -> None)
   | Just Escaped ->
       (match V.get trees at with
-       | Just (Leaf t) ->
-           if isDollar t then matchFrom ps trees (i + 1) (at + 1) out else None
+       | Just (Leaf t) -> if isDollar t then matchFrom ps trees (i + 1) (at + 1) out else None
        | _ -> None)
   | Just (Nested d inside) ->
       (match V.get trees at with
@@ -414,10 +399,9 @@ fun matchFrom (ps : [Piece]) (trees : [Tree]) (i : Int) (at : Int)
          | None -> None
          | Just tree ->
              let fits = isTt kind or (match tree with | Leaf t -> accepts kind t | _ -> False)
-             in
-             if fits
-             then matchFrom ps trees (i + 1) (at + 1) (H.insert name (One [tree]) out)
-             else None)
+             in if fits
+                then matchFrom ps trees (i + 1) (at + 1) (H.insert name (One [tree]) out)
+                else None)
   | Just (Repeated inside sep rep) ->
       -- Greedy, but never into what the rest of the matcher needs.
       let tail = V.drop ps (i + 1) in
@@ -429,17 +413,15 @@ fun matchFrom (ps : [Piece]) (trees : [Tree]) (i : Int) (at : Int)
               | Any -> True
               | AtLeastOne -> not (V.isEmpty passes)
               | AtMostOne -> V.len passes <= 1)
-           in
-           if not enough then None
-           else
-             let bound =
-               V.foldl
-                 (\o n ->
-                   H.insert n (Many (V.map (\p -> M.unwrapOr (One []) (H.lookup n p)) passes)) o)
-                 out
-                 (boundBy inside)
-             in
-             matchFrom tail (V.drop rest used) 0 0 bound)
+           in if not enough then None
+              else
+                let bound =
+                  V.foldl
+                    (\o n ->
+                      H.insert n (Many (V.map (\p -> M.unwrapOr (One []) (H.lookup n p)) passes)) o)
+                    out
+                    (boundBy inside)
+                in matchFrom tail (V.drop rest used) 0 0 bound)
 
 -- Where the fragment at piece `i`, from `at`, ends: at the token the matcher
 -- says follows it, or at the end.
@@ -479,8 +461,7 @@ fun repeatFrom (inside : [Piece]) (sep : Maybe Tok) (trees : [Tree])
       if s > limit or s > stop then (passes, at)
       else
         (match matchFrom inside (V.slice trees s stop) 0 0 H.empty with
-         | Just bound ->
-             repeatFrom inside sep trees limit stop (V.pushBack passes bound)
+         | Just bound -> repeatFrom inside sep trees limit stop (V.pushBack passes bound)
          | None -> (passes, at))
 
 -- Where the pass from `at` starts: past the separator, between passes.
@@ -498,8 +479,7 @@ fun passStart (sep : Maybe Tok) (trees : [Tree]) (at : Int) (first : Bool)
 fun passEnd (inside : [Piece]) (sep : Maybe Tok) (trees : [Tree]) (limit : Int)
     (s : Int) : Int =
   match sep with
-  | Just want ->
-      M.unwrapOr limit (M.map (\k -> s + k) (nextOf want (V.slice trees s limit)))
+  | Just want -> M.unwrapOr limit (M.map (\k -> s + k) (nextOf want (V.slice trees s limit)))
   | None -> min limit (s + M.unwrapOr 1 (fixedLen inside))
 
 -- How many trees pieces take, when that does not depend on the input.
@@ -530,8 +510,7 @@ fun fragment (k : Fragment) (trees : [Tree]) : Maybe [Tree] =
 -- expression as the value of a definition, a pattern as a match's arm, an
 -- item as a file of one declaration.
 fun parses (k : Fragment) (trees : [Tree]) : Bool =
-  let given = V.map (\(t : Tok) -> (t.token, t.from, t.to, t.text)) (flatten trees)
-  in
+  let given = V.map (\(t : Tok) -> (t.token, t.from, t.to, t.text)) (flatten trees) in
   let made = \t text -> (t, 0 - 1, 0 - 1, text) in
   let toks =
     (match k with
@@ -581,14 +560,12 @@ fun writeFrom (template : [Tree]) (bound : HashMap String Binding)
   | None -> Ok out
   | Just (Delimited _ o c ts) ->
       (match writeFrom ts bound whole pkg mark 0 (V.pushBack out (at a z o)) with
-       | Ok made ->
-           writeFrom template bound whole pkg mark (i + 1) (V.pushBack made (at a z c))
+       | Ok made -> writeFrom template bound whole pkg mark (i + 1) (V.pushBack made (at a z c))
        | Err e -> Err e)
   | Just (Leaf t) ->
       if isDollar t then
         (match splice template i bound whole pkg mark t with
-         | Ok (made, used) ->
-             writeFrom template bound whole pkg mark (i + used) (V.append out made)
+         | Ok (made, used) -> writeFrom template bound whole pkg mark (i + used) (V.append out made)
          | Err e -> Err e)
       else writeFrom template bound whole pkg mark (i + 1) (V.pushBack out (at a z (marked mark t)))
 
@@ -629,8 +606,7 @@ fun splice (template : [Tree]) (i : Int) (bound : HashMap String Binding)
                 | None ->
                     Err
                       (invalid "`\$${name}` is not bound by this rule's matcher" "no such name is matched" t))
-         | None ->
-             Err (invalid "a `\$` on its own" "expected a name, a `(`, or another `\$`" d))
+         | None -> Err (invalid "a `\$` on its own" "expected a name, a `(`, or another `\$`" d))
   | Just (Delimited Paren o _ ts) ->
       (match repeatOf template (i + 2) o with
        | Err e -> Err e
@@ -644,51 +620,47 @@ fun splice (template : [Tree]) (i : Int) (bound : HashMap String Binding)
                       | Just (Many v) -> [V.len v]
                       | _ -> [])
                names
-           in
-           (match V.get counts 0 with
-            | None ->
-                Err
-                  (invalid
-                    "a repetition with nothing to repeat"
-                    "no name in here stands for a run of things"
-                    o)
-            | Just passes ->
-                if V.any (\c -> c != passes) counts
-                then
-                  Err
-                    (invalid
-                      "the names in this repetition stand for different numbers of things"
-                      "they have to be written the same number of times"
-                      o)
-                else
-                  V.foldl
-                    (\acc k ->
-                      match acc with
-                      | Err e -> Err e
-                      | Ok made ->
-                          -- Each pass sees the k-th of every run.
-                          let pass =
-                            V.foldl
-                              (\b n -> match H.lookup n bound with
-                                       | Just (Many v) ->
-                                           H.insert n (V.getOr (One []) v k) b
-                                       | _ -> b)
-                              bound
-                              names
-                          in
-                          let between =
-                            (match sep with
-                             | Just s -> (if k > 0 then [at a z s] else [])
-                             | None -> [])
-                          in
-                          (match writeFrom ts pass whole pkg mark 0 [] with
-                           | Ok more -> Ok (V.concat [made, between, more])
-                           | Err e -> Err e))
-                    (Ok [])
-                    (V.range 0 passes)
-                  |> Res.map (\made -> (made, used))))
-  | _ ->
-      Err (invalid "a `\$` on its own" "expected a name, a `(`, or another `\$`" d)
+           in (match V.get counts 0 with
+               | None ->
+                   Err
+                     (invalid
+                       "a repetition with nothing to repeat"
+                       "no name in here stands for a run of things"
+                       o)
+               | Just passes ->
+                   if V.any (\c -> c != passes) counts
+                   then
+                     Err
+                       (invalid
+                         "the names in this repetition stand for different numbers of things"
+                         "they have to be written the same number of times"
+                         o)
+                   else
+                     V.foldl
+                       (\acc k ->
+                         match acc with
+                         | Err e -> Err e
+                         | Ok made ->
+                             -- Each pass sees the k-th of every run.
+                             let pass =
+                               V.foldl
+                                 (\b n -> match H.lookup n bound with
+                                          | Just (Many v) -> H.insert n (V.getOr (One []) v k) b
+                                          | _ -> b)
+                                 bound
+                                 names
+                             in
+                             let between =
+                               (match sep with
+                                | Just s -> (if k > 0 then [at a z s] else [])
+                                | None -> [])
+                             in (match writeFrom ts pass whole pkg mark 0 [] with
+                                 | Ok more -> Ok (V.concat [made, between, more])
+                                 | Err e -> Err e))
+                          (Ok [])
+                          (V.range 0 passes)
+                        |> Res.map (\made -> (made, used))))
+  | _ -> Err (invalid "a `\$` on its own" "expected a name, a `(`, or another `\$`" d)
 
 -- A package's name as a token: which identifier it is follows its case.
 fun packageToken (pkg : String) : Token =

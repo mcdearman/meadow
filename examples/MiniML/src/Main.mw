@@ -72,8 +72,7 @@ fun loop () =
 
 @pub(pkg) fun main () =
   let ignored = println "mini-ml. An expression per line, `:q` or Ctrl-D to stop."
-  in
-  loop ()
+  in loop ()
 
 -- --- tests -------------------------------------------------------------------
 --
@@ -105,8 +104,7 @@ fun loop () =
 
 @test fun infersSimpleTypes () =
   let got = map typeOfSource ["1 + 1", "1 < 2", "fun x -> x + 1", "if true then 1 else 2"]
-  in
-  assertEq got [Ok "Int", Ok "Bool", Ok "(Int -> Int)", Ok "Int"] "ground types"
+  in assertEq got [Ok "Int", Ok "Bool", Ok "(Int -> Int)", Ok "Int"] "ground types"
 
 @test fun infersPolymorphicIdentity () =
   assertEq (typeOfSource "fun x -> x") (Ok "(t0 -> t0)") "identity"

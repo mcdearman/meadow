@@ -193,8 +193,7 @@ fun threeFigures (ns : Int) (unit : Int) =
       pad2 (n % millisPerMinute / millisPerSecond), ".",
       pad3 (n % millisPerSecond),
     ]
-  in
-  if neg then S.concat "-" body else body
+  in if neg then S.concat "-" body else body
 
 -- --- dates -------------------------------------------------------------------
 --
@@ -260,8 +259,7 @@ fun threeFigures (ns : Int) (unit : Int) =
 @pub fun formatAgo (at : Int) (past : Int) : String =
   let d = at - past in
   if abs d < millisPerSecond then "just now"
-  else if d > 0 then S.concat (coarse d) " ago"
-  else S.concat "in " (coarse (0 - d))
+  else if d > 0 then S.concat (coarse d) " ago" else S.concat "in " (coarse (0 - d))
 
 -- The largest whole unit of a positive duration in milliseconds.
 fun coarse (ms : Int) =
@@ -318,8 +316,7 @@ fun padTo (width : Int) (n : Int) =
 -- `1_234_567`, so a big count reads at a glance.
 fun groupDigits (n : Int) =
   if n < 0 then S.concat "-" (groupDigits (0 - n))
-  else if n < 1000 then S.fromInt n
-  else S.concatAll [groupDigits (n / 1000), "_", pad3 (n % 1000)]
+  else if n < 1000 then S.fromInt n else S.concatAll [groupDigits (n / 1000), "_", pad3 (n % 1000)]
 
 -- --- tests -------------------------------------------------------------------
 --
@@ -343,8 +340,7 @@ use Std.Console (Console)
 @test fun aFrozenClockAlwaysAnswersTheSame () =
   let a = assertEq (withClock 500 (\u2 -> now ())) 500 "now" in
   let b = assertEq (withClock 500 (\u2 -> let x = now () in now () - x)) 0 "it does not advance"
-  in
-  assertEq (withClock 500 (\u2 -> monotonic ())) 0 "monotonic starts at zero"
+  in assertEq (withClock 500 (\u2 -> monotonic ())) 0 "monotonic starts at zero"
 
 @test fun sleepUnderAFrozenClockReturnsAtOnce () =
   -- If this touched the real clock the test suite would take an hour.
@@ -352,8 +348,7 @@ use Std.Console (Console)
 
 @test fun aTickingClockAdvances () =
   let a = assertEq (withTickingClock 0 100 (\u2 -> let x = now () in now () - x)) 100 "one tick"
-  in
-  assertEq (withTickingClock 5 1 (\u2 -> now ())) 5 "the first reading is the start"
+  in assertEq (withTickingClock 5 1 (\u2 -> now ())) 5 "the first reading is the start"
 
 @test fun timedMeasuresWithTheMonotonicClock () =
   let (result, ns) = withTickingClock 0 7 (\u2 -> timed (\u3 -> 42)) in
@@ -363,11 +358,9 @@ use Std.Console (Console)
 @test fun durationsFormat () =
   let a = assertEq (formatDuration 0) "00:00:00.000" "zero" in
   let b = assertEq (formatDuration 1) "00:00:00.001" "one millisecond" in
-  let c = assertEq (formatDuration (seconds 3661)) "01:01:01.000" "an hour, a minute, a second"
-  in
+  let c = assertEq (formatDuration (seconds 3661)) "01:01:01.000" "an hour, a minute, a second" in
   let d = assertEq (formatDuration 90061001) "25:01:01.001" "past a day, hours keep counting"
-  in
-  assertEq (formatDuration (0 - 1500)) "-00:00:01.500" "negative"
+  in assertEq (formatDuration (0 - 1500)) "-00:00:01.500" "negative"
 
 @test fun nanosPickTheirUnit () =
   let a = assertEq (formatNanos 0) "0ns" "zero" in
@@ -411,8 +404,7 @@ use Std.Console (Console)
     assertEq (formatTimestamp (0 - 1)) "1969-12-31T23:59:59.999Z" "before the epoch rounds down"
   in
   let e = assertEq (formatDate 4107542400000) "2100-03-01" "2100 is not a leap year"
-  in
-  assertEq (formatTimeOfDay 1789405445123) "17:04:05.123" "time of day"
+  in assertEq (formatTimeOfDay 1789405445123) "17:04:05.123" "time of day"
 
 @test fun datesKnowTheirWeekday () =
   let epoch = utc 0 in

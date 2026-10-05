@@ -134,13 +134,11 @@ fun inferredOf (dir : String) (imported : [Interface])
                         | None -> []))
             files)
       in
-      let done = inferUnit r deps (V.map (\(i : Interface) -> i.types) imported) texts
-      in
+      let done = inferUnit r deps (V.map (\(i : Interface) -> i.types) imported) texts in
       let dumps = H.fromVec done.dumps in
       let exports =
         V.map (\(e : Export) -> { e | scheme = H.lookup e.binder done.schemes }) r.exports
-      in
-      (
+      in (
         V.map (\x -> (fst x, M.unwrapOr [] (H.lookup (fileOf (snd x)) dumps))) sources,
         exports,
         r.anyVis,
@@ -152,8 +150,7 @@ fun inferredOf (dir : String) (imported : [Interface])
 fun unitOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))]) :
     ([(String, Source)], Renamed) =
-  let manifest = V.find (\x -> match x with | (p, _, _) -> S.endsWith "Meadow.toml" p) files
-  in
+  let manifest = V.find (\x -> match x with | (p, _, _) -> S.endsWith "Meadow.toml" p) files in
   let expanded =
     expansionsIn
       (V.concatMap
@@ -161,8 +158,7 @@ fun unitOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity)
                | (p, text, _) -> (if S.endsWith ".json" p then [text] else []))
         files)
   in
-  let pkg = (match manifest with | Just (_, text, _) -> packageName text | None -> "")
-  in
+  let pkg = (match manifest with | Just (_, text, _) -> packageName text | None -> "") in
   let isStd = pkg == "Std" in
   let src = Path.join dir "src" in
   let sources =
@@ -183,11 +179,9 @@ fun unitOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity)
       files in
   let deps =
     V.map
-      (\(i : Interface) ->
-        DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis })
+      (\(i : Interface) -> DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis })
       imported
-  in
-  (sources, renameUnit pkg isStd (V.map snd sources) deps)
+  in (sources, renameUnit pkg isStd (V.map snd sources) deps)
 
 fun fileOf (s : Source) : String = s.file
 
@@ -232,10 +226,7 @@ fun modulePath (isStd : Bool) (src : String) (path : String) : [String] =
   let rel = relativeTo src path in
   let segs =
     S.split "/" (if S.endsWith ".mw" rel then stringSlice rel 0 (stringByteLength rel - 3) else rel)
-  in
-  if segs == ["Main"] or segs == ["Lib"] or (isStd and segs == ["Prelude"])
-  then []
-  else segs
+  in if segs == ["Main"] or segs == ["Lib"] or (isStd and segs == ["Prelude"]) then [] else segs
 
 -- A database for unit `u`: its files' texts, where it is, and what it
 -- imports, set.
@@ -298,8 +289,7 @@ fun compiling (u : Given Interface) =
             M.unwrapOr
               ""
               (M.map snd (V.find (\s -> S.endsWith "Meadow.toml" (fst s)) (unitSources u)))
-          in
-          Ok
+          in Ok
             (Interface {
               fixities = compilerFixities db 0,
               package = packageName manifest,

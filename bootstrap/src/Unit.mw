@@ -50,11 +50,8 @@ fun fromShell (p : String) : String =
     match dir with
     | None -> None
     | Just d ->
-        if exists (Path.join d "Meadow.toml")
-        then Just (Path.normalize d)
-        else up (Path.parent d)
-  in
-  up (Path.parent (absolute file))
+        if exists (Path.join d "Meadow.toml") then Just (Path.normalize d) else up (Path.parent d)
+  in up (Path.parent (absolute file))
 
 -- A unit's sources: every `.mw` file under its `src/`.
 @pub fun sourcesOf (dir : String) : [String] ! { Fs | e } = under (Path.join dir "src")
@@ -71,8 +68,7 @@ fun expansionsOf (dir : String) : [String] ! { Fs, Process | e } =
   match (getEnv "MEADOWBOOT_EXPANSIONS", readToString (manifestOf dir)) with
   | (Just exps, Ok text) ->
       let p = Path.normalize (Path.join (absolute exps) "${packageName text}.json")
-      in
-      if exists p then [p] else []
+      in if exists p then [p] else []
   | _ -> []
 
 @pub fun manifestOf (dir : String) : String = Path.normalize (Path.join dir "Meadow.toml")
@@ -91,8 +87,7 @@ fun under (dir : String) : [String] ! { Fs | e } =
         (\n ->
           let p = Path.join dir n in
           if isDir p then (if n == "target" then [] else under p)
-          else if S.endsWith ".mw" n then [Path.normalize p]
-          else [])
+          else if S.endsWith ".mw" n then [Path.normalize p] else [])
         (sort names)
 
 -- The units `dir` depends on, read off its manifest `text`, in a build of the
@@ -124,8 +119,7 @@ fun locate (root : String) (dir : String) (e : Entry)
   | (_, Just url) ->
       (match pinned root dir e.key with
        | Just rev -> checkout url rev
-       | None ->
-           Err "`${e.key}` is not in `meadow.lock`: run `meadow build` once to fetch it")
+       | None -> Err "`${e.key}` is not in `meadow.lock`: run `meadow build` once to fetch it")
   | _ -> Err "`${e.key}` is neither a `path` nor a `git` dependency"
 
 -- The commit `meadow.lock` pins package `name` at: the root's, or the unit's.
@@ -140,8 +134,7 @@ fun pinned (root : String) (dir : String) (name : String)
             (\(p : Entry) -> p.section == "package" and field "name" p.value == Just name)
             (tables (readToml text)))
     | Err _ -> None
-  in
-  match inLock root with
+  in match inLock root with
   | Just rev -> Just rev
   | None -> inLock dir
 
@@ -158,8 +151,7 @@ fun checkout (url : String) (rev : String)
       let dirs = (match readDir root with | Ok ns -> ns | Err _ -> []) in
       match V.find (\d -> S.startsWith (name ++ "-") d and isDir (Path.joinAll [root, d, rev])) (sort dirs) with
       | Just d -> Ok (Path.normalize (Path.joinAll [root, d, rev]))
-      | None ->
-          Err "${url} at ${rev} has not been fetched: run `meadow build` once"
+      | None -> Err "${url} at ${rev} has not been fetched: run `meadow build` once"
 
 -- `meadow`'s home: `MEADOW_HOME`, or `.meadow` in the user's.
 fun home () : Maybe String ! { Process | e } =
@@ -186,9 +178,7 @@ fun home () : Maybe String ! { Process | e } =
       (V.range 0 (stringByteLength last)))
 
 fun strip (suffix : String) (s : String) : String =
-  if S.endsWith suffix s
-  then stringSlice s 0 (stringByteLength s - stringByteLength suffix)
-  else s
+  if S.endsWith suffix s then stringSlice s 0 (stringByteLength s - stringByteLength suffix) else s
 
 fun safe (c : String) : Bool =
   let b = toInt (stringByteAt c 0) in
@@ -222,8 +212,7 @@ fun tables (es : [Entry]) : [Entry] =
         else acc)
       []
       es
-  in
-  V.map
+  in V.map
     (\si ->
       let kvs =
         V.concatMap
@@ -235,8 +224,7 @@ fun tables (es : [Entry]) : [Entry] =
                | Table _ -> [])
             else [])
           es
-      in
-      Entry { section = fst si, index = snd si, key = "", value = Table kvs })
+      in Entry { section = fst si, index = snd si, key = "", value = Table kvs })
     indices
 
 -- The entries of a manifest, as far as `meadow` writes them.
@@ -294,11 +282,8 @@ fun uncommented (l : String) : String =
       (let b = toInt (stringByteAt l i) in
         if b == 34
         then go (i + 1) (not quoted)
-        else if b == 35 and not quoted
-        then stringSlice l 0 i
-        else go (i + 1) quoted)
-  in
-  go 0 False
+        else if b == 35 and not quoted then stringSlice l 0 i else go (i + 1) quoted)
+  in go 0 False
 
 fun valueOf (v : String) : TomlValue =
   if S.startsWith "{" v and S.endsWith "}" v then
@@ -329,8 +314,7 @@ use Std.Test (assertEq)
   let es =
     readToml
       "[package]\nname = \"MeadowBoot\"\n\n[dependencies]\nLingua = { path = \"../../Lingua\" }\nScythe = { git = \"https://github.com/mcdearman/Scythe.git\", branch = \"master\" } # fetched\n"
-  in
-  assertEq
+  in assertEq
     (V.map
       (\(e : Entry) -> (e.key, field "path" e.value, field "git" e.value))
       (V.filter (\(e : Entry) -> e.section == "dependencies") es))
@@ -344,13 +328,11 @@ use Std.Test (assertEq)
   let es =
     readToml
       "version = 1\n\n[[package]]\nname = \"Nettle\"\nrev = \"b59e\"\n\n[[package]]\nname = \"Scythe\"\nrev = \"36e7\"\n"
-  in
-  assertEq
+  in assertEq
     (V.map (\(t : Entry) -> (field "name" t.value, field "rev" t.value)) (tables es))
     [(Just "Nettle", Just "b59e"), (Just "Scythe", Just "36e7")]
     "one table each"
 
 @test fun aCheckoutIsNamedForItsRepository () =
   let a = assertEq (repoName "https://github.com/mcdearman/Scythe.git") "Scythe" "without `.git`"
-  in
-  assertEq (repoName "https://github.com/someone/meadow-json/") "meadow-json" "without the slash"
+  in assertEq (repoName "https://github.com/someone/meadow-json/") "meadow-json" "without the slash"

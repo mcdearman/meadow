@@ -58,9 +58,7 @@ use Std.Ordering.Ordering.*
 -- `start`, and everything up to and including `stop`. A block comment of this
 -- kind does not nest: the first `stop` closes it.
 @pub fun skipBlockComment (start : String) (stop : String) : Parser s () =
-  P.manyTill P.anySingle (C.string stop)
-    |> P.void
-    |> P.skipThen (C.string start)
+  P.manyTill P.anySingle (C.string stop) |> P.void |> P.skipThen (C.string start)
 
 -- `start`, and everything up to and including the `stop` that matches it: a
 -- block comment of this kind may hold others.
@@ -120,8 +118,7 @@ fun floatOf whole frac e =
     match frac with
     | Just ds -> fractionOf ds
     | None -> 0.0
-  in
-  scale (toFloat (digitsIn 10 whole) +. f) e
+  in scale (toFloat (digitsIn 10 whole) +. f) e
 
 -- An exponent is optional after a fraction, and required without one.
 fun exponentAfter frac =
@@ -137,8 +134,7 @@ fun exponentAfter frac =
     let fraction = P.optional (P.skipThen (C.char '.') digits) in
     let parts = P.lift2 pair digits fraction in
     let number = P.bind parts (\wf -> P.map (floatOf (fst wf) (snd wf)) (exponentAfter (snd wf)))
-    in
-    number |> P.try |> P.label "a floating-point number"
+    in number |> P.try |> P.label "a floating-point number"
 
 -- A sign before a number, as a function to apply to it: `neg` for a minus.
 fun signBy neg = P.alt (P.mapTo (\x -> x) (C.char '+')) (P.mapTo neg (C.char '-'))
@@ -233,8 +229,7 @@ fun columnAt input off = columnFrom input (lineStart input off) off 1
     | Less -> "less than"
     | Equal -> "equal to"
     | Greater -> "greater than"
-  in
-  P.fail "incorrect indentation (got ${actual}, should be ${how} ${ref})"
+  in P.fail "incorrect indentation (got ${actual}, should be ${how} ${ref})"
 
 -- Skip what `sc` skips, then check that the column reached compares to `ref`
 -- as `want` says -- `indentGuard sc Greater 1` is "indented at all" -- and
@@ -242,8 +237,7 @@ fun columnAt input off = columnFrom input (lineStart input off) off 1
 @pub fun indentGuard (sc : Parser s a) (want : Ordering) (ref : Int)
     : Parser s Int =
   let check = \at -> if compare at ref == want then P.pure at else incorrectIndent want ref at
-  in
-  P.skipThen sc (P.bind indentLevel check)
+  in P.skipThen sc (P.bind indentLevel check)
 
 -- `p` at the very start of a line, after what `sc` skips: a top-level
 -- declaration, in a language where indentation means continuation.
@@ -286,8 +280,7 @@ fun itemsAt ref lvl sc p pos =
 -- `IndentOpt.Many`: the items, if the next line is indented past the head.
 fun manyBlock sc ref indent f p =
   let next = P.skipThen C.eol (indentGuard sc Greater ref) |> P.try |> P.optional
-  in
-  P.bind next (\lvl ->
+  in P.bind next (\lvl ->
     P.bind (P.optional P.eof) (\done ->
       match (lvl, done) with
       | (Just at, None) -> P.bind (indentedItems ref (orAt indent at) sc p) f
@@ -300,10 +293,8 @@ fun someBlock sc ref indent f p =
     let lvl = orAt indent pos in
     let first =
       if pos <= ref then incorrectIndent Greater ref pos
-      else if pos == lvl then p
-      else incorrectIndent Equal lvl pos
-    in
-    P.bind first (\x -> P.bind (indentedItems ref lvl sc p) (\xs -> f (V.pushFront xs x))))
+      else if pos == lvl then p else incorrectIndent Equal lvl pos
+    in P.bind first (\x -> P.bind (indentedItems ref lvl sc p) (\xs -> f (V.pushFront xs x))))
 
 -- An indented block, as megaparsec parses one: a head, which says with an
 -- `IndentOpt` what comes under it, and then the lines that do. `sc` is a
@@ -352,8 +343,7 @@ fun ok p text = P.runParser (P.thenSkip p P.eof) text
       (ok p " 1 -- one\n 2 {- two {- nested -} -} 3")
       (Ok [1, 2, 3])
       "all kinds"
-  in
-  assertEq (ok (symbol sc "let") "let  ") (Ok "let") "symbol"
+  in assertEq (ok (symbol sc "let") "let  ") (Ok "let") "symbol"
 
 @test fun aPlainBlockCommentDoesNotNest () =
   let p = P.skipThen (skipBlockComment "{-" "-}") (C.string "x") in
@@ -384,8 +374,7 @@ fun ok p text = P.runParser (P.thenSkip p P.eof) text
 @test fun indentationIsChecked () =
   let item = indentGuard C.space Greater 1 in
   let a = assertEq (ok (P.skipThen (C.string "x:\n") item) "x:\n  ") (Ok 3) "indented"
-  in
-  match P.runParser (P.skipThen (C.string "x:\n") item) "x:\ny" with
+  in match P.runParser (P.skipThen (C.string "x:\n") item) "x:\ny" with
   | Ok _ -> assertTrue False "it should fail"
   | Err e ->
       assertEq

@@ -103,10 +103,7 @@ fun merge cmp l r =
   | x :: xs ->
       match r with
       | [;] -> l
-      | y :: ys ->
-          if isGreater (cmp x y)
-          then y :: merge cmp l ys
-          else x :: merge cmp xs r
+      | y :: ys -> if isGreater (cmp x y) then y :: merge cmp l ys else x :: merge cmp xs r
 
 -- Split into two halves by walking two cursors, one twice as fast.
 fun halve xs = halveAt xs xs [;]
@@ -208,14 +205,10 @@ fun partition cmp cells lo hi =
 -- Order the three so the median ends up at `last` -- the pivot a naive
 -- "first element" choice gets wrong on sorted input.
 fun medianOfThree cmp cells lo mid last =
-  let a = if isLess (cmp (at cells mid) (at cells lo)) then swapAt cells lo mid else ()
-  in
-  let b = if isLess (cmp (at cells last) (at cells lo)) then swapAt cells lo last else ()
-  in
+  let a = if isLess (cmp (at cells mid) (at cells lo)) then swapAt cells lo mid else () in
+  let b = if isLess (cmp (at cells last) (at cells lo)) then swapAt cells lo last else () in
   -- `lo` now holds the smallest, so the median is the smaller of the other two.
-  if isLess (cmp (at cells mid) (at cells last))
-  then swapAt cells mid last
-  else ()
+  if isLess (cmp (at cells mid) (at cells last)) then swapAt cells mid last else ()
 
 -- `j` scans, `i` is where the next smaller-than-pivot element goes.
 fun lomuto cmp cells j last i pivot =
@@ -237,9 +230,7 @@ fun heapSort cmp cells lo hi =
   else let ignored = buildHeap cmp cells lo n (n / 2 - 1) in popAll cmp cells lo (n - 1)
 
 fun buildHeap cmp cells lo n i =
-  if i < 0
-  then ()
-  else let ignored = siftDown cmp cells lo n i in buildHeap cmp cells lo n (i - 1)
+  if i < 0 then () else let ignored = siftDown cmp cells lo n i in buildHeap cmp cells lo n (i - 1)
 
 -- Repeatedly move the largest to the end and shrink the heap.
 fun popAll cmp cells lo i =
@@ -254,13 +245,11 @@ fun popAll cmp cells lo i =
 fun siftDown cmp cells lo n i =
   let l = 2 * i + 1 in
   let r = l + 1 in
-  let bigL = if l < n and isGreater (cmp (at cells (lo + l)) (at cells (lo + i))) then l else i
-  in
+  let bigL = if l < n and isGreater (cmp (at cells (lo + l)) (at cells (lo + i))) then l else i in
   let big = if r < n and isGreater (cmp (at cells (lo + r)) (at cells (lo + bigL))) then r else bigL
-  in
-  if big == i
-  then ()
-  else let ignored = swapAt cells (lo + i) (lo + big) in siftDown cmp cells lo n big
+  in if big == i
+     then ()
+     else let ignored = swapAt cells (lo + i) (lo + big) in siftDown cmp cells lo n big
 
 -- --- tests -------------------------------------------------------------------
 
@@ -301,8 +290,7 @@ fun siftDown cmp cells lo n i =
 @test fun byAndOnAndDesc () =
   let a = assertEq (sortDesc [1, 3, 2]) [3, 2, 1] "descending" in
   let b = assertEq (sortBy (\x y -> compare y x) [1, 3, 2]) [3, 2, 1] "a reversed comparison"
-  in
-  assertEq (sortOn (\p -> snd p) [(1, 3), (2, 1), (3, 2)]) [(2, 1), (3, 2), (1, 3)] "sortOn"
+  in assertEq (sortOn (\p -> snd p) [(1, 3), (2, 1), (3, 2)]) [(2, 1), (3, 2), (1, 3)] "sortOn"
 
 @test fun theArrayFormSortsInPlaceAndComesBack () =
   let a = assertEq (sortArray #[3, 1, 2]) #[1, 2, 3] "sortArray" in

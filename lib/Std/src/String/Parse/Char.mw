@@ -23,8 +23,7 @@ use Std.Bool (not)
 
 -- This character, in either case.
 @pub fun charCI (c : Char) : Parser s Char =
-  P.label (show c)
-    (P.satisfy (\x -> Ch.toLower x == Ch.toLower c))
+  P.label (show c) (P.satisfy (\x -> Ch.toLower x == Ch.toLower c))
 
 -- A newline, `\n`.
 @pub fun newline : Stream s => Parser s Char
@@ -141,21 +140,17 @@ use Std.String.Parse (Stream)
   let b = assertEq (P.runParser (string "let") "let x") (Ok "let") "string" in
   let c =
     assertEq (P.runParser (stringCI "LeT") "lEt") (Ok "lEt") "stringCI keeps the input's spelling"
-  in
-  assertEq (P.runParser (charCI 'q') "Q") (Ok 'Q') "charCI"
+  in assertEq (P.runParser (charCI 'q') "Q") (Ok 'Q') "charCI"
 
 @test fun whiteSpaceAndLines () =
-  let a = assertEq (P.runParser (P.skipThen space (char 'x')) " \n\t x") (Ok 'x') "space"
-  in
+  let a = assertEq (P.runParser (P.skipThen space (char 'x')) " \n\t x") (Ok 'x') "space" in
   let b = assertEq (P.runParser (P.skipThen hspace eol) "  \r\n") (Ok "\r\n") "hspace, then a CRLF"
-  in
-  assertFalse (isOk (P.runParser space1 "x")) "space1 wants one"
+  in assertFalse (isOk (P.runParser space1 "x")) "space1 wants one"
 
 @test fun classesSayWhatTheyWanted () =
   match P.runParser digitChar "x" with
   | Ok _ -> assertTrue False "it should fail"
-  | Err e ->
-      assertEq (P.parseErrorTextPretty e) "unexpected 'x'\nexpecting a digit\n" "labelled"
+  | Err e -> assertEq (P.parseErrorTextPretty e) "unexpected 'x'\nexpecting a digit\n" "labelled"
 
 @test fun aVectorOfCharsWorksToo () =
   let input = V.fromArray (stringToChars "ab1") in

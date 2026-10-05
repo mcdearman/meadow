@@ -111,8 +111,7 @@ fun vNodeUpdate shift node i x =
       | None ->
           let slot = i >> shift in
           let k2 = vNodeUpdate (shift - vBits) (arrayGet kids slot) (i - (slot << shift)) x
-          in
-          Branch None (arraySet kids slot k2)
+          in Branch None (arraySet kids slot k2)
       | Just s ->
           let rec find k = if arrayGet s k > i then k else find (k + 1) in
           let slot = find 0 in
@@ -151,14 +150,12 @@ fun vBuildTree xs =
 fun vNodeToArray node =
   match node with
   | Leaf xs -> xs
-  | Branch szs kids ->
-      vaFoldl (\acc k -> arrayConcat acc (vNodeToArray k)) #[] kids
+  | Branch szs kids -> vaFoldl (\acc k -> arrayConcat acc (vNodeToArray k)) #[] kids
 
 -- --- append a full chunk at the bottom-right --------------------------
 
 fun vNewSpine shift chunk =
-  if shift == 0 then Leaf chunk
-  else Branch None #[vNewSpine (shift - vBits) chunk]
+  if shift == 0 then Leaf chunk else Branch None #[vNewSpine (shift - vBits) chunk]
 
 -- precondition: there is room for another `vWidth` chunk under `node`
 fun vAppendChunk shift node chunk =
@@ -173,17 +170,16 @@ fun vAppendChunk shift node chunk =
       else
         let lst = vaLast kids in
         let room = vNodeLen (shift - vBits) lst + vWidth <= vNodeCap (shift - vBits)
-        in
-        if room then
+        in if room then
           let kids2 = vaSetLast kids (vAppendChunk (shift - vBits) lst chunk) in
           match szs with
           | None -> Branch None kids2
           | Just _ -> Branch (Just (vSizesOf shift kids2)) kids2
-        else
-          let kids2 = arrayPush kids (vNewSpine (shift - vBits) chunk) in
-          match szs with
-          | None -> Branch None kids2
-          | Just _ -> Branch (Just (vSizesOf shift kids2)) kids2
+           else
+             let kids2 = arrayPush kids (vNewSpine (shift - vBits) chunk) in
+             match szs with
+             | None -> Branch None kids2
+             | Just _ -> Branch (Just (vSizesOf shift kids2)) kids2
 
 -- (newShift, newNode) -- grows the root when full
 fun vPushChunkBack shift node chunk =
@@ -201,23 +197,21 @@ fun vPopChunkBack shift node =
         match szs with
         | None -> Branch None kids2
         | Just _ -> Branch (Just (vSizesOf shift kids2)) kids2
-      in
-      if shift == vBits then
+      in if shift == vBits then
         let chunk = match vaLast kids with | Leaf xs -> xs | Branch _ _ -> #[] in
         (chunk, rebuilt (vaInit kids))
-      else
-        let (chunk, last2) = vPopChunkBack (shift - vBits) (vaLast kids) in
-        if vNodeLen (shift - vBits) last2 == 0
-        then (chunk, rebuilt (vaInit kids))
-        else (chunk, rebuilt (vaSetLast kids last2))
+         else
+           let (chunk, last2) = vPopChunkBack (shift - vBits) (vaLast kids) in
+           if vNodeLen (shift - vBits) last2 == 0
+           then (chunk, rebuilt (vaInit kids))
+           else (chunk, rebuilt (vaSetLast kids last2))
 
 fun vShrinkRoot shift node =
   match node with
   | Leaf _ -> (shift, node)
   | Branch szs kids ->
       if shift > vBits then
-        if arrayLen kids == 1 then vShrinkRoot (shift - vBits) (arrayGet kids 0)
-        else (shift, node)
+        if arrayLen kids == 1 then vShrinkRoot (shift - vBits) (arrayGet kids 0) else (shift, node)
       else (shift, node)
 
 -- --- symmetric: prepend a full chunk at the bottom-left --------------
@@ -232,13 +226,12 @@ fun vPrependChunk shift node chunk =
       else
         let fst0 = arrayGet kids 0 in
         let room = vNodeLen (shift - vBits) fst0 + vWidth <= vNodeCap (shift - vBits)
-        in
-        if room then
+        in if room then
           let kids2 = arraySet kids 0 (vPrependChunk (shift - vBits) fst0 chunk) in
           Branch (Just (vSizesOf shift kids2)) kids2
-        else
-          let kids2 = arrayConcat #[vNewSpine (shift - vBits) chunk] kids in
-          Branch (Just (vSizesOf shift kids2)) kids2
+           else
+             let kids2 = arrayConcat #[vNewSpine (shift - vBits) chunk] kids in
+             Branch (Just (vSizesOf shift kids2)) kids2
 
 fun vPushChunkFront shift node chunk =
   if vNodeLen shift node + vWidth <= vNodeCap shift
@@ -291,27 +284,20 @@ fun getU v i =
           else
             let i3 = i2 - m in
             let c = arrayLen iB in
-            if i3 < c then arrayGet iB i3
-            else arrayGet oB (i3 - c)
+            if i3 < c then arrayGet iB i3 else arrayGet oB (i3 - c)
 
 @pub fun get (v : [a]) (i : Int) : Maybe a =
-  if i < 0 then None
-  else if i >= len v then None
-  else Just (getU v i)
+  if i < 0 then None else if i >= len v then None else Just (getU v i)
 
 @pub fun getOr (d : a) (v : [a]) (i : Int) : a =
-  if i < 0 then d
-  else if i >= len v then d
-  else getU v i
+  if i < 0 then d else if i >= len v then d else getU v i
 
 @pub fun head (v : [a]) : Maybe a = get v 0
 
 @pub fun last (v : [a]) : Maybe a = get v (len v - 1)
 
 @pub fun set (v : [a]) (i : Int) (x : a) : [a] =
-  if i < 0 then v
-  else if i >= len v then v
-  else match v with
+  if i < 0 then v else if i >= len v then v else match v with
   | Empty -> v
   | Single xs -> Single (arraySet xs i x)
   | Full len sh oF iF mid iB oB ->
@@ -359,8 +345,7 @@ fun vNormalize v =
   | Empty -> Empty
   | Single xs -> vNormalize (Single (vaInit xs))
   | Full len sh oF iF mid iB oB ->
-      if arrayLen oB > 0
-      then vNormalize (Full (len - 1) sh oF iF mid iB (vaInit oB))
+      if arrayLen oB > 0 then vNormalize (Full (len - 1) sh oF iF mid iB (vaInit oB))
       -- A buffer one short is no chunk: it moves to the outer slot, since
       -- whatever sits in an inner one is pushed into the tree whole.
       else if arrayLen iB > 0
@@ -392,8 +377,7 @@ fun vPopChunkFront shift node =
   | Leaf xs -> (xs, vEmptyNode)
   | Branch szs kids ->
       if shift == vBits then
-        let chunk = match arrayGet kids 0 with | Leaf xs -> xs | Branch _ _ -> #[]
-        in
+        let chunk = match arrayGet kids 0 with | Leaf xs -> xs | Branch _ _ -> #[] in
         let rest = arraySlice kids 1 (arrayLen kids) in
         (chunk, Branch (Just (vSizesOf shift rest)) rest)
       else
@@ -442,8 +426,7 @@ fun vPopChunkFront shift node =
 @pub fun toList (v : [a]) : List a =
   let xs = toArray v in
   let rec go i acc = if i < 0 then acc else go (i - 1) (Cons (arrayGet xs i) acc)
-  in
-  go (arrayLen xs - 1) Nil
+  in go (arrayLen xs - 1) Nil
 
 -- --- bulk ops (chunk-wise / rebuild) ----------------------------------
 
@@ -533,11 +516,7 @@ fun vPopChunkFront shift node =
 -- Where in `xs` from `i` on, short of `n`, the first element `keep` holds of
 -- is, or -1: a search that stops where it finds, which a fold cannot.
 fun vaIndex (keep : a -> Bool ! e) (xs : #[a]) (i : Int) (n : Int) : Int ! e =
-  if i >= n
-  then 0 - 1
-  else if keep (arrayGet xs i)
-  then i
-  else vaIndex keep xs (i + 1) n
+  if i >= n then 0 - 1 else if keep (arrayGet xs i) then i else vaIndex keep xs (i + 1) n
 
 @pub fun concat (vs : [[a]]) : [a] = vaFoldl (\acc v -> append acc v) empty (toArray vs)
 
@@ -550,9 +529,7 @@ fun vaIndex (keep : a -> Bool ! e) (xs : #[a]) (i : Int) (n : Int) : Int ! e =
 @pub fun takeWhile (keep : a -> Bool ! e) (v : [a]) : [a] ! e =
   fromArray (fst (vaFoldl
     (\p x -> match p with | (acc, live) ->
-        if live
-        then (if keep x then (arrayPush acc x, True) else (acc, False))
-        else (acc, False))
+        if live then (if keep x then (arrayPush acc x, True) else (acc, False)) else (acc, False))
     (#[], True) (toArray v)))
 
 @pub fun dropWhile (keep : a -> Bool ! e) (v : [a]) : [a] ! e =
@@ -571,9 +548,7 @@ fun vaIndex (keep : a -> Bool ! e) (xs : #[a]) (i : Int) (n : Int) : Int ! e =
   let ys = toArray b in
   let n = if arrayLen xs < arrayLen ys then arrayLen xs else arrayLen ys in
   let rec go i acc =
-    if i >= n
-    then acc
-    else go (i + 1) (pushBack acc (f (arrayGet xs i) (arrayGet ys i)))
+    if i >= n then acc else go (i + 1) (pushBack acc (f (arrayGet xs i) (arrayGet ys i)))
   in go 0 empty
 
 @pub fun zip (a : [a]) (b : [b]) : [(a, b)] = zipWith (\x y -> (x, y)) a b
@@ -610,8 +585,7 @@ fun renderWith render v =
                  | Just s -> Just (concatStrings #[s, ", ", render x]))
       None
       v
-  in
-  match items with
+  in match items with
   | None -> "[]"
   | Just s -> concatStrings #["[", s, "]"]
 
@@ -722,8 +696,7 @@ use Std.Yield (Yield)
 
 @test fun zipUnzipAndPartition () =
   let a = assertEq (toList (zip [1, 2] ["a", "b"])) [(1, "a"); (2, "b")] "zip" in
-  let b = assertEq (toList (zipWith (\x y -> x + y) [1, 2] [10, 20])) [11; 22] "zipWith"
-  in
+  let b = assertEq (toList (zipWith (\x y -> x + y) [1, 2] [10, 20])) [11; 22] "zipWith" in
   -- `zip` stops at the shorter side.
   let c = assertEq (len (zip [1, 2, 3] [1])) 1 "zip of unequal lengths" in
   let (evens, odds) = partition (\n -> n % 2 == 0) [1, 2, 3, 4] in
@@ -736,9 +709,7 @@ use Std.Yield (Yield)
   assertEq (toList (replicate 3 "x")) ["x"; "x"; "x"] "replicate"
 
 @test fun takeWhileDropWhileAndConcat () =
-  let a = assertEq (toList (takeWhile (\n -> n < 3) [1, 2, 3, 1])) [1; 2] "takeWhile stops"
-  in
-  let b = assertEq (toList (dropWhile (\n -> n < 3) [1, 2, 3, 1])) [3; 1] "dropWhile"
-  in
+  let a = assertEq (toList (takeWhile (\n -> n < 3) [1, 2, 3, 1])) [1; 2] "takeWhile stops" in
+  let b = assertEq (toList (dropWhile (\n -> n < 3) [1, 2, 3, 1])) [3; 1] "dropWhile" in
   let c = assertEq (toList (concat [[1, 2], [3]])) [1; 2; 3] "concat" in
   assertEq (toList (concatMap (\n -> [n, n]) [1, 2])) [1; 1; 2; 2] "concatMap"

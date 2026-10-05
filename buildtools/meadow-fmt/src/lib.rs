@@ -66,8 +66,10 @@ pub fn format_within(src: &str, width: usize) -> String {
     let mut text = format(src);
     for _ in 0..6 {
         let cut = wrap::wrap(&text, width);
+        let whole = join_groups(&cut, width);
+        let lets = join_lets(&whole, width);
         let next = format(&join_braces(
-            &join_ins(&join_lets(&cut, width), width),
+            &join_ins(&settle_ins(&lets, width), width),
             width,
         ));
         if next == text {
@@ -118,9 +120,15 @@ fn join_ins(text: &str, width: usize) -> String {
             let bracketed = rest.len() < opener.trim_start().len()
                 && (rest == "let" || rest.starts_with("let "))
                 && indent(opener) + UNIT == at;
+            // In brackets or heading its line: the body is what the `in`
+            // introduces either way.
+            let _ = bracketed;
             let next = lines.get(i + 1)?.trim();
             let fits = at + "in ".len() + next.chars().count() <= width;
-            (bracketed && !next.is_empty() && !next.starts_with("--") && fits)
+            // But not another step of the sequence: a `let` under an `in`
+            // is the next thing done, and has its own line.
+            let step = next.starts_with("let ") || next.ends_with(" in");
+            (!next.is_empty() && !next.starts_with("--") && fits && !step)
                 .then(|| format!("{}in {next}", " ".repeat(at)))
         })();
         match joined {
@@ -135,6 +143,139 @@ fn join_ins(text: &str, width: usize) -> String {
         }
     }
     let mut joined = out.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
+/// What is written over several lines on one, when it fits there -- as
+/// rustfmt puts back on a line what was moved off it:
+///
+/// ```text
+/// fun area s =
+///   match s with
+///   | Circle r ->
+///       pi *. r *. r
+///   | Square w -> w *. w
+/// ```
+///
+/// has `| Circle r -> pi *. r *. r` for its first arm. A line and the lines
+/// further in under it are one thing written over several lines -- a
+/// definition and its body, a call and its arguments, an arm and what it
+/// answers, a record and its fields with the brace that closes it, an `if`
+/// with its `then` and `else` -- and are joined when the whole is no longer
+/// than `width`. All of it or none: nothing is left half on a line.
+///
+/// What stays as it was written: anything with a comment or a blank line in
+/// it, or a string that runs over a line; a `match`'s arms and a `data`'s
+/// variants, each of which has a line; the declarations a `trait`, an `impl`
+/// or a module holds, and what a macro is given, each a line of its own
+/// whatever its length; and a `let … in`, which is a step of a sequence and
+/// stays above what follows it.
+fn join_groups(text: &str, width: usize) -> String {
+    const DECLARES: &[&str] = &[
+        "mod", "use", "def", "fun", "data", "record", "effect", "type", "trait", "impl", "infix",
+        "infixl", "infixr", "macro", "pattern",
+    ];
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let first_word = |l: &str| -> String {
+        l.trim_start()
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect()
+    };
+    let plain =
+        |l: &str| !l.trim().is_empty() && !l.contains("--") && l.matches('"').count() % 2 == 0;
+    let declares =
+        |l: &str| l.trim_start().starts_with('@') || DECLARES.contains(&first_word(l).as_str());
+    let is_arm = |l: &str| {
+        let t = l.trim_start();
+        t == "|" || t.starts_with("| ")
+    };
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    // From the bottom, so that what is inside is joined before what holds it
+    // is measured.
+    let mut i = lines.len();
+    while i > 0 {
+        i -= 1;
+        let head = lines[i].clone();
+        if !plain(&head) {
+            continue;
+        }
+        let at = indent(&head);
+        let code = head.trim_end();
+        let opener = code.chars().last().filter(|c| matches!(c, '(' | '[' | '{'));
+        // What holds declarations, or a macro's tokens, is not one thing.
+        let word = first_word(&head);
+        if opener == Some('{')
+            && (code.contains('!')
+                || is_arm(&head)
+                || matches!(word.as_str(), "trait" | "impl" | "mod" | "macro")
+                || (head.trim_start().starts_with('@') && !code.contains('=')))
+        {
+            continue;
+        }
+        // A `let` is joined by its own rule, which knows its `in`.
+        let lets = head.trim_start().trim_start_matches(['(', '[', '{']);
+        if lets.starts_with("let ") && code.ends_with('=') {
+            continue;
+        }
+        let has_if = code
+            .split_whitespace()
+            .any(|w| w.trim_start_matches(['(', '[']) == "if");
+        let mut end = i + 1;
+        while end < lines.len() && !lines[end].trim().is_empty() {
+            let l = &lines[end];
+            let deeper = indent(l) > at;
+            let branch =
+                has_if && indent(l) == at && matches!(first_word(l).as_str(), "then" | "else");
+            if !(deeper || branch) {
+                break;
+            }
+            end += 1;
+        }
+        // A bracket the line ends with is closed by the line back under it,
+        // which is part of the same thing: with it or not at all.
+        if let Some(open) = opener {
+            let close = match open {
+                '(' => ')',
+                '[' => ']',
+                _ => '}',
+            };
+            match lines.get(end) {
+                Some(l) if indent(l) == at && l.trim_start().starts_with(close) => end += 1,
+                _ => continue,
+            }
+        }
+        let rest = &lines[i + 1..end];
+        if rest.is_empty() || !rest.iter().all(|l| plain(l) && !is_arm(l) && !declares(l)) {
+            continue;
+        }
+        // A line that ends in `in` is a step: what is under it is the next.
+        let step = |l: &str| {
+            let t = l.trim();
+            t == "in" || t.ends_with(" in") || t.starts_with("in ")
+        };
+        if step(code) || rest.iter().any(|l| step(l)) {
+            continue;
+        }
+        let mut one = code.to_string();
+        for l in rest {
+            let piece = l.trim();
+            let tight = one.ends_with(['(', '['])
+                || piece.starts_with([')', ']', ','])
+                || (one.ends_with('{') && piece.starts_with('}'));
+            if !tight {
+                one.push(' ');
+            }
+            one.push_str(piece);
+        }
+        if one.chars().count() <= width {
+            lines.splice(i..end, [one]);
+        }
+    }
+    let mut joined = lines.join("\n");
     if text.ends_with('\n') {
         joined.push('\n');
     }
@@ -217,6 +358,49 @@ fn join_lets(text: &str, width: usize) -> String {
         lines.splice(i..upto, [one]);
     }
     let mut joined = lines.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
+/// An `in` between two steps of a sequence, where it belongs: at the end of
+/// the `let` it closes when it fits there, and never at the head of the
+/// next one -- `in let b = …` is `in`, and `let b = …` under it.
+fn settle_ins(text: &str, width: usize) -> String {
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let at = indent(line);
+        let (lone, rest) = match line.trim() {
+            "in" => (true, None),
+            t if t.starts_with("in let ") && !t.contains("--") => (
+                true,
+                Some(format!("{}{}", " ".repeat(at), &t["in ".len()..])),
+            ),
+            _ => (false, None),
+        };
+        if !lone {
+            out.push(line.to_string());
+            continue;
+        }
+        // Onto the `let` above, when that is one line and has room.
+        let above = out.last().cloned().unwrap_or_default();
+        let opened = above.trim_start().trim_start_matches(['(', '[', '{']);
+        let bracketed = opened.len() < above.trim_start().len();
+        let closes = opened.starts_with("let ")
+            && (indent(&above) == at || (bracketed && indent(&above) + UNIT == at))
+            && !above.contains("--")
+            && above.matches('"').count() % 2 == 0
+            && !above.trim_end().ends_with(" in")
+            && above.trim_end().chars().count() + " in".len() <= width;
+        match (closes, out.last_mut()) {
+            (true, Some(last)) => *last = format!("{} in", above.trim_end()),
+            _ => out.push(format!("{}in", " ".repeat(at))),
+        }
+        out.extend(rest);
+    }
+    let mut joined = out.join("\n");
     if text.ends_with('\n') {
         joined.push('\n');
     }
@@ -1233,17 +1417,38 @@ fun d name =
 ";
         assert_eq!(format_within(src, 90), want);
         assert_eq!(format_within(want, 90), want, "and again changes nothing");
-        // Too long to share a line: the body stays under the `in`.
+        // Too long to share a line: the `in` ends the `let`'s, and the body
+        // is under it.
         let long = "\
 fun d name =
-  (let u = mention env name
-    in
+  (let u = mention env name in
     Decl.Record { name = name, params = params, fields = fields, more = more })
 ";
         assert_eq!(format_within(long, 80), long);
-        // A `let` heading its line keeps its body on the next: a sequence.
+        // A `let` that fits its line keeps its body on the next: a sequence.
         let headed = "fun g x =\n  let total = compute x in\n  total\n";
         assert_eq!(format_within(headed, 80), headed);
+        // But not when what follows is the next `let` of a sequence.
+        let steps =
+            "fun g x =\n  let total =\n    compute x y z\n  in\n  let more = total in\n  more\n";
+        assert_eq!(format_within(steps, 24), steps);
+        // An `in` written at the head of the next `let` goes back to the
+        // end of its own.
+        assert_eq!(
+            format_within(
+                "fun g x =\n  (let a = f x\n    in let b = h a in\n    b)\n",
+                80
+            ),
+            "fun g x =\n  (let a = f x in\n    let b = h a in\n    b)\n"
+        );
+        // One whose `in` is alone has its body on that line too.
+        assert_eq!(
+            format_within(
+                "fun g x =\n  let total =\n    compute x y z\n  in\n  total\n",
+                24
+            ),
+            "fun g x =\n  let total =\n    compute x y z\n  in total\n"
+        );
     }
 
     #[test]
@@ -1264,13 +1469,12 @@ fun d name =
             "fun d n =\n  (let u = mention env n\n    in Decl.Record { name = n })\n"
         );
         // Too long for one line: left as it is.
-        let long = "fun f xs =\n  let named =\n    V.filter (\\c -> isKnownToTheScope c) (candidatesOf xs)\n  in\n  named\n";
+        let long = "fun f xs =\n  let named =\n    V.filter (\\c -> isKnownToTheScope c) (candidatesOf xs)\n  in named\n";
         assert_eq!(w(long), long);
         // A comment in it, or a `match`'s arms: left.
-        let noted = "fun f xs =\n  let named =\n    -- only the known ones\n    V.filter known xs\n  in\n  named\n";
+        let noted = "fun f xs =\n  let named =\n    -- only the known ones\n    V.filter known xs\n  in named\n";
         assert_eq!(w(noted), noted);
-        let arms =
-            "fun f x =\n  let n =\n    match x with\n    | A -> 1\n    | B -> 2\n  in\n  n\n";
+        let arms = "fun f x =\n  let n =\n    match x with\n    | A -> 1\n    | B -> 2\n  in n\n";
         assert_eq!(w(arms), arms);
         // And again changes nothing.
         let once = w("fun f xs =\n  let named =\n    V.filter known xs\n  in\n  named\n");
@@ -1346,8 +1550,53 @@ fun p r =
       args = args
     })
 ";
-        assert_eq!(format_within(src, 100), want);
-        assert_eq!(format_within(want, 100), want, "and again changes nothing");
+        assert_eq!(format_within(src, 34), want);
+        assert_eq!(format_within(want, 34), want, "and again changes nothing");
+        // And all of it on one line, where there is room for that.
+        assert_eq!(
+            format_within(src, 100),
+            "fun p r = wrap (Pat.Cons { ref = refAlts out env n, args = args })\n"
+        );
+    }
+
+    #[test]
+    fn what_fits_on_a_line_is_put_on_it() {
+        let w = |src: &str| format_within(src, 60);
+        // A definition and its body; an arm and what it answers; a call and
+        // its arguments; an `if` and its branches.
+        assert_eq!(w("fun double n =\n  n * 2\n"), "fun double n = n * 2\n");
+        assert_eq!(
+            w(
+                "fun area s =\n  match s with\n  | Circle r ->\n      pi *. r *. r\n  | Square w -> w *. w\n"
+            ),
+            "fun area s =\n  match s with\n  | Circle r -> pi *. r *. r\n  | Square w -> w *. w\n"
+        );
+        assert_eq!(
+            w("def total =\n  V.foldl\n    add\n    0\n    xs\n"),
+            "def total = V.foldl add 0 xs\n"
+        );
+        assert_eq!(
+            w("fun sign n =\n  if n < 0\n  then 0 - 1\n  else 1\n"),
+            "fun sign n = if n < 0 then 0 - 1 else 1\n"
+        );
+        assert_eq!(
+            w("def p =\n  Point {\n    x = 1,\n    y = 2\n  }\n"),
+            "def p = Point { x = 1, y = 2 }\n"
+        );
+        // What does not fit stays as it is.
+        let long = "fun describe shape =\n  concatAll [\"a \", nameOf shape, \" of \", show (area shape)]\n";
+        assert_eq!(w(long), long);
+        // And what is never one line: a comment in it, a `match`'s arms, a
+        // `data`'s variants, what a `trait` holds, a step of a sequence.
+        for same in [
+            "fun f x =\n  -- twice\n  x * 2\n",
+            "fun f x =\n  match x with\n  | A -> 1\n  | B -> 2\n",
+            "data T\n  = A\n  | B\n",
+            "trait Shown a {\n  fun shown : a -> String\n}\n",
+            "fun g x =\n  let y = x + 1 in\n  y * 2\n",
+        ] {
+            assert_eq!(w(same), same);
+        }
     }
 
     #[test]

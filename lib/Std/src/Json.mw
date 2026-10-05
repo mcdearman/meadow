@@ -100,10 +100,7 @@ fun lookupField key fields =
   else
     match V.get fields 0 with
     | None -> None
-    | Just entry ->
-        if fst entry == key
-        then Just (snd entry)
-        else lookupField key (V.drop fields 1)
+    | Just entry -> if fst entry == key then Just (snd entry) else lookupField key (V.drop fields 1)
 
 -- --- parsing -----------------------------------------------------------------
 
@@ -154,9 +151,7 @@ fun byteAt (s : String) (i : Int) : Int = toInt (stringByteAt s i)
 fun skipSpace (s : String) (n : Int) (i : Int) : Int =
   if i < n then
     (let c = byteAt s i in
-      if c == 32 or c == 10 or c == 13 or c == 9
-      then skipSpace s n (i + 1)
-      else i)
+      if c == 32 or c == 10 or c == 13 or c == 9 then skipSpace s n (i + 1) else i)
   else i
 
 fun quick (s : String) : Maybe Json =
@@ -178,8 +173,7 @@ fun scanValue (s : String) (n : Int) (i : Int) : Scan =
       else if c == 45 or (c >= 48 and c <= 57) then scanNumber s n i
       else if c == 116 then scanWord s n i "true" (Bool True)
       else if c == 102 then scanWord s n i "false" (Bool False)
-      else if c == 110 then scanWord s n i "null" Null
-      else Lost)
+      else if c == 110 then scanWord s n i "null" Null else Lost)
 
 fun scanWord (s : String) (n : Int) (i : Int) (word : String) (v : Json)
     : Scan =
@@ -220,18 +214,13 @@ fun unescaped (c : Int) : Maybe String =
   else if c == 114 then Just "\r"
   else if c == 116 then Just "\t"
   else if c == 98 then Just (charsToString #[charFromCode 8])
-  else if c == 102 then Just (charsToString #[charFromCode 12])
-  else None
+  else if c == 102 then Just (charsToString #[charFromCode 12]) else None
 
 fun digitsEnd (s : String) (n : Int) (i : Int) : Int =
-  if i < n and byteAt s i >= 48 and byteAt s i <= 57
-  then digitsEnd s n (i + 1)
-  else i
+  if i < n and byteAt s i >= 48 and byteAt s i <= 57 then digitsEnd s n (i + 1) else i
 
 fun digitsValue (s : String) (i : Int) (stop : Int) (acc : Int) : Int =
-  if i == stop
-  then acc
-  else digitsValue s (i + 1) stop (acc * 10 + (byteAt s i - 48))
+  if i == stop then acc else digitsValue s (i + 1) stop (acc * 10 + (byteAt s i - 48))
 
 -- Whether `c` could go on a number: a fraction, an exponent, a sign.
 fun numberMore (c : Int) : Bool = c == 46 or c == 101 or c == 69 or c == 43 or c == 45
@@ -259,9 +248,7 @@ fun scanNumber (s : String) (n : Int) (i : Int) : Scan =
 
 -- From just past `[` and any space after it.
 fun scanArray (s : String) (n : Int) (i : Int) : Scan =
-  if i < n and byteAt s i == 93
-  then Got (Array V.empty) (i + 1)
-  else scanItems s n i V.empty
+  if i < n and byteAt s i == 93 then Got (Array V.empty) (i + 1) else scanItems s n i V.empty
 
 fun scanItems (s : String) (n : Int) (i : Int) (acc : [Json]) : Scan =
   match scanValue s n i with
@@ -273,14 +260,11 @@ fun scanItems (s : String) (n : Int) (i : Int) (acc : [Json]) : Scan =
           (let c = byteAt s k in
             if c == 44
             then scanItems s n (skipSpace s n (k + 1)) (V.pushBack acc v)
-            else if c == 93 then Got (Array (V.pushBack acc v)) (k + 1)
-            else Lost))
+            else if c == 93 then Got (Array (V.pushBack acc v)) (k + 1) else Lost))
 
 -- From just past `{` and any space after it.
 fun scanObject (s : String) (n : Int) (i : Int) : Scan =
-  if i < n and byteAt s i == 125
-  then Got (Object V.empty) (i + 1)
-  else scanMembers s n i V.empty
+  if i < n and byteAt s i == 125 then Got (Object V.empty) (i + 1) else scanMembers s n i V.empty
 
 fun scanMembers (s : String) (n : Int) (i : Int) (acc : [(String, Json)])
     : Scan =
@@ -337,15 +321,10 @@ fun array =
 
 fun object =
   let members = P.between (symbol "{") (C.char '}') (P.sepBy member (symbol ","))
-  in
-  P.defer (\() -> members |> P.map Object |> P.label "an object")
+  in P.defer (\() -> members |> P.map Object |> P.label "an object")
 
 fun member =
-  P.defer (\() ->
-    P.pure pair
-      |> P.keep (lexeme stringLit)
-      |> P.skip (symbol ":")
-      |> P.keep value)
+  P.defer (\() -> P.pure pair |> P.keep (lexeme stringLit) |> P.skip (symbol ":") |> P.keep value)
 
 -- --- lexical -----------------------------------------------------------------
 
@@ -364,8 +343,7 @@ fun number =
 -- escape is rejected instead of half-handled.
 fun stringLit =
   let chars = P.skipThen (C.char '"') (P.manyTill (P.alt escape plainChar) (C.char '"'))
-  in
-  chars |> P.map (\cs -> charsToString (V.toArray cs)) |> P.label "a string"
+  in chars |> P.map (\cs -> charsToString (V.toArray cs)) |> P.label "a string"
 
 fun plainChar = P.satisfy (\c -> c != '"' and c != '\\')
 
@@ -434,12 +412,7 @@ fun pad depth = S.repeat "  " depth
 @pub fun quote (s : String) : String = S.concatAll ["\"", escapeAll s, "\""]
 
 fun escapeAll s =
-  s
-    |> S.toBytes
-    |> V.fromArray
-    |> V.concatMap escapeByte
-    |> V.toArray
-    |> S.fromBytes
+  s |> S.toBytes |> V.fromArray |> V.concatMap escapeByte |> V.toArray |> S.fromBytes
 
 fun escapeByte b =
   if b == 34 then V.fromArray #[92, 34]
@@ -448,8 +421,7 @@ fun escapeByte b =
   else if b == 13 then V.fromArray #[92, 114]
   else if b == 9 then V.fromArray #[92, 116]
   else if b == 8 then V.fromArray #[92, 98]
-  else if b == 12 then V.fromArray #[92, 102]
-  else V.fromArray #[b]
+  else if b == 12 then V.fromArray #[92, 102] else V.fromArray #[b]
 
 -- Meadow has no float formatter, so this renders the integer part and a fixed
 -- six fractional digits -- enough to round-trip the values this module's own
@@ -499,8 +471,7 @@ fun isFloat v = match v with | Float x -> True | _ -> False
     | Ok _ -> assertTrue False "it should fail"
     | Err e ->
         assertEq e "at offset 15: unexpected \"]}\"; ${wanted}" "the offset, and what went wrong"
-  in
-  match parseSpanned text with
+  in match parseSpanned text with
   | Ok _ -> assertTrue False "it should fail"
   | Err (at, message) ->
       let b = assertEq at (15, 17) "the span of what was found" in
@@ -547,8 +518,7 @@ fun byGrammar (text : String) : Result String Json =
     " { \"k\" : [ 1 , 2.0 , \"x\" , null , true , { \"n\" : { } } ] , \"e\\n\" : -3 }\n",
     "\t[\r\n1\n]\n",
   ] in
-  let same = V.all (\t -> parse t == byGrammar t and parseSpanned t == P.parse document t) texts
-  in
+  let same = V.all (\t -> parse t == byGrammar t and parseSpanned t == P.parse document t) texts in
   let quickly = V.all (\t -> M.isSome (quick t)) texts in
   let a = assertTrue same "the same value either way" in
   assertTrue quickly "and the scanner read each of them itself"
@@ -597,8 +567,7 @@ fun byGrammar (text : String) : Result String Json =
   assertEq (asFloat (Int 2)) (Just 2.0) "asFloat widens an Int"
 
 @test fun indentedRenderingNestsByTwo () =
-  let a = assertEq (renderIndented (Array [])) "[]" "an empty array stays on one line"
-  in
+  let a = assertEq (renderIndented (Array [])) "[]" "an empty array stays on one line" in
   let b = assertEq (renderIndented (Object [])) "{}" "and an empty object" in
   let c = assertEq (renderIndented (Array [Int 1])) "[\n  1\n]" "one element" in
   assertEq (renderIndented (Object [("a", Int 1)])) "{\n  \"a\": 1\n}" "one field"

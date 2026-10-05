@@ -19,9 +19,7 @@
 
 -- `Just` the byte at `i`, or `None` if `i` is out of range.
 @pub fun bytesGet (b : #[a]) (i : Int) : Maybe a =
-  if i < 0 then None
-  else if i >= arrayLen b then None
-  else Just (arrayGet b i)
+  if i < 0 then None else if i >= arrayLen b then None else Just (arrayGet b i)
 
 -- The byte at `i`, or `default` when out of range.
 @pub fun bytesGetOr (default : a) (b : #[a]) (i : Int) : a = arrayGetOr default b i
@@ -117,8 +115,7 @@ use Std.Maybe.Maybe.*
   -- Any integer goes in, and only its low byte is stored.
   let (b : #[UInt8]) = #[0] in
   let a = assertEq (bytesGetOr 0 (bytesSet b 0 0x1FF) 0) (toUInt8 0xFF) "0x1FF becomes 0xFF"
-  in
-  assertEq (bytesGetOr 0 (bytesSet b 0 (0 - 1)) 0) (toUInt8 255) "-1 is all ones"
+  in assertEq (bytesGetOr 0 (bytesSet b 0 (0 - 1)) 0) (toUInt8 255) "-1 is all ones"
 
 @test fun multiByteReadsRespectEndianness () =
   let (b : #[UInt8]) = #[0x34, 0x12] in
@@ -136,10 +133,8 @@ use Std.Maybe.Maybe.*
 @test fun multiByteWritesRoundTrip () =
   let (two : #[UInt8]) = #[0, 0] in
   let (eight : #[UInt8]) = #[0, 0, 0, 0, 0, 0, 0, 0] in
-  let a = assertEq (bytesGetU16LE (bytesSetU16LE two 0 0x1234) 0) (toUInt16 0x1234) "u16 LE"
-  in
-  let b = assertEq (bytesGetU16BE (bytesSetU16BE two 0 0x1234) 0) (toUInt16 0x1234) "u16 BE"
-  in
+  let a = assertEq (bytesGetU16LE (bytesSetU16LE two 0 0x1234) 0) (toUInt16 0x1234) "u16 LE" in
+  let b = assertEq (bytesGetU16BE (bytesSetU16BE two 0 0x1234) 0) (toUInt16 0x1234) "u16 BE" in
   let c =
     assertEq (bytesGetU32LE (bytesSetU32LE eight 0 0x12345678) 0) (toUInt32 0x12345678) "u32 LE"
   in

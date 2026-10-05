@@ -23,6 +23,11 @@ beyond the last release is under _Unreleased_.
 - `meadow fmt` sets a record out as rustfmt sets out a struct: its brace on the
   line of what it belongs to, a field to a line, and the closing brace back
   under the start of that line.
+- `meadow fmt` puts what is written over several lines back on one when it fits
+  the width, as rustfmt does: a definition and its body, a call and its
+  arguments, an arm and what it answers, a record and its fields, an `if` and
+  its branches. A `match`'s arms, a `data`'s variants, the items of a `trait`
+  or an `impl`, and the steps of a `let … in` sequence keep a line each.
 - `meadow fmt` puts what a `let` binds back on the `let`'s line when it fits
   the width there, and the `in` after it when that fits too.
 - Formatting on save in an editor does what `meadow fmt` does: it cuts and

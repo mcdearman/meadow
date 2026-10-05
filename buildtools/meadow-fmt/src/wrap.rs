@@ -725,7 +725,7 @@ mod tests {
     fn a_long_right_hand_side_goes_under_its_let_and_in_closes_it() {
         assert_eq!(
             w("fun f x =\n  let total = computeSomething x 1 2 3 4 5 in\n  total\n"),
-            "fun f x =\n  let total =\n    computeSomething x 1 2 3 4 5\n  in\n  total\n"
+            "fun f x =\n  let total =\n    computeSomething x 1 2 3 4 5\n  in total\n"
         );
     }
 

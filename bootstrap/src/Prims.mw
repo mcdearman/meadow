@@ -564,5 +564,4 @@ use Std.Test (assertEq)
                  (if showScheme s == shown then [] else ["${n}: ${showScheme s}, not ${shown}"])
              | _ -> [])
       prims
-  in
-  assertEq wrong [] "each as it is written there"
+  in assertEq wrong [] "each as it is written there"

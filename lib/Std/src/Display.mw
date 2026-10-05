@@ -86,8 +86,7 @@ impl Display (a, b) where Display a, Display b {
 impl Display (a, b, c) where Display a, Display b, Display c {
   fun display p =
     match p with
-    | (x, y, z) ->
-        concatStrings #["(", display x, ", ", display y, ", ", display z, ")"]
+    | (x, y, z) -> concatStrings #["(", display x, ", ", display y, ", ", display z, ")"]
 }
 
 impl Display (a, b, c, d) where Display a, Display b, Display c, Display d {

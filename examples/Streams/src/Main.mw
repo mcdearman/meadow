@@ -30,11 +30,7 @@ fun from (n : Int) = let _ = yield n in from (n + 1)
 -- The Collatz sequence from `n`, ending at 1.
 fun collatz (n : Int) =
   let _ = yield n in
-  if n == 1
-  then ()
-  else if n % 2 == 0
-  then collatz (n / 2)
-  else collatz (3 * n + 1)
+  if n == 1 then () else if n % 2 == 0 then collatz (n / 2) else collatz (3 * n + 1)
 
 -- The words of a string, one at a time, without building the whole list.
 fun words text = V.forEach (\w -> if S.byteLength w > 0 then yield w else ()) (S.split " " text)

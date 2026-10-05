@@ -57,10 +57,7 @@ fun mix z0 =
 -- `lo` inclusive, `hi` exclusive, from a pure state.
 @pub fun stepBetween (lo : Int) (hi : Int) (s : Int) : (Int, Int) =
   match step s with
-  | (v, s2) ->
-      if hi <= lo
-      then (lo, s2)
-      else (lo + posMod v (hi - lo), s2)
+  | (v, s2) -> if hi <= lo then (lo, s2) else (lo + posMod v (hi - lo), s2)
 
 -- In [0, 1), from the top 53 bits -- the ones a `Float` can hold exactly.
 @pub fun stepFloat (s : Int) : (Float, Int) =
@@ -145,8 +142,7 @@ use Std.Maybe.Maybe.*
 
 @test fun aSeedGivesTheSameRunTwice () =
   let a = assertEq (withSeed 42 (\u2 -> between 1 7)) (withSeed 42 (\u2 -> between 1 7)) "same seed"
-  in
-  assertEq
+  in assertEq
     (withSeed 7 (\u2 -> V.map (\i -> nextInt ()) [0, 1, 2]))
     (withSeed 7 (\u2 -> V.map (\i -> nextInt ()) [0, 1, 2]))
     "a whole sequence repeats"

@@ -259,11 +259,9 @@ fun code (input : String) (at : Int) (hole : Bool) (depth : Int) (l : Lexing) :
 fun stuck (input : String) (at : Int) (hole : Bool) (depth : Int) (l : Lexing) :
     (Lexing, Int, Bool) =
   let reached = reachCode input at in
-  let to = if reached > at then boundary input reached else at + charLength input at
-  in
+  let to = if reached > at then boundary input reached else at + charLength input at in
   let l2 = problem (push l Token.Error at to) at to "Invalid token: ${stringSlice input at to}"
-  in
-  code input to hole depth l2
+  in code input to hole depth l2
 
 fun read (input : String) (t : Code) (from : Int) (to : Int) (hole : Bool)
     (depth : Int) (l : Lexing) : (Lexing, Int, Bool) =
@@ -290,8 +288,7 @@ fun converted (input : String) (t : Code) (from : Int) (to : Int)
     : Result String Token =
   let invalid = Err "Invalid token: ${stringSlice input from to}" in
   match t with
-  | Code.Int text ->
-      (match parseInt text with | Just n -> Ok (Token.Int n) | None -> invalid)
+  | Code.Int text -> (match parseInt text with | Just n -> Ok (Token.Int n) | None -> invalid)
   | Code.Real text -> Ok (Token.Real text)
   | Code.Char text ->
       (match unescapeChar text with
@@ -391,8 +388,7 @@ fun string (input : String) (from : Int) (l : Lexing) : (Lexing, Int) =
 fun text (input : String) (from : Int) (at : Int) (piece : Int)
     (sofar : [String]) (holes : Int) (l : Lexing) : (Lexing, Int) =
   match nextPiece input at with
-  | Ok (Just p) ->
-      piece_ input from (token p) (start p) (stop p) piece sofar holes l
+  | Ok (Just p) -> piece_ input from (token p) (start p) (stop p) piece sofar holes l
   | _ ->
       let n = stringByteLength input in
       ( problem (push l Token.Error from n) from n "this string is never closed", n
@@ -403,8 +399,7 @@ fun piece_ (input : String) (from : Int) (p : Piece) (at : Int) (to : Int)
     (Lexing, Int) =
   let more = \s -> text input from to piece (V.pushBack sofar s) holes l in
   let bad = \message -> text input from to piece sofar holes (problem l at to message)
-  in
-  match p with
+  in match p with
   | Piece.Text s -> more s
   | Piece.Dollar -> more "$"
   | Piece.Simple s -> more (simple (byteAt s 1))
@@ -429,18 +424,14 @@ fun piece_ (input : String) (from : Int) (p : Piece) (at : Int) (to : Int)
   | Piece.Lone -> bad "a `\\` with nothing after it"
   | Piece.Close ->
       let t =
-        if holes == 0
-        then Token.Str (S.concatAll sofar)
-        else Token.InterpEnd (S.concatAll sofar)
-      in
-      (push l t piece to, to)
+        if holes == 0 then Token.Str (S.concatAll sofar) else Token.InterpEnd (S.concatAll sofar)
+      in (push l t piece to, to)
   | Piece.Open ->
       let t =
         if holes == 0
         then Token.InterpStart (S.concatAll sofar)
         else Token.InterpMid (S.concatAll sofar)
-      in
-      hole input from at (push l t piece to) holes
+      in hole input from at (push l t piece to) holes
 
 -- A `${`, at `at`: the code in it, to its `}`, read as a lexing of its own and
 -- kept only when the hole is closed -- `meadow-lexer` finds the `}` before it
@@ -457,20 +448,16 @@ fun hole (input : String) (from : Int) (at : Int) (l : Lexing) (holes : Int) :
             at
             (close + 1)
             "`\${}` needs an expression inside"
-        in
-        text input from (close + 1) close [] (holes + 1) l2
+        in text input from (close + 1) close [] (holes + 1) l2
       else text input from (close + 1) close [] (holes + 1) (joined l inside)
-  | (_, n, False) ->
-      (problem (push l Token.Error at n) at n "this `\${` is never closed", n)
+  | (_, n, False) -> (problem (push l Token.Error at n) at n "this `\${` is never closed", n)
 
 -- Whether `input` holds only whitespace between `from` and `to`.
 fun blank (input : String) (from : Int) (to : Int) : Bool =
   if from >= to then True
   else
     let b = byteAt input from in
-    if b == 32 or b == 9 or b == 10 or b == 13
-    then blank input (from + 1) to
-    else False
+    if b == 32 or b == 9 or b == 10 or b == 13 then blank input (from + 1) to else False
 
 -- `\n` and the rest: the character a simple escape stands for.
 fun simple (c : Int) : String =
@@ -482,8 +469,7 @@ fun simple (c : Int) : String =
   else if c == 98 then C.toString (C.fromCode 8)
   else if c == 102 then C.toString (C.fromCode 12)
   else if c == 118 then C.toString (C.fromCode 11)
-  else if c == 101 then C.toString (C.fromCode 27)
-  else C.toString (C.fromCode c)
+  else if c == 101 then C.toString (C.fromCode 27) else C.toString (C.fromCode c)
 
 -- The code point of `\u{hex}`, or what is wrong with it.
 fun unicode (hex : String) : Result String Int =
@@ -492,9 +478,7 @@ fun unicode (hex : String) : Result String Int =
   then Err "`\\u{${hex}}` needs one to six hex digits"
   else
     let c = hexValue hex in
-    if C.isScalar c
-    then Ok c
-    else Err "`\\u{${hex}}` is not a Unicode character"
+    if C.isScalar c then Ok c else Err "`\\u{${hex}}` is not a Unicode character"
 
 -- --- raw strings -------------------------------------------------------------
 
@@ -544,9 +528,7 @@ fun digitsFrom (digits : String) (radix : Int) (i : Int) (acc : Int)
   else
     let d = hexDigit (byteAt digits i) in
     let limit = (9223372036854775807 - d) / radix in
-    if acc > limit
-    then None
-    else digitsFrom digits radix (i + 1) (acc * radix + d)
+    if acc > limit then None else digitsFrom digits radix (i + 1) (acc * radix + d)
 
 -- The character a `'…'` literal holds, resolving an escape, or `None` for a
 -- bad one: `meadow-lexer`'s `unescape_char`.
@@ -576,8 +558,7 @@ fun escaped (rest : String) : Maybe (Int, Int) =
     if c == 110
     or c == 114 or c == 116 or c == 48 or c == 97 or c == 98 or c == 102 or c == 118 or c == 101
     then Just (firstChar (simple c), 1)
-    else if c == 92 or c == 34 or c == 39 or c == 36 then Just (c, 1)
-    else None
+    else if c == 92 or c == 34 or c == 39 or c == 36 then Just (c, 1) else None
 
 fun unicodeEscape (rest : String) : Maybe (Int, Int) =
   if byteAt rest 1 != 123 then None
@@ -604,8 +585,7 @@ fun atLineStart (input : String) (tokens : [Lexed]) (i : Int) : Lexed =
            (match pathStart tokens i i True with
             | (first, wantName) ->
                 if first < i
-                and not wantName
-                  and lineStart input (at tokens first).from
+                and not wantName and lineStart input (at tokens first).from
                 then { t | token = Token.DeclBang }
                 else t)
        | _ -> t)
@@ -619,9 +599,7 @@ fun pathStart (tokens : [Lexed]) (i : Int) (first : Int) (wantName : Bool) :
     let prev = at tokens (first - 1) in
     let touching = prev.to == (at tokens first).from in
     let fits = if wantName then isName prev.token else isPeriod prev.token in
-    if touching and fits
-    then pathStart tokens i (first - 1) (not wantName)
-    else (first, wantName)
+    if touching and fits then pathStart tokens i (first - 1) (not wantName) else (first, wantName)
 
 fun isName (t : Token) : Bool =
   match t with
@@ -663,16 +641,12 @@ fun firstChar (s : String) : Int =
 
 fun hexDigit (b : Int) : Int =
   if b >= 48 and b <= 57 then b - 48
-  else if b >= 97 and b <= 102 then b - 87
-  else if b >= 65 and b <= 70 then b - 55
-  else 99
+  else if b >= 97 and b <= 102 then b - 87 else if b >= 65 and b <= 70 then b - 55 else 99
 
 fun allHex (s : String) (i : Int) : Bool =
   if i >= stringByteLength s
   then True
-  else if hexDigit (byteAt s i) < 16
-  then allHex s (i + 1)
-  else False
+  else if hexDigit (byteAt s i) < 16 then allHex s (i + 1) else False
 
 fun hexValue (s : String) : Int = V.foldl (\acc b -> acc * 16 + hexDigit (toInt b)) 0 (bytesOf s)
 
@@ -689,8 +663,7 @@ fun bytesOf (s : String) = V.fromArray (S.toBytes s)
       (\acc (t : Lexed) -> acc ++ "${show t.from} ${show t.to} ${described t.token}\n")
       ""
       l.tokens
-  in
-  V.foldl
+  in V.foldl
     (\acc (p : Problem) -> acc ++ "! ${show p.from} ${show p.to} ${escape p.message}\n")
     ts
     l.problems

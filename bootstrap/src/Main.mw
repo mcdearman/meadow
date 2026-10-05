@@ -78,8 +78,7 @@ fun failed (e : QueryError k) = let u = writeOutput (failure e) in exit 1
 fun failure (e : QueryError k) : String =
   match e with
   | QueryError.Unset _ -> "meadowboot: a query was read before it was set\n"
-  | QueryError.Cycle ks ->
-      "meadowboot: ${S.fromInt (V.len ks)} queries need each other\n"
+  | QueryError.Cycle ks -> "meadowboot: ${S.fromInt (V.len ks)} queries need each other\n"
 
 fun run (cli : Cli) =
   match cli with
@@ -115,8 +114,7 @@ fun renameFiles (files : [String]) =
             (Res.toMaybe (givenUnits r r))
         ))
       roots
-  in
-  V.foldl (\ok f -> renameFile named f and ok) True files
+  in V.foldl (\ok f -> renameFile named f and ok) True files
 
 fun fst3 (t : (a, b, c)) : a = match t with | (x, _, _) -> x
 
@@ -143,18 +141,15 @@ fun inferFiles (files : [String]) =
             (Res.toMaybe (givenUnits r r))
         ))
       roots
-  in
-  V.foldl (\ok f -> renameFile named f and ok) True files
+  in V.foldl (\ok f -> renameFile named f and ok) True files
 
 fun fst4 (t : (a, b, c, d)) : a = match t with | (x, _, _, _) -> x
 
 fun renameFile named (path : String) =
   let file = absolute path in
-  let found = M.andThen (\r -> M.andThen snd (V.find (\d -> fst d == r) named)) (packageOf file)
-  in
+  let found = M.andThen (\r -> M.andThen snd (V.find (\d -> fst d == r) named)) (packageOf file) in
   let lines = M.andThen (\ds -> M.map snd (V.find (\d -> fst d == file) ds)) found
-  in
-  match lines with
+  in match lines with
   | Just ls ->
       (let u = writeOutput ("== ${path}\n" ++ S.join "" (V.map (\l -> l ++ "\n") ls)) in True)
   | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in True)
@@ -163,8 +158,7 @@ fun renameFile named (path : String) =
 -- `parse failed`.
 fun parseFile (path : String) : Bool ! { Fs, Console | e } =
   match readToString path with
-  | Err why ->
-      (let u = writeOutput "== ${path}\nerror: cannot read it: ${why}\n" in False)
+  | Err why -> (let u = writeOutput "== ${path}\nerror: cannot read it: ${why}\n" in False)
   | Ok text ->
       (match parsed text with
        | Ok tree -> (let u = writeOutput ("== ${path}\n" ++ tree) in True)
@@ -188,18 +182,15 @@ fun fixityFiles (files : [String]) =
   let built = V.map (\r -> buildUnits r) roots in
   -- One database a unit, which each of its files is asked of.
   let dbs = V.map (\r -> (r, M.map unitDatabase (Res.toMaybe (givenUnits r r)))) roots
-  in
-  V.foldl (\ok f -> fixityFile dbs f and ok) True files
+  in V.foldl (\ok f -> fixityFile dbs f and ok) True files
 
 fun fixityFile dbs (path : String) =
   let file = absolute path in
   match readToString file with
-  | Err why ->
-      (let u = writeOutput "== ${path}\nerror: cannot read it: ${why}\n" in False)
+  | Err why -> (let u = writeOutput "== ${path}\nerror: cannot read it: ${why}\n" in False)
   | Ok text ->
       (match M.andThen (\r -> M.andThen snd (V.find (\d -> fst d == r) dbs)) (packageOf file) with
-       | None ->
-           (let u = writeOutput "== ${path}\nerror: its package did not build\n" in False)
+       | None -> (let u = writeOutput "== ${path}\nerror: its package did not build\n" in False)
        | Just db ->
            -- A file of the package that is none of its modules -- a test's
            -- -- grouped by the package's fixities all the same.
@@ -207,8 +198,7 @@ fun fixityFile dbs (path : String) =
            (match compilerGrouped db file with
             | None -> (let w = writeOutput "== ${path}\nparse failed\n" in True)
             | Just (g, ds) ->
-                let chains = S.join "" (V.map (\c -> "chain ${c}\n") (chainsOf (R.root g)))
-                in
+                let chains = S.join "" (V.map (\c -> "chain ${c}\n") (chainsOf (R.root g))) in
                 let problems =
                   S.join
                     ""
@@ -223,18 +213,14 @@ fun fixityFile dbs (path : String) =
 -- `path`'s value, or `error: why`, under a line naming it.
 fun evalFile (path : String) : Bool ! { Fs, Console | e } =
   match readToString path with
-  | Err why ->
-      (let u = writeOutput "== ${path}\nerror: cannot read it: ${why}\n" in False)
+  | Err why -> (let u = writeOutput "== ${path}\nerror: cannot read it: ${why}\n" in False)
   | Ok text ->
       (match program text with
-       | Err why ->
-           (let u = writeOutput "== ${path}\nerror: cannot read it: ${why}\n" in False)
+       | Err why -> (let u = writeOutput "== ${path}\nerror: cannot read it: ${why}\n" in False)
        | Ok p ->
            (match Cek.run p with
-            | Ok v ->
-                (let u = writeOutput "== ${path}\n${Cek.display v}\n" in True)
-            | Err why ->
-                (let u = writeOutput "== ${path}\nerror: ${why}\n" in True)))
+            | Ok v -> (let u = writeOutput "== ${path}\n${Cek.display v}\n" in True)
+            | Err why -> (let u = writeOutput "== ${path}\nerror: ${why}\n" in True)))
 
 -- End with status 1 when something went wrong.
 fun finish (ok : Bool) = if ok then () else exit 1
@@ -242,6 +228,5 @@ fun finish (ok : Bool) = if ok then () else exit 1
 -- `path`'s tokens under a line naming it: `== path`.
 fun lexFile (path : String) : Bool ! { Fs, Console | e } =
   match readToString path with
-  | Err why ->
-      (let u = writeOutput "== ${path}\n! cannot read it: ${why}\n" in False)
+  | Err why -> (let u = writeOutput "== ${path}\n! cannot read it: ${why}\n" in False)
   | Ok text -> (let u = writeOutput "== ${path}\n${dump (lex text)}" in True)

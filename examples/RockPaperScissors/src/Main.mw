@@ -74,8 +74,7 @@ fun round () =
             let me = randomChoice () in
             let o = judge you me in
             let _ = println (S.concatAll ["I played ", choiceName me, ". ", outcomeLine o])
-            in
-            Just o
+            in Just o
 
 fun tally wins losses draws =
   match round () with

@@ -59,8 +59,7 @@ use Std.Maybe.Maybe.*
 @test fun andThenChainsAndShortCircuits () =
   let a = assertEq (andThen (\n -> Ok (n + 1)) (Ok 1)) (Ok 2) "andThen Ok" in
   let b = assertEq (andThen (\n -> Err "bad") (Ok 1)) (Err "bad") "the function may fail"
-  in
-  assertEq (andThen (\n -> Ok n) (Err "e")) (Err "e") "andThen Err"
+  in assertEq (andThen (\n -> Ok n) (Err "e")) (Err "e") "andThen Err"
 
 @test fun conversionsWithMaybe () =
   let a = assertEq (toMaybe (Ok 1)) (Just 1) "toMaybe Ok" in

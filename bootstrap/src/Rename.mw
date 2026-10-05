@@ -166,8 +166,7 @@ fun valueOf (env : Env) (name : String) : Int =
           else valueOf env (unmarked name))
       else
         (match V.find (\o -> fst o == name) operatorPrims with
-         | Just (_, prim) ->
-             M.unwrapOr env.scope.unknown (H.lookup prim env.scope.base)
+         | Just (_, prim) -> M.unwrapOr env.scope.unknown (H.lookup prim env.scope.base)
          | None -> env.scope.unknown)
 
 fun lookupValue (env : Env) (name : String) : Maybe Int =
@@ -230,16 +229,14 @@ fun recordLabels out (e : HirExpr) =
   match viewHirExprIn out e with
   | HirExprView.Record r ->
       (match r.base with
-       | None ->
-           Just (V.map (\f -> textOf out (hirExprFieldNameIn out f)) r.fields)
+       | None -> Just (V.map (\f -> textOf out (hirExprFieldNameIn out f)) r.fields)
        | Just _ -> None)
   | _ -> None
 
 -- `ty`'s constructor `name`, if `ty` is a type this module can name.
 fun typeCtor (env : Env) (ty : String) (name : String) : Maybe (Int, Int) =
   match H.lookup ty env.scope.types with
-  | Just t ->
-      M.map (\c -> (t, c)) (M.andThen (H.lookup name) (H.lookup t env.scope.typeCtors))
+  | Just t -> M.map (\c -> (t, c)) (M.andThen (H.lookup name) (H.lookup t env.scope.typeCtors))
   | None -> None
 
 -- --- the pass ----------------------------------------------------------------
@@ -294,9 +291,8 @@ pass! {
           Arm { pat = p, guard = M.map (\g -> g inner) guard, body = body inner })
     | HArm { op, later param, resume, later body } ->
         (let p = param (nested env) in
-          let k = declareBinder (textOf out resume) "v" (siteOf env (nameMeta out resume))
-          in let inner = bindLocal (bindAll (nested env) (patBinders out p)) (textOf out resume) k
-          in
+          let k = declareBinder (textOf out resume) "v" (siteOf env (nameMeta out resume)) in
+          let inner = bindLocal (bindAll (nested env) (patBinders out p)) (textOf out resume) k in
           -- The operation, which says which effect is handled: known to
           -- inference, and to nobody reading the program.
           HArm {
@@ -315,8 +311,8 @@ pass! {
     | Bind.Fun { name, later params, later ret, later body } ->
         (let n = textOf out name in
           let id = funId env n (nameMeta out name) in
-          let inner = if env.method then nested env else bindLocal (nested env) n id
-          in let ps = V.map (\p -> p inner) params in
+          let inner = if env.method then nested env else bindLocal (nested env) n id in
+          let ps = V.map (\p -> p inner) params in
           let within = bindAll inner (V.concatMap (patBinders out) ps) in
           Bind.Fun { id = id, params = ps, ret = M.map (\r -> r within) ret, body = body within })
     | Pat.Var { name } -> Pat.Var { id = patVar out env name }
@@ -327,8 +323,7 @@ pass! {
             H.lookup (unmarked n) env.scope.ctors,
             lookupValue env "$m${show (V.len args)}${n}"
           ) with
-          | (None, Just matcher) ->
-              synonymPat out env here (nameMeta out name) matcher args
+          | (None, Just matcher) -> synonymPat out env here (nameMeta out name) matcher args
           | _ ->
               Pat.Cons {
                 ref = refAlts out env (ctorOf env n) (ctorPatAlts env n) (nameMeta out name),
@@ -390,8 +385,8 @@ pass! {
           { tr = tr, ref = hidden out (nameMeta out tr) (typeOf env (textOf out tr)), tys = tys
           })
     | Decl.Trait { name, params, supers, assocs, sigs, later defaults } ->
-        (let u = mention env (typeOf env (textOf out name)) (nameMeta out name)
-          in let w =
+        (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in
+          let w =
             V.foldl
               (\acc a ->
                 (let n = hirAssocNameIn out a in
@@ -460,8 +455,7 @@ fun valueCandidates (env : Env) (name : String) : [Int] =
   | Just id -> [id]
   | None ->
       (match H.lookup name env.scope.values with
-       | Just ids ->
-           V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] ids
+       | Just ids -> V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] ids
        | None ->
            (match H.lookup name env.scope.base with
             | Just id -> [id]
@@ -475,8 +469,7 @@ fun ctorAlts out (env : Env) (name : String) (args : [HirExpr]) =
   let picked =
     V.len (V.filter (\c -> M.isSome (H.lookup c env.scope.ctorFields)) cands) >= 1
       and (if V.len args == 1 then M.isSome (M.andThen (recordLabels out) (V.get args 0)) else False)
-  in
-  if picked or V.len cands < 2 then [] else cands
+  in if picked or V.len cands < 2 then [] else cands
 
 fun ctorPatAlts (env : Env) (name : String) : [Int] =
   let cands = M.unwrapOr [] (H.lookup (unmarked name) env.scope.ctors) in
@@ -617,8 +610,7 @@ fun patBinders out (p : Int) : [(String, Int)] ! { Table Binder | e } =
   then V.concatMap (patBinders out) (hirPatListItemsIn out p)
   else if k == HirPatKind.Record
   then V.concatMap (\f -> patBinders out (hirPatFieldPatIn out f)) (hirPatRecordFieldsIn out p)
-  else if k == HirPatKind.View then patBinders out (hirPatViewPatIn out p)
-  else []
+  else if k == HirPatKind.View then patBinders out (hirPatViewPatIn out p) else []
 
 fun named (id : Int) : [(String, Int)] ! { Table Binder | e } =
   match entry id with
@@ -653,8 +645,7 @@ fun bindBinders out (b : Int) : [(String, Int)] ! { Table Binder | e } =
       (\h x -> H.insert (fst x) (V.pushBack (M.unwrapOr [] (H.lookup (fst x) h)) (snd x)) h)
       H.empty
       lines
-  in
-  H.fromVec
+  in H.fromVec
     (V.map
       (\kv ->
         ( fst kv, dedup (V.map (\x -> match x with | (_, _, l) -> l) (sortOn (\x -> x) (snd kv)))

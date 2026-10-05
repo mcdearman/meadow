@@ -76,8 +76,7 @@ impl Debug (a, b) where Debug a, Debug b {
 impl Debug (a, b, c) where Debug a, Debug b, Debug c {
   fun debug p =
     match p with
-    | (x, y, z) ->
-        concatStrings #["(", debug x, ", ", debug y, ", ", debug z, ")"]
+    | (x, y, z) -> concatStrings #["(", debug x, ", ", debug y, ", ", debug z, ")"]
 }
 
 impl Debug (a, b, c, d) where Debug a, Debug b, Debug c, Debug d {

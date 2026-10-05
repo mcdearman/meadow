@@ -32,17 +32,11 @@ use Std.Bool (not)
 
 -- `Ok` of the result, or `Err` of whatever was thrown.
 @pub fun toResult (act : () -> a ! { Exn b | e }) : Result b a ! e =
-  handle act () with {
-    throw e k -> Err e,
-    return x -> Ok x
-  }
+  handle act () with { throw e k -> Err e, return x -> Ok x }
 
 -- Run `act`; if it throws, hand the error to `recover` and use that instead.
 @pub fun catch (recover : a -> b ! e) (act : () -> b ! { Exn a | e }) : b ! e =
-  handle act () with {
-    throw e k -> recover e,
-    return x -> x
-  }
+  handle act () with { throw e k -> recover e, return x -> x }
 
 -- Run `act`, falling back to a fixed value.
 @pub fun withDefault (fallback : a) (act : () -> a ! { Exn b | e }) : a ! e =
@@ -50,17 +44,11 @@ use Std.Bool (not)
 
 -- `Just` the result, or `None` if it threw.
 @pub fun toMaybe (act : () -> a ! { Exn b | e }) : Maybe a ! e =
-  handle act () with {
-    throw e k -> None,
-    return x -> Just x
-  }
+  handle act () with { throw e k -> None, return x -> Just x }
 
 -- Whether `act` threw. Mostly useful in tests.
 @pub fun threw (act : () -> a ! { Exn b | e }) : Bool ! e =
-  handle act () with {
-    throw e k -> True,
-    return x -> False
-  }
+  handle act () with { throw e k -> True, return x -> False }
 
 -- --- lifting -----------------------------------------------------------------
 
@@ -103,8 +91,7 @@ fun half n = if n % 2 == 0 then n / 2 else raise "odd"
 @test fun catchAndWithDefaultRecover () =
   let a = assertEq (catch (\e -> 0) (\u2 -> half 7)) 0 "catch" in
   let b = assertEq (catch (\e -> 0) (\u2 -> half 8)) 4 "catch leaves a success alone"
-  in
-  assertEq (withDefault 0 (\u2 -> half 7)) 0 "withDefault"
+  in assertEq (withDefault 0 (\u2 -> half 7)) 0 "withDefault"
 
 @test fun toMaybeAndThrew () =
   let a = assertEq (toMaybe (\u2 -> half 8)) (Just 4) "toMaybe success" in
@@ -120,11 +107,9 @@ fun half n = if n % 2 == 0 then n / 2 else raise "odd"
 
 @test fun ofResultAndOfMaybeLift () =
   let a = assertEq (toResult (\u2 -> ofResult (Ok 1) + 1)) (Ok 2) "ofResult Ok" in
-  let b = assertEq (toResult (\u2 -> ofResult (Err "bad") + 1)) (Err "bad") "ofResult Err"
-  in
+  let b = assertEq (toResult (\u2 -> ofResult (Err "bad") + 1)) (Err "bad") "ofResult Err" in
   let c = assertEq (toResult (\u2 -> ofMaybe "none" (Just 1))) (Ok 1) "ofMaybe Just"
-  in
-  assertEq (toResult (\u2 -> ofMaybe "none" None)) (Err "none") "ofMaybe None"
+  in assertEq (toResult (\u2 -> ofMaybe "none" None)) (Err "none") "ofMaybe None"
 
 @test fun ensureAndRefute () =
   let a = assertEq (toResult (\u2 -> ensure True "e")) (Ok ()) "ensure holds" in

@@ -246,8 +246,7 @@ fun collapse node =
 
 fun foldNode f acc node =
   match node with
-  | Collision ch pairs ->
-      arrayFold (\a p -> match p with | (k, v) -> f a k v) acc pairs
+  | Collision ch pairs -> arrayFold (\a p -> match p with | (k, v) -> f a k v) acc pairs
   | Bitmap bitmap slots ->
       arrayFold
         (\a s -> match s with
@@ -336,8 +335,7 @@ def sample = fromVec [("one", 1), ("two", 2), ("three", 3)]
   let b = assertEq (lookup "three" m) (Just 3) "the rest survive" in
   let c = assertEq (size m) 2 "size drops" in
   let d = assertEq (size (delete "nine" sample)) 3 "deleting a missing key changes nothing"
-  in
-  assertTrue (isEmpty (delete "one" (singleton "one" 1))) "down to empty"
+  in assertTrue (isEmpty (delete "one" (singleton "one" 1))) "down to empty"
 
 @test fun manyKeysSurviveGrowthAndShrinking () =
   -- Two thousand keys is several levels deep, and far past one node.
@@ -353,15 +351,13 @@ def sample = fromVec [("one", 1), ("two", 2), ("three", 3)]
     assertTrue
       (V.all (\i -> lookup i half == (if i % 2 == 0 then None else Just (i * i))) (V.range 0 n))
       "the right half"
-  in
-  assertEq (sort (keys half)) (V.map (\i -> i * 2 + 1) (V.range 0 (n / 2))) "keys"
+  in assertEq (sort (keys half)) (V.map (\i -> i * 2 + 1) (V.range 0 (n / 2))) "keys"
 
 @test fun theShapeDependsOnlyOnTheContents () =
   -- Built forwards, backwards, and with extra keys added and taken away again:
   -- the same entries, so the same map.
   let forwards = V.foldl (\m i -> insert i i m) empty (V.range 0 300) in
-  let backwards = V.foldl (\m i -> insert (299 - i) (299 - i) m) empty (V.range 0 300)
-  in
+  let backwards = V.foldl (\m i -> insert (299 - i) (299 - i) m) empty (V.range 0 300) in
   let detour =
     V.foldl
       (\m i -> delete (i + 1000) m)
@@ -380,8 +376,7 @@ def sample = fromVec [("one", 1), ("two", 2), ("three", 3)]
       (Just 2)
       "a vector, however it was built"
   in
-  let c = assertEq (lookup (Just "x") (singleton (Just "x") 3)) (Just 3) "a constructor"
-  in
+  let c = assertEq (lookup (Just "x") (singleton (Just "x") 3)) (Just 3) "a constructor" in
   let d = assertEq (lookup (2 :: [;]) (singleton [2;] 5)) (Just 5) "a list" in
   let who = Person { name = "ada" } in
   assertEq (lookup who (singleton (Person { name = "ada" }) 4)) (Just 4) "a record"
@@ -409,10 +404,8 @@ record Person = { name : String }
   assertTrue (few == insertHashed h 0 0 empty) "collapsed back to a single entry"
 
 @test fun updatesInPlace () =
-  let a = assertEq (lookup "one" (adjust "one" (\v -> v + 1) sample)) (Just 2) "adjust"
-  in
-  let b = assertEq (adjust "nine" (\v -> v + 1) sample) sample "adjust of a missing key"
-  in
+  let a = assertEq (lookup "one" (adjust "one" (\v -> v + 1) sample)) (Just 2) "adjust" in
+  let b = assertEq (adjust "nine" (\v -> v + 1) sample) sample "adjust of a missing key" in
   let c =
     assertEq
       (lookup "one" (insertWith (\new old -> new + old) "one" 10 sample))
@@ -420,8 +413,7 @@ record Person = { name : String }
       "insertWith"
   in
   let d = assertEq (lookup "nine" (alter (\o -> Just 9) "nine" sample)) (Just 9) "alter adds"
-  in
-  assertEq (lookup "one" (alter (\o -> None) "one" sample)) None "alter removes"
+  in assertEq (lookup "one" (alter (\o -> None) "one" sample)) None "alter removes"
 
 @test fun wholeMapOperations () =
   let a = assertEq (sort (values sample)) [1, 2, 3] "values" in

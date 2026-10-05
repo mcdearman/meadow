@@ -56,10 +56,7 @@
 -- `Test` effect is handled rather than left to the runner, and it is what lets
 -- `Std.Test` test itself.
 @pub fun didFail (act : () -> a ! { Test | e }) : Bool ! e =
-  handle act () with {
-    fail msg k -> True,
-    return x -> False
-  }
+  handle act () with { fail msg k -> True, return x -> False }
 
 -- `act` must fail; if it succeeds, *this* is the failure.
 @pub fun assertFails (act : () -> a ! { Test, Test | e }) (msg : String) :
@@ -68,8 +65,7 @@
 
 -- `String.concat`, spelled out from the primitives. `Std.String` is compiled
 -- long after this module and cannot be reached from here.
-fun cat a b =
-  bytesToString (arrayConcat (stringToBytes a) (stringToBytes b))
+fun cat a b = bytesToString (arrayConcat (stringToBytes a) (stringToBytes b))
 
 -- --- tests -------------------------------------------------------------------
 --
@@ -86,10 +82,8 @@ fun cat a b =
 
 @test fun assertionsFailWhenTheyShould () =
   let a = assertTrue (didFail (\u2 -> assert False "x")) "assert False" in
-  let b = assertTrue (didFail (\u2 -> assertEq 1 2 "x")) "assertEq of different values"
-  in
-  let c = assertTrue (didFail (\u2 -> assertNeq 1 1 "x")) "assertNeq of equal values"
-  in
+  let b = assertTrue (didFail (\u2 -> assertEq 1 2 "x")) "assertEq of different values" in
+  let c = assertTrue (didFail (\u2 -> assertNeq 1 1 "x")) "assertNeq of equal values" in
   let d = assertTrue (didFail (\u2 -> assertTrue False "x")) "assertTrue False" in
   let e = assertTrue (didFail (\u2 -> failWith "x")) "failWith" in
   assertTrue (didFail (\u2 -> refuteThat True "x")) "refuteThat True"

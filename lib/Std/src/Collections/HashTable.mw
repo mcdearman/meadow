@@ -72,8 +72,7 @@ fun find slots mask h k i =
   match St.get slots idx with
   | Empty -> 0 - 1
   | Tomb -> find slots mask h k (i + 1)
-  | Full h2 k2 v ->
-      if h2 == h and k2 == k then idx else find slots mask h k (i + 1)
+  | Full h2 k2 v -> if h2 == h and k2 == k then idx else find slots mask h k (i + 1)
 
 -- Where `k` is, and `True`; or where it would go, and `False`: the first
 -- tombstone the probe passed, or else the empty slot that ended it.
@@ -82,10 +81,7 @@ fun place slots mask h k i free =
   match St.get slots idx with
   | Empty -> (if free >= 0 then free else idx, False)
   | Tomb -> place slots mask h k (i + 1) (if free >= 0 then free else idx)
-  | Full h2 k2 v ->
-      if h2 == h and k2 == k
-      then (idx, True)
-      else place slots mask h k (i + 1) free
+  | Full h2 k2 v -> if h2 == h and k2 == k then (idx, True) else place slots mask h k (i + 1) free
 
 -- --- reading -----------------------------------------------------------------
 
@@ -94,8 +90,7 @@ fun place slots mask h k i free =
   | Table slotsRef n tombs ->
       let slots = St.getRef slotsRef in
       let idx = find slots (St.length slots - 1) (hash k) k 0 in
-      if idx < 0 then None
-      else match St.get slots idx with
+      if idx < 0 then None else match St.get slots idx with
       | Full h2 k2 v -> Just v
       | _ -> None
 
@@ -126,8 +121,7 @@ fun place slots mask h k i free =
            | Full h2 k2 old -> St.set slots idx (Full h k (f v old))
            | _ -> ())
       | (idx, False) ->
-          let wasTomb = (match St.get slots idx with | Tomb -> True | _ -> False)
-          in
+          let wasTomb = (match St.get slots idx with | Tomb -> True | _ -> False) in
           let _ = St.set slots idx (Full h k v) in
           let _ = St.setRef n (St.getRef n + 1) in
           let _ = if wasTomb then St.setRef tombs (St.getRef tombs - 1) else () in
@@ -140,10 +134,9 @@ fun place slots mask h k i free =
   | Table slotsRef n tombs ->
       let slots = St.getRef slotsRef in
       let idx = find slots (St.length slots - 1) (hash k) k 0 in
-      if idx < 0 then ()
-      else match St.get slots idx with
-      | Full h k2 old -> St.set slots idx (Full h k2 (f old))
-      | _ -> ()
+      if idx < 0 then () else match St.get slots idx with
+                              | Full h k2 old -> St.set slots idx (Full h k2 (f old))
+                              | _ -> ()
 
 -- Remove `k`, if it is there.
 @pub fun delete (k : a) (t : HashTable b a c) : () ! { St b | e } =
@@ -205,8 +198,7 @@ fun reinsert slots mask h k v i =
       foldSlots f acc slots 0 (St.length slots)
 
 fun foldSlots f acc slots i cap =
-  if i >= cap then acc
-  else match St.get slots i with
+  if i >= cap then acc else match St.get slots i with
   | Full h k v -> foldSlots f (f acc k v) slots (i + 1) cap
   | _ -> foldSlots f acc slots (i + 1) cap
 
@@ -295,15 +287,12 @@ use Std.Sort as Sort
     let _ = insert "k" 9 t in
     let _ = insert "j" 8 t in
     toVec t) in
-  let sorted = Sort.sortBy (\p q -> match (p, q) with | ((_, a), (_, b)) -> compare a b) pairs
-  in
+  let sorted = Sort.sortBy (\p q -> match (p, q) with | ((_, a), (_, b)) -> compare a b) pairs in
   let a = assertEq sorted [("j", 8), ("k", 9)] "cleared, then two" in
-  let ks = runSt (\() -> Sort.sort (keys (fromVec [(3, "x"), (1, "y"), (2, "z")])))
-  in
+  let ks = runSt (\() -> Sort.sort (keys (fromVec [(3, "x"), (1, "y"), (2, "z")]))) in
   let b = assertEq ks [1, 2, 3] "keys" in
   let total = runSt (\() -> foldl (\acc k v -> acc + v) 0 (fromVec [(1, 10), (2, 20), (3, 30)]))
-  in
-  assertEq total 60 "folded"
+  in assertEq total 60 "folded"
 
 @test fun anyStructuredValueIsAKey () =
   runSt (\() ->

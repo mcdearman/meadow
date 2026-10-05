@@ -118,9 +118,7 @@ use Std.Ordering.Ordering.*
       impl PartialOrd $t {
         fun partialCmp x y =
           if _primLtF x y then Just Less
-          else if _primGtF x y then Just Greater
-          else if _primLeF x y then Just Equal
-          else None
+          else if _primGtF x y then Just Greater else if _primLeF x y then Just Equal else None
           fun (<) x y = _primLtF x y
           fun (>) x y = _primGtF x y
           fun (<=) x y = _primLeF x y
@@ -335,8 +333,7 @@ impl Ord (a, b, c) where Ord a, Ord b, Ord c {
 impl PartialEq (a, b, c, d) where PartialEq a, PartialEq b, PartialEq c, PartialEq d {
   fun (==) p q =
     match (p, q) with
-    | ((a1, b1, c1, d1), (a2, b2, c2, d2)) ->
-        a1 == a2 and b1 == b2 and c1 == c2 and d1 == d2
+    | ((a1, b1, c1, d1), (a2, b2, c2, d2)) -> a1 == a2 and b1 == b2 and c1 == c2 and d1 == d2
 }
 
 impl Eq (a, b, c, d) where Eq a, Eq b, Eq c, Eq d {
@@ -365,8 +362,7 @@ impl Ord (a, b, c, d) where Ord a, Ord b, Ord c, Ord d {
 
 fun arrayEq xs ys i =
   if _primGe i (arrayLen xs) then True
-  else if arrayGet xs i == arrayGet ys i then arrayEq xs ys (i + 1)
-  else False
+  else if arrayGet xs i == arrayGet ys i then arrayEq xs ys (i + 1) else False
 
 fun arrayPartialCmp xs ys i =
   let n = arrayLen xs in
@@ -410,8 +406,7 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   assertEq (compare (0 - 5) 0) Less "-5 vs 0"
 
 @test fun everyPrimitiveIsOrdered () =
-  let a = assertTrue ('a' < 'b' and "abc" < "abd" and (1, 2) < (1, 3)) "chars, strings, tuples"
-  in
+  let a = assertTrue ('a' < 'b' and "abc" < "abd" and (1, 2) < (1, 3)) "chars, strings, tuples" in
   let b = assertEq (compare (Just 1) None) Greater "None before Just" in
   let c = assertTrue (False < True and Less < Greater) "Bool and Ordering" in
   assertEq (compare #[1, 2] #[1, 2, 0]) Less "a prefix first"

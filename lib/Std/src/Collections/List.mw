@@ -203,8 +203,7 @@ fun renderWith render xs =
                  | Just s -> Just (concatStrings #[s, "; ", render x]))
       None
       xs
-  in
-  match items with
+  in match items with
   | None -> "[;]"
   | Just s -> concatStrings #["[", s, "]"]
 
@@ -266,8 +265,7 @@ use Std.Yield (Yield)
 @test fun associationLists () =
   let pairs = insertAssoc "b" 2 (insertAssoc "a" 1 [;]) in
   let a = assertEq (lookupAssoc "b" pairs) (Just 2) "lookup" in
-  let b = assertEq (lookupAssoc "a" (insertAssoc "a" 9 pairs)) (Just 9) "replace"
-  in
+  let b = assertEq (lookupAssoc "a" (insertAssoc "a" 9 pairs)) (Just 9) "replace" in
   let c = assertEq (lookupAssoc "a" (removeAssoc "a" pairs)) None "remove" in
   assertEq (length (insertAssoc "a" 9 pairs)) 2 "replacing keeps one"
 

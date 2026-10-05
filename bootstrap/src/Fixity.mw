@@ -101,14 +101,12 @@ fun declareOne (acc : HashMap String Fixity) (d : Syntax Surface)
         fx
           (if R.kindOf assoc == TokenInfixl
             then Left
-            else if R.kindOf assoc == TokenInfixr
-            then Right
-            else Neither)
+            else if R.kindOf assoc == TokenInfixr then Right else Neither)
           level
-      in
-      if level > 9
-      then (let u = say (errorAt (metaOf prec) "fixity level ${show level} is out of range") in acc)
-      else V.foldl (\a o -> declareOp a f o) acc ops
+      in if level > 9
+         then
+           (let u = say (errorAt (metaOf prec) "fixity level ${show level} is out of range") in acc)
+         else V.foldl (\a o -> declareOp a f o) acc ops
   | _ -> acc
 
 fun declareOp (acc : HashMap String Fixity) (f : Fixity) (o : Syntax Surface)

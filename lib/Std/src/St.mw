@@ -116,8 +116,7 @@ fun fibs n =
 @test fun aCellInsideRunStIsPure () = assertEq (sumTo 100) 5050 "summed in a cell"
 
 @test fun arraysAreWrittenInPlace () =
-  let a = assertEq (reversed [1, 2, 3, 4, 5]) [5, 4, 3, 2, 1] "reversed in place"
-  in
+  let a = assertEq (reversed [1, 2, 3, 4, 5]) [5, 4, 3, 2, 1] "reversed in place" in
   let b = assertEq (reversed []) [] "nothing to reverse" in
   assertEq (fibs 10) [0, 1, 1, 2, 3, 5, 8, 13, 21, 34] "each from the two before"
 
@@ -130,8 +129,7 @@ fun fibs n =
       (snapshot, freeze a))
   in
   let a = assertEq frozen #[1, 2, 3] "a later write does not reach a frozen copy"
-  in
-  assertEq after #[99, 2, 3] "but does reach the array"
+  in assertEq after #[99, 2, 3] "but does reach the array"
 
 @test fun runStNests () =
   let got =
@@ -139,10 +137,8 @@ fun fibs n =
       let outer = newRef 1 in
       let inner =
         runSt (\() -> let r = newRef 10 in let _ = modifyRef outer (\x -> x + 1) in getRef r)
-      in
-      getRef outer + inner)
-  in
-  assertEq got 12 "an inner runSt may use the outer one's cells"
+      in getRef outer + inner)
+  in assertEq got 12 "an inner runSt may use the outer one's cells"
 
 @test fun whileLoops () =
   let got =
@@ -150,5 +146,4 @@ fun fibs n =
       let i = newRef 0 in
       let _ = while (\() -> getRef i < 5) (\() -> modifyRef i (\x -> x + 1)) in
       getRef i)
-  in
-  assertEq got 5 "counted up"
+  in assertEq got 5 "counted up"

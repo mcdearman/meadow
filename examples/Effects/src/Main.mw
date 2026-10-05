@@ -32,9 +32,7 @@ use Std.Maybe.Maybe.*
 
 -- --- our own effects ---------------------------------------------------------
 
-effect Log {
-  log : String -> (),
-}
+effect Log { log : String -> (), }
 
 effect Ask {
   -- A configuration value by name.
@@ -122,8 +120,7 @@ fun main () =
   let _ = println (S.concat "outcome: " (show outcome)) in
   let _ = println (S.concat "log: " (show lines)) in
 
-  let _ = println "== a dice game with a seed and a frozen clock: the same every run"
-  in
+  let _ = println "== a dice game with a seed and a frozen clock: the same every run" in
   let _ = println (withClock 1000 (\() -> withSeed 42 (\() -> game ()))) in
 
   let _ = println "== the greeter, fed its input and with its output captured" in

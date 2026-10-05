@@ -27,8 +27,7 @@ fun collatz (n : Int) = collatzSteps n 0
 
 fun collatzSteps (x : Int) (steps : Int) =
   if x == 1 then steps
-  else if x % 2 == 0 then collatzSteps (x / 2) (steps + 1)
-  else collatzSteps (3 * x + 1) (steps + 1)
+  else if x % 2 == 0 then collatzSteps (x / 2) (steps + 1) else collatzSteps (3 * x + 1) (steps + 1)
 
 -- A worker: take a job, answer it, repeat until told to stop. `None` means stop.
 fun worker jobs results =
@@ -42,8 +41,7 @@ fun worker jobs results =
 fun pool (size : Int) work =
   let jobs = Thread.newChannel () in
   let results = Thread.newChannel () in
-  let workers = V.map (\i -> Thread.spawn (\() -> worker jobs results)) (V.range 0 size)
-  in
+  let workers = V.map (\i -> Thread.spawn (\() -> worker jobs results)) (V.range 0 size) in
   let _ = V.forEach (\n -> Thread.send jobs (Just n)) work in
   -- One stop per worker, after the work: a channel keeps its order.
   let _ = V.forEach (\w -> Thread.send jobs None) workers in
@@ -61,13 +59,11 @@ fun longest answers =
 
 fun describeLongest answers =
   match longest answers with
-  | (n, steps) ->
-      S.concatAll ["longest: ", S.fromInt n, " takes ", S.fromInt steps, " steps"]
+  | (n, steps) -> S.concatAll ["longest: ", S.fromInt n, " takes ", S.fromInt steps, " steps"]
 
 fun describeFib t =
   match t with
-  | (n, task) ->
-      S.concatAll ["fib ", S.fromInt n, " = ", S.fromInt (Thread.await task)]
+  | (n, task) -> S.concatAll ["fib ", S.fromInt n, " = ", S.fromInt (Thread.await task)]
 
 -- --- a pipeline --------------------------------------------------------------
 
@@ -101,8 +97,7 @@ fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
 fun main () =
   let _ = println "== a worker pool of 4, over 1..10000" in
   let answers = pool 4 (V.range 1 10001) in
-  let _ = println (S.concatAll ["answered ", S.fromInt (V.len answers), " jobs"])
-  in
+  let _ = println (S.concatAll ["answered ", S.fromInt (V.len answers), " jobs"]) in
   let _ = println (describeLongest answers) in
 
   let _ = println "== a pipeline: square, add one, halve" in

@@ -139,8 +139,7 @@ use Std.Result.Result.*
 
 @test fun andThenAndSwap () =
   let a = assertEq (andThen (\x -> Right (x + 1)) (Right 1)) (Right 2) "andThen" in
-  let b = assertEq (andThen (\x -> Left "no") (Right 1)) (Left "no") "the function may fail"
-  in
+  let b = assertEq (andThen (\x -> Left "no") (Right 1)) (Left "no") "the function may fail" in
   let c = assertEq (swap (Left 1)) (Right 1) "swap Left" in
   assertEq (swap (swap (Right 1))) (Right 1) "swap is an involution"
 

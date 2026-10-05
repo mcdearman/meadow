@@ -443,7 +443,14 @@ mod tests {
         let clock = {
             let ticker = Ticker::at(2000);
             let clock = ticker.clock.clone();
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            // Given time to start, however busy the machine is: twenty
+            // milliseconds was not always enough beside twenty other jobs.
+            let begun = std::time::Instant::now();
+            while clock.load(std::sync::atomic::Ordering::Relaxed) == 0
+                && begun.elapsed() < std::time::Duration::from_secs(5)
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
             assert!(
                 clock.load(std::sync::atomic::Ordering::Relaxed) > 0,
                 "it ran"

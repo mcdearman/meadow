@@ -12,6 +12,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Reading a commit's statuses is how a run learns the suite has passed on
+# Linux already: see `scripts/checked-elsewhere.sh`.
+permissions:
+  contents: read
+  statuses: read
+
 # A new push to a branch makes the run in flight irrelevant.
 concurrency:
   group: ci-${{ github.ref }}
@@ -39,13 +45,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A commit pushed to `master` has usually had this whole script run on
+      # it already, on Linux, and says so. Then the Linux leg is done; the
+      # Windows leg is run whatever anybody says, since nothing else runs it.
+      - name: Was this commit checked already?
+        id: checked
+        if: runner.os == 'Linux' && github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/checked-elsewhere.sh "${{ github.repository }}" "${{ github.sha }}" | tee -a "$GITHUB_OUTPUT"
+
       - name: Install Rust
+        if: steps.checked.outputs.skip != 'true'
         run: rustup update stable
 
       # `check.sh` also builds the VS Code extension, which needs npm. It skips
       # that step when npm is absent, so this is what makes it a gate rather
       # than a suggestion.
       - uses: actions/setup-node@v4
+        if: steps.checked.outputs.skip != 'true'
         with:
           node-version: "20"
 
@@ -55,6 +74,7 @@ jobs:
       # Caching whole target directories made the cache several gigabytes, and
       # saving that on Windows took longer than the checks.
       - uses: Swatinem/rust-cache@v2
+        if: steps.checked.outputs.skip != 'true'
         with:
           workspaces: |
             compiler
@@ -67,5 +87,6 @@ jobs:
       # Windows, where `core.filemode` is off, so a script's executable bit is
       # easy to lose and the failure only shows up here.
       - name: Check
+        if: steps.checked.outputs.skip != 'true'
         shell: bash
         run: bash scripts/check.sh

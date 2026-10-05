@@ -277,6 +277,17 @@ pub fn free(at: i64) {
     sys::free(at)
 }
 
+/// The null address is nobody's to read or write: what an allocation that
+/// failed answers, and what `alloc` answers where there is no C to ask. Said
+/// as an error, where following it would end the program.
+fn not_null(at: i64) -> Result<(), String> {
+    if at == 0 {
+        Err("the null address".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 /// Write `values` from `at` on, each as an integer of `width` bytes (1, 2, 4
 /// or 8), or say the width is none of those.
 ///
@@ -284,6 +295,7 @@ pub fn free(at: i64) {
 ///
 /// `at` must be the address of that many bytes the program may write.
 pub unsafe fn write_ints(at: i64, width: i64, values: &[i64]) -> Result<(), String> {
+    not_null(at)?;
     for (i, v) in values.iter().enumerate() {
         // Safety: the caller's.
         unsafe {
@@ -305,6 +317,7 @@ pub unsafe fn write_ints(at: i64, width: i64, values: &[i64]) -> Result<(), Stri
 ///
 /// `at` must be the address of that many bytes the program may read.
 pub unsafe fn read_ints(at: i64, width: i64, signed: bool, count: i64) -> Result<Vec<i64>, String> {
+    not_null(at)?;
     let mut out = Vec::with_capacity(count.max(0) as usize);
     for i in 0..count.max(0) as usize {
         // Safety: the caller's.
@@ -330,6 +343,7 @@ pub unsafe fn read_ints(at: i64, width: i64, signed: bool, count: i64) -> Result
 ///
 /// `at` must be the address of that many bytes the program may write.
 pub unsafe fn write_floats(at: i64, width: i64, values: &[f64]) -> Result<(), String> {
+    not_null(at)?;
     for (i, v) in values.iter().enumerate() {
         // Safety: the caller's.
         unsafe {
@@ -349,6 +363,7 @@ pub unsafe fn write_floats(at: i64, width: i64, values: &[f64]) -> Result<(), St
 ///
 /// `at` must be the address of that many bytes the program may read.
 pub unsafe fn read_floats(at: i64, width: i64, count: i64) -> Result<Vec<f64>, String> {
+    not_null(at)?;
     let mut out = Vec::with_capacity(count.max(0) as usize);
     for i in 0..count.max(0) as usize {
         // Safety: the caller's.
@@ -369,6 +384,10 @@ pub unsafe fn read_floats(at: i64, width: i64, count: i64) -> Result<Vec<f64>, S
 ///
 /// `at` must be the address of that many bytes the program may read.
 pub unsafe fn read_text(at: i64, count: i64) -> String {
+    // Nothing is at the null address: no text, rather than a crash.
+    if at == 0 {
+        return String::new();
+    }
     // Safety: the caller's.
     let bytes = unsafe { std::slice::from_raw_parts(at as *const u8, count.max(0) as usize) };
     String::from_utf8_lossy(bytes).into_owned()

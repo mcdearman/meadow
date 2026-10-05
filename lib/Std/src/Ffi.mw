@@ -202,31 +202,41 @@ fun invoke (f : Function) (answer : Int) (args : [Arg]) : Result String
 
 use Std.Test (assertEq, assertTrue)
 
+-- The tests that call C are for where there is a C library to call: `unix`.
+-- These two are for everywhere: what is not there is an error, and never a
+-- crash.
+
+@cfg(unix)
 fun libc () =
   match open "libSystem.dylib" with
   | Ok l -> Ok l
   | Err _ -> open "libc.so.6"
 
+@cfg(unix)
 fun cFunction (name : String) =
   match libc () with
   | Err why -> Err why
   | Ok l -> function l name
 
+@cfg(unix)
 @test fun aStringGoesInAndAnIntegerComesBack () =
   match cFunction "strlen" with
   | Err why -> assertEq why "" "the C library has strlen"
   | Ok strlen -> assertEq (callInt strlen [Arg.String "héllo"]) (Ok 6) "its bytes, counted by C"
 
+@cfg(unix)
 @test fun anIntegerGoesIn () =
   match cFunction "labs" with
   | Err why -> assertEq why "" "the C library has labs"
   | Ok labs -> assertEq (callInt labs [Arg.Int (0 - 7)]) (Ok 7) "its absolute value"
 
+@cfg(unix)
 @test fun aFloatComesBack () =
   match cFunction "atof" with
   | Err why -> assertEq why "" "the C library has atof"
   | Ok atof -> assertEq (callFloat atof [Arg.String "2.5"]) (Ok 2.5) "the number it reads"
 
+@cfg(unix)
 @test fun aStringComesBackAndANullOneIsEmpty () =
   match cFunction "getenv" with
   | Err why -> assertEq why "" "the C library has getenv"
@@ -238,6 +248,7 @@ fun cFunction (name : String) =
           "null is the empty string"
       in assertTrue (callString getenv [Arg.String "PATH"] != Ok "") "and PATH is set"
 
+@cfg(unix)
 @test fun cFillsMemoryThatIsReadBack () =
   match cFunction "memset" with
   | Err why -> assertEq why "" "the C library has memset"
@@ -247,6 +258,7 @@ fun cFunction (name : String) =
         (readText p 3, readUnsigned p 1 4)) in
       assertEq got ("hhh", Ok [104, 104, 104, 0]) "three bytes set, the fourth as it was"
 
+@cfg(unix)
 @test fun numbersAreWrittenAndReadAtTheirWidth () =
   let got = withBuffer 32 (\p ->
     let _ = writeFloats p 4 [1.5, 2.25] in
@@ -255,6 +267,7 @@ fun cFunction (name : String) =
     (floats, readInts (offset p 16) 2 2, readUnsigned (offset p 16) 1 4)) in
   assertEq got (Ok [1.5, 2.25], Ok [0 - 1, 513], Ok [255, 255, 1, 2]) "as C floats and shorts"
 
+@cfg(unix)
 @test fun whatIsNotThereIsSaid () =
   let _ =
     assertTrue
@@ -268,3 +281,14 @@ fun cFunction (name : String) =
          | Err _ -> True
          | Ok _ -> False)
         "no such function"
+
+@test fun aLibraryThatIsNotThereIsAnError () =
+  assertTrue
+    (match open "/no/such/library.dylib" with | Err _ -> True | Ok _ -> False)
+    "no such library"
+
+@test fun theNullAddressIsNeitherReadNorWritten () =
+  let nowhere = Ptr 0 in
+  let _ = assertEq (writeInts nowhere 4 [1, 2]) (Err "the null address") "not written" in
+  let _ = assertEq (readInts nowhere 4 2) (Err "the null address") "not read" in
+  assertEq (readText nowhere 8) "" "and no text is there"

@@ -598,6 +598,18 @@ on a machine with cores to spare, where `check.sh` is most of an hour. It is
 what to run on a commit before pushing it, with `--version v0.2.0` for a
 release's tag.
 
+A commit is checked that way on a rented Linux machine before it is pushed, and
+whoever ran it says so on the commit, as a status called `suite/linux-x86_64`:
+
+```sh
+gh api repos/mcdearman/meadow/statuses/<sha> -f state=success \
+  -f context=suite/linux-x86_64 -f description="check-parallel.sh passed"
+```
+
+`ci.yml` and `release.yml` look for it (`scripts/checked-elsewhere.sh`) and skip
+their own run of the checks on Linux when it is there. The Windows leg of CI
+runs whatever anybody says: nothing else checks Windows.
+
 ## Releasing
 
 Meadow has two channels, as Rust does.

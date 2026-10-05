@@ -54,7 +54,13 @@ PIDS=()
 job() {
   local name=$1
   shift
-  ("$@") >"$LOGS/$name.log" 2>&1 &
+  (
+    began=$(date +%s)
+    "$@"
+    code=$?
+    echo $(($(date +%s) - began)) >"$LOGS/$name.seconds"
+    exit $code
+  ) >"$LOGS/$name.log" 2>&1 &
   NAMES+=("$name")
   PIDS+=($!)
 }
@@ -146,17 +152,20 @@ failed=0
 touch "$LOGS/unsorted.txt" || failed=1
 for i in "${!PIDS[@]}"; do
   if wait "${PIDS[$i]}"; then
-    echo "ok   ${NAMES[$i]}" >>"$LOGS/unsorted.txt" || failed=1
+    result="ok  "
   else
     failed=1
-    echo "FAIL ${NAMES[$i]}" >>"$LOGS/unsorted.txt"
+    result="FAIL"
   fi
+  # How long each took, which is what says where a slow run's time went.
+  took=$(cat "$LOGS/${NAMES[$i]}.seconds" 2>/dev/null || echo "?")
+  printf '%s %-28s %5ss\n' "$result" "${NAMES[$i]}" "$took" >>"$LOGS/unsorted.txt" || failed=1
 done
 sort "$LOGS/unsorted.txt" >"$LOGS/summary.txt" || failed=1
 rm -f "$LOGS/unsorted.txt"
 
 cat "$LOGS/summary.txt"
-for name in $(sed -n 's/^FAIL //p' "$LOGS/summary.txt"); do
+for name in $(sed -n 's/^FAIL \([^ ]*\).*/\1/p' "$LOGS/summary.txt"); do
   printf '\n\033[1m== %s\033[0m (%s)\n' "$name" "$LOGS/$name.log"
   tail -20 "$LOGS/$name.log"
 done

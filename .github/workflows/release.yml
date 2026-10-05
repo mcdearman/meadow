@@ -49,6 +49,7 @@ env:
 
 permissions:
   contents: write
+  statuses: read
 
 jobs:
   # Nothing is published until this passes. It runs the same `scripts/check.sh`
@@ -60,20 +61,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The commit a release is cut from, or a nightly built from, has usually
+      # had the suite run on it before it was pushed, and says so: see
+      # `scripts/checked-elsewhere.sh`. Then only what a tag adds is checked
+      # here -- that it agrees with the manifests.
+      - name: Was this commit checked already?
+        id: checked
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/checked-elsewhere.sh "${{ github.repository }}" "${{ github.sha }}" | tee -a "$GITHUB_OUTPUT"
       - name: Install Rust
+        if: steps.checked.outputs.skip != 'true'
         run: rustup update stable
       # `check.sh` builds the VS Code extension when npm is present. Pinned
       # rather than left to whatever the runner ships, for the same reason
       # `vsce` is pinned: an implicit tool version is a build that breaks on
       # someone else's schedule.
       - uses: actions/setup-node@v4
+        if: steps.checked.outputs.skip != 'true'
         with:
           node-version: "20"
       - name: Check
         shell: bash
         run: |
+          tag=""
           if [ "${{ github.ref_type }}" = "tag" ] && [ "$MEADOW_CHANNEL" = "stable" ]; then
-            bash scripts/check.sh --version "${{ github.ref_name }}"
+            tag="${{ github.ref_name }}"
+          fi
+          if [ "${{ steps.checked.outputs.skip }}" = "true" ]; then
+            if [ -n "$tag" ]; then bash scripts/version-check.sh "$tag"; fi
+          elif [ -n "$tag" ]; then
+            bash scripts/check.sh --version "$tag"
           else
             bash scripts/check.sh
           fi

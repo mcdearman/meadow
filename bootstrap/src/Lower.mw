@@ -13,6 +13,7 @@ use MeadowBoot.Fixity.Grouped.*
 use MeadowBoot.Fixity.Assoc.*
 use MeadowBoot.Lex (lex, Lexed, Token)
 use MeadowBoot.Lex.Token.*
+use Lingua (pass!)
 use Lingua.Red as R
 use Lingua.Red (Syntax)
 use Lingua.Red.Syntax.*
@@ -626,87 +627,86 @@ fun complete b (names : [Nm]) (m : Meta) =
 
 -- --- types -------------------------------------------------------------------
 
-fun ty (c : Lc) b (s : GTree) =
-  let head = must NodeTHead s in
-  match childOf NodeArrow s with
-  | None -> thead c b head
-  | Just a ->
-      newAstTypeFun
-        b
-        (spanOf s)
-        [thead c b head]
-        (ty c b (must NodeType a))
-        (M.map (\e -> row c b (must NodeEffRow e)) (childOf NodeEffAnnot a))
+-- --- types -------------------------------------------------------------------
+--
+-- A pass, from the tree's rules for types to `Ast`'s: a case for each rule,
+-- its children lowered before it sees them. It starts at the rules the rest
+-- of this file comes to a type by -- a type, an atom of one, a row and a
+-- label -- since the rest is not a pass yet, and calls these.
 
-fun thead (c : Lc) b (s : GTree) =
-  match childOf NodeTCon s with
-  | Just con ->
-      newAstTypeCon
-        b
-        (spanOf con)
-        (nm b (firstName con))
-        (V.map (tatom c b) (childrenOf NodeTAtom con))
-  | None -> tatom c b s
+pass! {
+  lowerTy : Grouped -> Ast from Type, TAtom, HeadTy, EffRow, RowLabel
+    | Type { head, raw arrow } ->
+        (match arrow with
+         | None -> head
+         | Just a ->
+             newAstTypeFun
+               out
+               (spanOf node)
+               [head]
+               (lowerTyType () out (must NodeType a))
+               (M.map (\e -> lowerTyEffRow () out (must NodeEffRow e)) (childOf NodeEffAnnot a)))
+    | THead { con, paren, array, brack, recTy } ->
+        (match V.get (V.concatMap asList [con, paren, array, brack, recTy]) 0 with
+         | Just t -> t
+         | _ -> newAstTypeVar out (spanOf node) (nm out (firstName node)))
+    | TCon { args } -> newAstTypeCon out (spanOf node) (nm out (firstName node)) args
+    | TAtom { paren, array, brack, recTy } ->
+        (match V.get (V.concatMap asList [paren, array, brack, recTy]) 0 with
+         | Just t -> t
+         | _ -> named_ out node)
+    | HeadTy { paren, array, brack } ->
+        (match V.get (V.concatMap asList [paren, array, brack]) 0 with
+         | Just t -> t
+         | _ -> named_ out node)
+    | TParen { tys } ->
+        (match V.len tys with
+         | 0 -> newAstTypeCon out (spanOf node) (nm out (named "Unit" (spanOf node))) []
+         | 1 -> V.getOr (0 - 1) tys 0
+         | _ -> newAstTypeTuple out (spanOf node) tys)
+    | TArray { ty } -> newAstTypeCon out (spanOf node) (nm out (named "Array" (spanOf node))) [ty]
+    | TBrack { ty } ->
+        (if tokenIs TokenSemiColon node
+          then newAstTypeList out (spanOf node) ty
+          else newAstTypeVector out (spanOf node) ty)
+    | RecTy { fields, tail } -> newAstTypeRecord out (spanOf node) fields tail
+    | FieldTy { ty } ->
+        newAstTypeField out (spanOf node) (nm out (nameOf (must TokenLowerIdent node))) ty
+    | RowTail { } -> nm out (lastName node)
+    | EffRow { raw braces, label } ->
+        (match (braces, label) with
+         | (Just br, _) ->
+             newAstRow
+               out
+               (spanOf node)
+               (V.map (\l -> lowerTyRowLabel () out l) (childrenOf NodeRowLabel br))
+               (M.map (\r -> nm out (lastName r)) (childOf NodeRowTail br))
+         | (None, Just l) -> newAstRow out (spanOf node) [l] None
+         | _ -> newAstRow out (spanOf node) [] (Just (nm out (firstName node))))
+    | RowLabel { args } -> newAstLabel out (spanOf node) (nm out (firstName node)) args
+}
+
+fun asList (x : Maybe a) : [a] = match x with | Just v -> [v] | None -> []
+
+-- An atom that is one name: a constructor with nothing given it, or a
+-- variable; and with no name at all, the empty tuple.
+fun named_ out (s : GTree) =
+  match V.get (tokenKids s) 0 with
+  | Just t ->
+      if R.kindOf t == TokenUpperIdent or R.kindOf t == TokenMacUpper
+      then newAstTypeCon out (spanOf s) (nm out (nameOf t)) []
+      else newAstTypeVar out (spanOf s) (nm out (nameOf t))
+  | None -> newAstTypeTuple out (spanOf s) []
+
+-- The pass's functions, as the rest of this file calls them.
+fun ty (c : Lc) b (s : GTree) = lowerTyType () b s
 
 -- A type atom: a `TAtom`, a `THead` but for a constructor with arguments, or
 -- a `HeadTy`.
 fun tatom (c : Lc) b (s : GTree) =
-  let m = spanOf s in
-  match firstNode s with
-  | Just n ->
-      let k = R.kindOf n in
-      if k == NodeTParen then tparen c b n
-      else if k == NodeTArray
-      then newAstTypeCon b (spanOf n) (nm b (named "Array" (spanOf n))) [ty c b (must NodeType n)]
-      else if k == NodeTBrack
-      then
-        (if tokenIs TokenSemiColon n
-          then newAstTypeList b (spanOf n) (ty c b (must NodeType n))
-          else newAstTypeVector b (spanOf n) (ty c b (must NodeType n)))
-      else if k == NodeRecTy then recTy c b n else newAstTypeVar b m (nm b (firstName s))
-  | None ->
-      (match V.get (tokenKids s) 0 with
-       | Just t ->
-           if R.kindOf t == TokenUpperIdent or R.kindOf t == TokenMacUpper
-           then newAstTypeCon b m (nm b (nameOf t)) []
-           else newAstTypeVar b m (nm b (nameOf t))
-       | None -> newAstTypeTuple b m [])
+  if R.kindOf s == NodeHeadTy then lowerTyHeadTy () b s else lowerTyTAtom () b s
 
-fun tparen (c : Lc) b (s : GTree) =
-  let ts = childrenOf NodeType s in
-  match V.len ts with
-  | 0 -> newAstTypeCon b (spanOf s) (nm b (named "Unit" (spanOf s))) []
-  | 1 -> ty c b (V.getOr s ts 0)
-  | _ -> newAstTypeTuple b (spanOf s) (V.map (ty c b) ts)
-
-fun recTy (c : Lc) b (s : GTree) =
-  newAstTypeRecord b (spanOf s)
-    (V.map
-      (\f ->
-        newAstTypeField
-          b
-          (spanOf f)
-          (nm b (nameOf (must TokenLowerIdent f)))
-          (ty c b (must NodeType f)))
-      (childrenOf NodeFieldTy s))
-    (M.map (\r -> nm b (lastName r)) (childOf NodeRowTail s))
-
-fun row (c : Lc) b (s : GTree) =
-  let m = spanOf s in
-  match childOf NodeRowBraces s with
-  | Just br ->
-      newAstRow
-        b
-        m
-        (V.map (rowLabel c b) (childrenOf NodeRowLabel br))
-        (M.map (\r -> nm b (lastName r)) (childOf NodeRowTail br))
-  | None ->
-      (match childOf NodeRowLabel s with
-       | Just l -> newAstRow b m [rowLabel c b l] None
-       | None -> newAstRow b m [] (Just (nm b (firstName s))))
-
-fun rowLabel (c : Lc) b (s : GTree) =
-  newAstLabel b (spanOf s) (nm b (firstName s)) (V.map (tatom c b) (childrenOf NodeTAtom s))
+fun row (c : Lc) b (s : GTree) = lowerTyEffRow () b s
 
 -- --- patterns ----------------------------------------------------------------
 --

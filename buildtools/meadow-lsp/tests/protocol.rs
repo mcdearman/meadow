@@ -240,7 +240,7 @@ fn formatting_answers_with_what_meadow_fmt_would_do() {
         at(&e["range"]["start"])..at(&e["range"]["end"]),
         e["newText"].as_str().unwrap(),
     );
-    assert_eq!(applied, meadow_fmt::format(messy));
+    assert_eq!(applied, meadow_lsp::format::formatted(messy));
     assert_eq!(
         e["range"]["start"]["line"],
         json!(1),

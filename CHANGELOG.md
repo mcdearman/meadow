@@ -35,6 +35,8 @@ beyond the last release is under _Unreleased_.
 - `meadow fmt` puts a space between a name and a `{` written against it,
   `Ctor{` to `Ctor {`, and indents what follows a bracket that ends its line
   by one level.
+- The REPL's banner and the tutorial say which keys force a new line on macOS:
+  `Ctrl+J` always, and Option+Return once the terminal sends Option as Meta.
 - The REPL colours what is typed as the language server would: the entry is
   compiled against the session as it is typed, so types, constructors,
   modules, functions and variables each have a colour, by what each name

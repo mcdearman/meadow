@@ -160,6 +160,12 @@ path. For multi-line entries, an unfinished line (open bracket, dangling operato
 `| ...` arms) keeps reading; `Alt+Enter` or `Ctrl+J` forces a newline. **End a
 multi-line entry with a blank line.**
 
+On macOS, `Ctrl+J` always forces a newline. `Alt+Enter` is Option+Return, and
+works once the terminal sends Option as Meta: in Terminal, Settings > Profiles >
+Keyboard > "Use Option as Meta key"; in iTerm2, Profiles > Keys > Left Option:
+Esc+. Without that setting Option+Return is an ordinary Return and submits the
+entry.
+
 `Ctrl+F` finds a declaration. Type part of a name -- `len` finds `length`, and
 `Vector.len` only the one in `Std.Collections.Vector` -- or a type, and it
 searches by type instead, the way Hoogle does: `[a] -> Int` finds `length`,

@@ -114,30 +114,36 @@ mod tests {
 
     #[test]
     fn a_save_sets_a_record_out_as_the_command_line_does() {
-        let text = "fun p r =\n  LetRec\n    {\n       id = id,\n       body = b\n     }\n";
-        let want = "fun p r =\n  LetRec {\n    id = id,\n    body = b\n  }\n";
-        assert_eq!(formatted(text), want);
+        // Too long for one line, so set out as a record is: its brace on
+        // the constructor's line, a field to a line, and a space before the
+        // brace.
+        let fields = "id = theIdentifierOfTheBinding,\n       param = theParameterItTakes,\n       value = theValueItIsBoundTo,\n       body = theBodyItIsIn";
+        let text = format!("fun p r =\n  LetRec\n    {{\n       {fields}\n     }}\n");
+        let want = "fun p r =\n  LetRec {\n    id = theIdentifierOfTheBinding,\n    param = theParameterItTakes,\n    value = theValueItIsBoundTo,\n    body = theBodyItIsIn\n  }\n";
+        assert_eq!(formatted(&text), want);
+        assert_eq!(formatted(&want.replace("LetRec {", "LetRec{")), want);
+        // And one that fits a line is put on it.
         assert_eq!(
-            formatted("fun p r =\n  LetRec{\n    id = id,\n    body = b\n  }\n"),
-            want
+            formatted("fun p r =\n  LetRec\n    {\n       id = id,\n       body = b\n     }\n"),
+            "fun p r = LetRec { id = id, body = b }\n"
         );
     }
 
     #[test]
     fn a_formatted_document_needs_no_edits() {
-        let text = meadow_fmt::format("fun f x =\n  x + 1\n\ndef main = f 1\n");
+        let text = formatted("fun f x =\n  x + 1\n\ndef main = f 1\n");
         assert!(edits(&text).is_empty());
     }
 
     #[test]
     fn only_the_changed_lines_are_replaced() {
-        let text = "fun f x =\n  x + 1\n\ndef g y =\n        match y with\n   | 0 -> 1\n  | _ -> 2\n\ndef main = f 1\n";
+        let text = "fun f x = x + 1\n\ndef g y =\n        match y with\n   | 0 -> 1\n  | _ -> 2\n\ndef main = f 1\n";
         let e = check(text);
         assert_eq!(e.len(), 1);
-        // The first four lines and the last two were already right, and are
+        // The first three lines and the last two were already right, and are
         // outside the edit.
-        assert!(e[0].range.start.line >= 3, "{e:?}");
-        assert!(e[0].range.end.line <= 7, "{e:?}");
+        assert!(e[0].range.start.line >= 2, "{e:?}");
+        assert!(e[0].range.end.line <= 6, "{e:?}");
     }
 
     #[test]

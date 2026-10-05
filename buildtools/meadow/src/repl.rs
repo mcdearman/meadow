@@ -879,6 +879,18 @@ fn print_banner() {
     );
     println!("  dangling operator, trailing `\\`, a signature, `| ...` arms) keeps reading.");
     println!("  End a multi-line entry with a blank line.");
+    // On a Mac `Alt` is the Option key, and a terminal sends it as text
+    // unless it is told to send it as Meta: say which key always works.
+    if cfg!(target_os = "macos") {
+        println!(
+            "  On macOS: {} always works. {} ({}) does once the terminal",
+            "Ctrl+J".cyan(),
+            "Option+Return".cyan(),
+            "Alt+Enter".cyan()
+        );
+        println!("  sends Option as Meta: Terminal > Settings > Profiles > Keyboard >");
+        println!("  \"Use Option as Meta key\"; in iTerm2, Profiles > Keys > Left Option: Esc+.");
+    }
     println!();
 }
 

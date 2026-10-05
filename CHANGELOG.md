@@ -63,6 +63,10 @@ beyond the last release is under _Unreleased_.
 
 ### Fixed
 
+- Formatting on save does not wait for the language server to finish
+  analysing: it is answered from the text at once, on a thread of its own, and
+  of several changes to a document waiting to be analysed only the last is.
+  In a package with macros to expand a save took seconds.
 - `Std.Ffi` answers an error for the null address where it crashed: reading or
   writing through a pointer that is 0, which is what `alloc` gives where there
   is no C library to ask, as on Windows.

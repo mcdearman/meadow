@@ -118,14 +118,11 @@ fun declareOp (acc : HashMap String Fixity) (f : Fixity) (o : Syntax Surface)
       match builtinOf name with
       | Just b ->
           (if b == f
-            then acc
-            else
-              (let u =
-                  say
-                  (errorAt
-                    (metaOf n)
-                    "`${name}` is `${keyword b} ${show b.level}` in the language itself")
-                in acc))
+            then acc else (let u = say
+            (errorAt
+              (metaOf n)
+              "`${name}` is `${keyword b} ${show b.level}` in the language itself")
+            in acc))
       | None ->
           (match H.lookup name acc with
            | Just before ->

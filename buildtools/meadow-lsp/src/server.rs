@@ -77,7 +77,98 @@ pub fn serve(
         indexes: HashMap::new(),
         load_package,
     };
-    server.main_loop(connection)
+    // Two threads. This one analyses, which for a package with macros to
+    // expand is seconds of work for each change; the other reads what the
+    // editor sends and answers what needs no analysis -- formatting -- at
+    // once, so that saving a file does not wait for the analysis of the
+    // keystrokes before it. See [`route`].
+    let (forward, inbox) = std::sync::mpsc::channel::<Message>();
+    std::thread::scope(|threads| {
+        threads.spawn(move || route(connection, forward));
+        server.main_loop(connection, inbox)
+    })
+}
+
+/// Read what the editor sends, answer a formatting request from the text of
+/// the document alone, and pass everything else on to be analysed.
+///
+/// The formatter reads only the text, so this keeps each open document's text
+/// as the editor last gave it: the messages arrive here in the order the
+/// editor sent them, which is what makes it the text the request is about.
+fn route(connection: &Connection, forward: std::sync::mpsc::Sender<Message>) {
+    let mut texts: HashMap<Uri, String> = HashMap::new();
+    for msg in &connection.receiver {
+        match &msg {
+            Message::Notification(note) => match note.method.as_str() {
+                DidOpenTextDocument::METHOD => {
+                    if let Ok(p) =
+                        serde_json::from_value::<DidOpenTextDocumentParams>(note.params.clone())
+                    {
+                        texts.insert(p.text_document.uri, p.text_document.text);
+                    }
+                }
+                DidChangeTextDocument::METHOD => {
+                    if let Ok(p) =
+                        serde_json::from_value::<DidChangeTextDocumentParams>(note.params.clone())
+                        && let Some(change) = p.content_changes.into_iter().last()
+                    {
+                        texts.insert(p.text_document.uri, change.text);
+                    }
+                }
+                DidCloseTextDocument::METHOD => {
+                    if let Ok(p) =
+                        serde_json::from_value::<DidCloseTextDocumentParams>(note.params.clone())
+                    {
+                        texts.remove(&p.text_document.uri);
+                    }
+                }
+                _ => {}
+            },
+            // `meadow fmt`, on the document as the editor holds it. The
+            // formatter has no settings, so the client's tab size and
+            // spaces-or-tabs are not consulted: a file formats the same way
+            // in every editor and on the command line.
+            Message::Request(req) if req.method == Formatting::METHOD => {
+                let id = req.id.clone();
+                let response = match cast::<Formatting>(req.clone()) {
+                    Ok((id, p)) => Response::new_ok(
+                        id,
+                        texts
+                            .get(&p.text_document.uri)
+                            .map(|text| crate::format::edits(text)),
+                    ),
+                    Err(e) => Response::new_err(
+                        id,
+                        lsp_server::ErrorCode::InvalidParams as i32,
+                        e.to_string(),
+                    ),
+                };
+                if connection.sender.send(Message::Response(response)).is_err() {
+                    return;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        let last = matches!(&msg, Message::Notification(n) if n.method == Exit::METHOD);
+        if forward.send(msg).is_err() || last {
+            return;
+        }
+    }
+}
+
+/// The document a change is to, when `msg` is one that replaces its text.
+fn changed(msg: &Message) -> Option<Uri> {
+    let Message::Notification(note) = msg else {
+        return None;
+    };
+    (note.method == DidChangeTextDocument::METHOD)
+        .then(|| {
+            serde_json::from_value::<DidChangeTextDocumentParams>(note.params.clone())
+                .ok()
+                .map(|p| p.text_document.uri)
+        })
+        .flatten()
 }
 
 /// Answer `initialize`, then wait for `initialized`.
@@ -191,16 +282,54 @@ struct Server {
 }
 
 impl Server {
-    fn main_loop(&mut self, c: &Connection) -> Result<(), Box<dyn Error + Sync + Send>> {
-        for msg in &c.receiver {
+    fn main_loop(
+        &mut self,
+        c: &Connection,
+        inbox: std::sync::mpsc::Receiver<Message>,
+    ) -> Result<(), Box<dyn Error + Sync + Send>> {
+        // What has arrived and is not dealt with yet, oldest first.
+        let mut waiting: std::collections::VecDeque<Message> = Default::default();
+        let mut stopping = false;
+        loop {
+            waiting.extend(inbox.try_iter());
+            let msg = match waiting.pop_front() {
+                Some(msg) => msg,
+                None => match inbox.recv() {
+                    Ok(msg) => msg,
+                    Err(_) => return Ok(()),
+                },
+            };
+            // A change to a document that a later change replaces is not
+            // analysed: a full sync carries the whole text each time, and the
+            // one typed before it is nobody's question any more. This is what
+            // keeps typing from queueing an analysis for every keystroke.
+            if let Some(uri) = changed(&msg)
+                && waiting
+                    .iter()
+                    .any(|later| changed(later).as_ref() == Some(&uri))
+            {
+                continue;
+            }
             match msg {
                 Message::Request(req) => {
-                    if c.handle_shutdown(&req)? {
-                        return Ok(());
+                    if req.method == lsp_types::request::Shutdown::METHOD {
+                        stopping = true;
+                        c.sender
+                            .send(Message::Response(Response::new_ok(req.id, ())))?;
+                        continue;
+                    }
+                    if stopping {
+                        c.sender.send(Message::Response(Response::new_err(
+                            req.id,
+                            lsp_server::ErrorCode::InvalidRequest as i32,
+                            "the server is shutting down".to_string(),
+                        )))?;
+                        continue;
                     }
                     let response = self.request(req);
                     c.sender.send(Message::Response(response))?;
                 }
+                Message::Notification(note) if note.method == Exit::METHOD => return Ok(()),
                 Message::Notification(note) => {
                     for uri in self.notification(note) {
                         let diagnostics = self.publish(&uri);
@@ -218,7 +347,6 @@ impl Server {
                 Message::Response(_) => {}
             }
         }
-        Ok(())
     }
 
     /// Returns the documents to re-publish diagnostics for.
@@ -419,14 +547,6 @@ impl Server {
     fn request(&mut self, req: Request) -> Response {
         let id = req.id.clone();
         match req.method.as_str() {
-            // `meadow fmt`, on the document as the editor holds it. The
-            // formatter has no settings, so the client's tab size and
-            // spaces-or-tabs are not consulted: a file formats the same way
-            // in every editor and on the command line.
-            Formatting::METHOD => self.answer::<Formatting, _>(req, |s, p| {
-                let doc = s.docs.get(&p.text_document.uri)?;
-                Some(crate::format::edits(&doc.text))
-            }),
             // The editor's own fuzzy picker over every declaration there is --
             // VS Code's Ctrl+T, Helix's Space S -- by name, or by type when
             // the query is one: see `meadow_find`.

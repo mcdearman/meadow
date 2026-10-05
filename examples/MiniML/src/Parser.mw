@@ -46,15 +46,18 @@ def reserved = ["let", "rec", "in", "fun", "if", "then", "else", "true", "false"
 -- `alt` will back out of. `try` un-consumes, which turns "this is a keyword"
 -- back into "this is not an identifier, look elsewhere".
 fun ident =
-  P.label "an identifier"
+  P.label
+    "an identifier"
     (P.try
-      (P.bind (lexeme (P.lift2 (\c cs -> S.concat (Ch.toString c) cs)
-                        (P.satisfy isIdentStart)
-                        (P.takeWhileP isIdentChar)))
-        (\name ->
-          if V.elem name reserved
-          then P.fail "`${name}` is a keyword, not a name"
-          else P.pure name)))
+       (P.bind
+          (lexeme
+             (P.lift2
+                (\c cs -> S.concat (Ch.toString c) cs)
+                (P.satisfy isIdentStart)
+                (P.takeWhileP isIdentChar)))
+          (\name ->
+            if V.elem name reserved then P.fail "`${name}` is a keyword, not a name"
+            else P.pure name)))
 
 fun intLit = L.decimal |> lexeme |> P.map (\n -> Int n)
 
@@ -82,12 +85,12 @@ fun addE () = binaryE ["+", "-"] mulE
 fun cmpE () = binaryE ["==", "<=", ">=", "<", ">"] addE
 
 fun atomE () =
-  P.choice
-    [ intLit
-      , boolLit
-      , P.map (\n -> Var n) ident
-      , P.between (symbol "(") (symbol ")") (P.defer exprE)
-    ]
+  P.choice [
+    intLit,
+    boolLit,
+    P.map (\n -> Var n) ident,
+    P.between (symbol "(") (symbol ")") (P.defer exprE)
+  ]
 
 -- `fun x y -> e` is sugar for `fun x -> fun y -> e`.
 fun lamE () =
@@ -121,7 +124,8 @@ fun letE () =
       |> P.skip (symbol "=")
       |> P.keep (P.defer exprE)
       |> P.skip (keyword "in")
-      |> P.keep (P.defer exprE) in
+      |> P.keep (P.defer exprE)
+  in
   -- Whether it is a `let rec` decides whether what was read is one at all.
   P.bind parts (\read ->
     match read with

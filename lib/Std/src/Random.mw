@@ -47,9 +47,7 @@ fun mix z0 =
   bitXor z2 (z2 >>> 31)
 
 -- One step: the next value and the state to continue from.
-@pub fun step (s : Int) : (Int, Int) =
-  let s2 = s + gamma in
-  (mix s2, s2)
+@pub fun step (s : Int) : (Int, Int) = let s2 = s + gamma in (mix s2, s2)
 
 -- A state to start from. Any `Int` will do; odd ones are traditional.
 @pub fun seed (n : n) : n = bitOr n 1
@@ -66,9 +64,7 @@ fun mix z0 =
 
 -- `v mod m`, always in [0, m). `%` follows the sign of the dividend, and the
 -- generator produces negative values half the time.
-fun posMod v m =
-  let r = v % m in
-  if r < 0 then r + m else r
+fun posMod v m = let r = v % m in if r < 0 then r + m else r
 
 -- --- handling ----------------------------------------------------------------
 
@@ -87,8 +83,7 @@ fun posMod v m =
   } (seed n)
 
 -- Like `withSeed`, but also hands back the final state so a run can be continued.
-@pub fun withSeedFrom (n : Int) (act : () -> a ! { Random | e }) :
-    (a, Int) ! e =
+@pub fun withSeedFrom (n : Int) (act : () -> a ! { Random | e }) : (a, Int) ! e =
   handle act () with {
     nextInt () k -> \s -> match step s with | (v, s2) -> (k v) s2,
     nextSeed () k -> \s -> match step s with | (v, s2) -> (k v) s2,
@@ -118,8 +113,7 @@ fun posMod v m =
   if n <= 1 then v else shuffleFrom (n - 1) v
 
 fun shuffleFrom i v =
-  if i <= 0
-  then v
+  if i <= 0 then v
   else
     let j = between 0 (i + 1) in
     shuffleFrom (i - 1) (swapAt v i j)
@@ -141,11 +135,12 @@ use Std.Collections.Vector (vecFromArray)
 use Std.Maybe.Maybe.*
 
 @test fun aSeedGivesTheSameRunTwice () =
-  let a = assertEq (withSeed 42 (\u2 -> between 1 7)) (withSeed 42 (\u2 -> between 1 7)) "same seed"
+  let a =
+    assertEq (withSeed 42 (\u2 -> between 1 7)) (withSeed 42 (\u2 -> between 1 7)) "same seed"
   in assertEq
-    (withSeed 7 (\u2 -> V.map (\i -> nextInt ()) [0, 1, 2]))
-    (withSeed 7 (\u2 -> V.map (\i -> nextInt ()) [0, 1, 2]))
-    "a whole sequence repeats"
+       (withSeed 7 (\u2 -> V.map (\i -> nextInt ()) [0, 1, 2]))
+       (withSeed 7 (\u2 -> V.map (\i -> nextInt ()) [0, 1, 2]))
+       "a whole sequence repeats"
 
 @test fun differentSeedsDiverge () =
   assertFalse

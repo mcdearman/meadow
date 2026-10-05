@@ -25,11 +25,7 @@
 -- A type. `Ty.Var` is a *mutable cell*, which is what makes this Algorithm J
 -- rather than Algorithm W: unification writes the answer into the variable
 -- instead of building a substitution to apply later.
-@pub(pkg) data Ty
-  = Int
-  | Bool
-  | Fun Ty Ty
-  | Var (Ref Tv)
+@pub(pkg) data Ty = Int | Bool | Fun Ty Ty | Var (Ref Tv)
 
 -- What a type variable currently knows about itself.
 --
@@ -39,9 +35,7 @@
 -- generalized, which is checkable without scanning the environment.
 --
 -- `Link t` -- solved, and every reader follows the link.
-@pub(pkg) data Tv
-  = Unbound Int Int
-  | Link Ty
+@pub(pkg) data Tv = Unbound Int Int | Link Ty
 
 -- A type scheme: `forall ids. ty`. The ids are the `Unbound` ids that were
 -- generalized; `instantiate` swaps each for a fresh variable.

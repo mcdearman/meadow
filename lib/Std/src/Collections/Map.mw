@@ -28,7 +28,8 @@ use Map.*
   | Tip -> Node Tip k v Tip
   | Node l key val r ->
       if k < key then Node (insert k v l) key val r
-      else if key < k then Node l key val (insert k v r) else Node l k v r
+      else if key < k then Node l key val (insert k v r)
+      else Node l k v r
 
 @pub fun lookup (k : Int) (m : Map a) : Maybe a =
   match m with
@@ -38,9 +39,7 @@ use Map.*
 @pub fun member (k : Int) (m : Map a) : Bool = isSome (lookup k m)
 
 @pub fun getOr (default : a) (k : Int) (m : Map a) : a =
-  match lookup k m with
-  | None -> default
-  | Just v -> v
+  match lookup k m with | None -> default | Just v -> v
 
 -- Every `(key, value)` pair, in key order.
 @pub fun toVec (m : Map a) : [(Int, a)] = pushInOrder V.empty m
@@ -101,7 +100,8 @@ fun removeRoot l r =
   | Tip -> Tip
   | Node l key val r ->
       if k < key then Node (delete k l) key val r
-      else if key < k then Node l key val (delete k r) else removeRoot l r
+      else if key < k then Node l key val (delete k r)
+      else removeRoot l r
 
 -- Yield every `(key, value)` pair in key order, for `Std.Stream`.
 @pub fun toStream (m : Map a) : () ! { Yield (Int, a) | e } =
@@ -120,8 +120,7 @@ impl PartialEq (Map a) where PartialEq a {
   fun (==) x y = toList x == toList y
 }
 
-impl Eq (Map a) where Eq a {
-}
+impl Eq (Map a) where Eq a {}
 
 impl PartialOrd (Map a) where PartialOrd a {
   fun partialCmp x y = partialCmp (toList x) (toList y)

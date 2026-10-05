@@ -62,7 +62,10 @@ fun audit accounts (expected : Int) (times : Int) =
 -- --- a bounded queue ---------------------------------------------------------
 
 -- At most `capacity` values, oldest first.
-record Queue a = { items : TVar [a], capacity : Int }
+record Queue a = {
+  items : TVar [a],
+  capacity : Int
+}
 
 fun newQueue (capacity : Int) = { items = Stm.newTVarIO [], capacity = capacity }
 
@@ -108,8 +111,12 @@ fun main () =
   let _ = println "== two bounded queues, one consumer taking from either" in
   let urgent = newQueue 2 in
   let normal = newQueue 2 in
-  let producer = Thread.spawn (\() ->
-    V.forEach (\i -> Stm.atomically (\() -> push (if i % 3 == 0 then urgent else normal) i)) (V.range 1 10)) in
+  let producer =
+    Thread.spawn (\() ->
+      V.forEach
+        (\i -> Stm.atomically (\() -> push (if i % 3 == 0 then urgent else normal) i))
+        (V.range 1 10))
+  in
   let taken = V.map (\i -> Stm.atomically (\() -> popEither urgent normal)) (V.range 1 10) in
   let _ = Thread.await producer in
   println (S.concatAll ["took, in the order they came: ", show taken])

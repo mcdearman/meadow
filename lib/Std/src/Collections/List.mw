@@ -44,10 +44,7 @@ fun reverseOnto acc xs =
 
 @pub fun reverse (xs : List a) : List a = reverseOnto Nil xs
 
-@pub fun length (xs : List a) : n =
-  match xs with
-  | Nil -> 0
-  | Cons x rest -> 1 + length rest
+@pub fun length (xs : List a) : n = match xs with | Nil -> 0 | Cons x rest -> 1 + length rest
 
 @pub fun elem (x : a) (xs : List a) : Bool =
   match xs with
@@ -149,8 +146,7 @@ fun reverseOnto acc xs =
   | (Cons a arest, Nil) -> Nil
   | (Cons a arest, Cons b brest) -> (a, b) :: zip arest brest
 
-@pub fun zipWith (f : a -> b -> c ! e) (xs : List a) (ys : List b)
-    : List c ! e =
+@pub fun zipWith (f : a -> b -> c ! e) (xs : List a) (ys : List b) : List c ! e =
   match (xs, ys) with
   | (Nil, bs) -> Nil
   | (Cons a arest, Nil) -> Nil
@@ -198,14 +194,15 @@ fun reverseOnto acc xs =
 fun renderWith render xs =
   let items =
     foldl
-      (\acc x -> match acc with
-                 | None -> Just (render x)
-                 | Just s -> Just (concatStrings #[s, "; ", render x]))
+      (\acc x ->
+        match acc with
+        | None -> Just (render x)
+        | Just s -> Just (concatStrings #[s, "; ", render x]))
       None
       xs
   in match items with
-  | None -> "[;]"
-  | Just s -> concatStrings #["[", s, "]"]
+     | None -> "[;]"
+     | Just s -> concatStrings #["[", s, "]"]
 
 impl Debug (List a) where Debug a {
   fun debug xs = renderWith debug xs

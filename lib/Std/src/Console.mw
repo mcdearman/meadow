@@ -78,8 +78,7 @@ use Std.Collections.Vector (vecFromArray)
 
 -- Write `message` with no trailing newline, then read a line.
 @pub fun prompt (message : a) : Maybe String ! { Console | e } =
-  let _ = print message in
-  readLine ()
+  let _ = print message in readLine ()
 
 -- The next line, or `fallback` at end of input.
 @pub fun readLineOr (fallback : String) : String ! { Console | e } = unwrapOr fallback (readLine ())
@@ -95,16 +94,14 @@ use Std.Collections.Vector (vecFromArray)
 -- Keep asking until the answer parses. `parse` returns `Maybe b`; a `None` is
 -- reported with `retry` and the question is put again. Ends as `None` only if
 -- input runs out, so a piped-in file cannot spin forever.
-@pub fun promptUntil (message : a) (retry : b)
-    (parse : String -> Maybe c ! { Console | e }) : Maybe c ! { Console | e } =
+@pub fun promptUntil (message : a) (retry : b) (parse : String -> Maybe c ! { Console | e })
+    : Maybe c ! { Console | e } =
   match prompt message with
   | None -> None
   | Just line ->
       match parse (S.trim line) with
       | Just _ as parsed -> parsed
-      | None ->
-          let _ = println retry in
-          promptUntil message retry parse
+      | None -> let _ = println retry in promptUntil message retry parse
 
 -- Every remaining line, in order.
 @pub fun readAll () : [String] ! { Console | e } = readAllLoop V.empty
@@ -118,8 +115,7 @@ fun readAllLoop acc =
 
 -- Run `body` with the `Vector` `lines` as the input, so nothing touches the
 -- terminal. Once they are exhausted every `readLine` answers `None`.
-@pub fun withInput (lines : [String]) (body : () -> a ! { Console | e })
-    : a ! { Console | e } =
+@pub fun withInput (lines : [String]) (body : () -> a ! { Console | e }) : a ! { Console | e } =
   let feed =
     handle body () with {
       -- `get` is `None` past the end, which is exactly the answer wanted.
@@ -131,8 +127,7 @@ fun readAllLoop acc =
 -- Run `body` and collect everything it writes instead of printing it: the
 -- result, paired with the text. Reading is left alone, so this nests with
 -- `withInput` in either order.
-@pub fun withOutput (body : () -> a ! { Console | e }) :
-    (a, String) ! { Console | e } =
+@pub fun withOutput (body : () -> a ! { Console | e }) : (a, String) ! { Console | e } =
   let collect =
     handle body () with {
       writeOutput text k -> \written -> (k ()) (S.concat written text),
@@ -147,7 +142,11 @@ fun readAllLoop acc =
 -- reason the terminal is an effect at all.
 
 @test fun printAndPrintlnWriteTheirText () =
-  let got = withOutput (\() -> let _ = print "a" in let _ = println "b" in println 42)
+  let got =
+    withOutput (\() ->
+      let _ = print "a" in
+      let _ = println "b" in
+      println 42)
   in assertEq got ((), "ab\n42\n") "a String as itself, anything else as show renders it"
 
 @test fun withOutputKeepsTheResult () =
@@ -186,9 +185,10 @@ fun readAllLoop acc =
 @test fun promptUntilRetriesUntilItParses () =
   let parse = \s -> match s with | "yes" -> Just True | _ -> None in
   let (got, written) =
-    withOutput (\() -> withInput ["no", "maybe", "yes"] (\() -> promptUntil "?" "again" parse)) in
-  let a = assertEq got (Just True) "keeps asking past the answers that do not parse"
-  in assertEq written "?again\n?again\n?" "asked three times, told off twice"
+    withOutput (\() -> withInput ["no", "maybe", "yes"] (\() -> promptUntil "?" "again" parse))
+  in
+  let a = assertEq got (Just True) "keeps asking past the answers that do not parse" in
+  assertEq written "?again\n?again\n?" "asked three times, told off twice"
 
 @test fun promptUntilGivesUpAtEndOfInput () =
   -- Otherwise a piped-in file that never satisfies `parse` would spin forever.

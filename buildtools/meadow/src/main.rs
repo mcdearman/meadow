@@ -230,10 +230,9 @@ enum Cmd {
         /// Write the result to stdout instead of back to the file.
         #[arg(long)]
         stdout: bool,
-        /// How many characters a line may be: one longer is cut where there
-        /// is a place to cut it -- after a definition's `=`, an arm or a
-        /// pipeline step to a line, an argument to a line. A string or a
-        /// comment is never cut. `0` cuts nothing: no token leaves its line.
+        /// How many characters a line may be: what fits is put on one line,
+        /// and what does not is cut at its outermost joint. A string or a
+        /// comment is never cut. `0` only indents: no token leaves its line.
         /// 100 unless it is given, as rustfmt has it.
         #[arg(long, value_name = "COLUMNS", default_value_t = meadow_fmt::WIDTH)]
         width: usize,

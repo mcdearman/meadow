@@ -76,8 +76,7 @@ fun unreachable u = unreachable u
 -- Make `tv` hold `x` when this transaction commits.
 @pub fun writeTVar (tv : TVar a) (x : a) : () ! { Stm | e } = stmWrite tv x
 
-@pub fun modifyTVar (tv : TVar a) (f : a -> a ! { Stm | e }) :
-    () ! { Stm | e } =
+@pub fun modifyTVar (tv : TVar a) (f : a -> a ! { Stm | e }) : () ! { Stm | e } =
   writeTVar tv (f (readTVar tv))
 
 -- Give up for now: wait until something this transaction read changes, then
@@ -92,16 +91,23 @@ fun unreachable u = unreachable u
 -- waits for either to be able to go.
 @pub fun orElse (first : () -> a ! { Stm }) (second : () -> a ! { Stm }) =
   let _ = stmNest () in
-  match handle Done (first ()) with { retrySignal u k -> Retried, conflictSignal u k -> Conflicted,
+  match handle Done (first ()) with {
+    retrySignal u k -> Retried,
+    conflictSignal u k -> Conflicted,
   } with
   | Done x -> let _ = stmMerge () in x
   | Retried -> let _ = stmRollback () in second ()
-  | Conflicted -> let _ = stmRollback () in let _ = conflictSignal () in unreachable ()
+  | Conflicted ->
+      let _ = stmRollback () in
+      let _ = conflictSignal () in
+      unreachable ()
 
 -- Run `f` as one transaction, as many times as it takes.
 @pub fun atomically (f : () -> a ! { Stm }) =
   let _ = stmBegin () in
-  match handle Done (f ()) with { retrySignal u k -> Retried, conflictSignal u k -> Conflicted,
+  match handle Done (f ()) with {
+    retrySignal u k -> Retried,
+    conflictSignal u k -> Conflicted,
   } with
   | Done x -> if stmCommit () then x else atomically f
   | Retried -> let _ = stmWait () in atomically f
@@ -125,26 +131,37 @@ use Std.Thread as T
 
 @test fun aTransactionCanMakeTVars () =
   let pair =
-    atomically
-      (\() -> let a = newTVar "left" in let b = newTVar "right" in (readTVar a, readTVar b))
+    atomically (\() ->
+      let a = newTVar "left" in
+      let b = newTVar "right" in
+      (readTVar a, readTVar b))
   in assertEq pair ("left", "right") "made and read in one transaction"
 
 @test fun orElseTakesTheSecondWhenTheFirstRetries () =
   let tv = newTVarIO (toInt 0) in
-  let got = atomically (\() ->
-    orElse (\() -> let _ = writeTVar tv 99 in let _ = retry () in "first") (\() -> "second")) in
+  let got =
+    atomically (\() ->
+      orElse
+        (\() ->
+          let _ = writeTVar tv 99 in
+          let _ = retry () in
+          "first")
+        (\() -> "second"))
+  in
   let _ = assertEq got "second" "the second branch" in
   assertEq (readTVarIO tv) 0 "the first branch's write was dropped"
 
 @test fun orElseKeepsTheFirstWhenItSucceeds () =
   let tv = newTVarIO (toInt 0) in
-  let got = atomically (\() -> orElse (\() -> let _ = writeTVar tv 5 in "first") (\() -> "second"))
+  let got =
+    atomically (\() -> orElse (\() -> let _ = writeTVar tv 5 in "first") (\() -> "second"))
   in assertEq (got, readTVarIO tv) ("first", 5) "the first branch and its write"
 
 @test fun retryWaitsForAnotherThread () =
   let box = newTVarIO None in
-  let taker = T.spawn (\() ->
-    atomically (\() -> match readTVar box with | Just x -> x | None -> retry ())) in
+  let taker =
+    T.spawn (\() -> atomically (\() -> match readTVar box with | Just x -> x | None -> retry ()))
+  in
   let _ = T.yieldNow () in
   let _ = atomically (\() -> writeTVar box (Just "delivered")) in
   assertEq (T.await taker) "delivered" "woken by the write"
@@ -179,8 +196,8 @@ use Std.Collections.HashMap as H
 fun fill tv (from : Int) (to : Int) =
   if from == to then ()
   else
-    let _ = atomically (\() -> modifyTVar tv (\m -> H.insert from (show from) m))
-    in fill tv (from + 1) to
+    let _ = atomically (\() -> modifyTVar tv (\m -> H.insert from (show from) m)) in
+    fill tv (from + 1) to
 
 @test fun aMapInATVarGrowsFromManyThreads () =
   let tv = newTVarIO H.empty in
@@ -203,5 +220,5 @@ use Link.*
     atomically (\() ->
       match readTVar first with
       | Just (Link a next) -> (match readTVar next with | Just (Link b _) -> a + b | None -> a)
-      | None -> 0) in
-  assertEq total 3 "followed from one TVar to the next"
+      | None -> 0)
+  in assertEq total 3 "followed from one TVar to the next"

@@ -44,8 +44,7 @@
 use Std.Time (monotonic)
 use Std.Time as T
 use Std.Console (println)
-use Std.Collections.Vector ( vecFromArray, empty, isEmpty, len, getOr, pushBack, map, forEach,
-)
+use Std.Collections.Vector (vecFromArray, empty, isEmpty, len, getOr, pushBack, map, forEach,)
 use Std.Num.Int as I
 use Std.String as S
 use Std.Sort (sort)
@@ -102,7 +101,10 @@ use Std.Time (Time)
 fun spin n act = if n <= 0 then () else let _ = act () in spin (n - 1) act
 
 -- Nanoseconds for `n` calls, including the loop around them.
-fun timeLoop n act = let start = monotonic () in let _ = spin n act in monotonic () - start
+fun timeLoop n act =
+  let start = monotonic () in
+  let _ = spin n act in
+  monotonic () - start
 
 -- The loop itself, with nothing in it. Subtracted from every measurement.
 --
@@ -116,17 +118,15 @@ fun calibrate n act target =
   if n >= 100000000 then n else if timeLoop n act >= target then n else calibrate (n * 2) act target
 
 fun warmUp deadline act =
-  if monotonic () >= deadline then ()
-  else
-    let _ = spin 64 act in
-    warmUp deadline act
+  if monotonic () >= deadline then () else let _ = spin 64 act in warmUp deadline act
 
 fun collect k n act acc =
   if k <= 0 then acc else collect (k - 1) n act (pushBack acc (timeLoop n act))
 
 -- Measure `act` under `config`, counting `units` of work per call.
 @pub fun benchUnitsWith (config : BenchConfig) (name : String) (units : Int)
-    (act : () -> b ! { Time | e }) : Report ! { Time | e } =
+    (act : () -> b ! { Time | e })
+    : Report ! { Time | e } =
   let _ = warmUp (monotonic () + config.warmupNanos) act in
   let n = calibrate 1 act config.sampleNanos in
   let overhead = loopOverhead n in
@@ -134,25 +134,25 @@ fun collect k n act acc =
   let net = map (\total -> I.max 0 (total - overhead)) raw in
   let perCall = net |> map (\total -> total / n) |> sort in
   let mid = middle perCall in
-  Report { name = name
-    , iterations = n
-    , samples = config.samples
-    , best = getOr 0 perCall 0
-    , median = mid
-    , spread = perCall |> map (\x -> I.abs (x - mid)) |> sort |> middle
-    , perSecond = 1000000000 / I.max 1 mid
-    , unitsPerCall = units
-    , unitsPerSecond = units * 1000000000 / I.max 1 mid
+  Report {
+    name = name,
+    iterations = n,
+    samples = config.samples,
+    best = getOr 0 perCall 0,
+    median = mid,
+    spread = perCall |> map (\x -> I.abs (x - mid)) |> sort |> middle,
+    perSecond = 1000000000 / I.max 1 mid,
+    unitsPerCall = units,
+    unitsPerSecond = units * 1000000000 / I.max 1 mid
   }
 
 -- Measure `act` under `config`.
-@pub fun benchWith (config : BenchConfig) (name : String)
-    (act : () -> b ! { Time | e }) : Report ! { Time | e } =
+@pub fun benchWith (config : BenchConfig) (name : String) (act : () -> b ! { Time | e })
+    : Report ! { Time | e } =
   benchUnitsWith config name 1 act
 
 -- Measure `act` under `defaultConfig`.
-@pub fun bench (name : String) (act : () -> b ! { Time | e })
-    : Report ! { Time | e } =
+@pub fun bench (name : String) (act : () -> b ! { Time | e }) : Report ! { Time | e } =
   benchUnitsWith defaultConfig name 1 act
 
 -- Measure `act` under `defaultConfig`, counting `units` of work per call. The
@@ -179,17 +179,18 @@ fun collect k n act acc =
 
 fun pad3 n =
   if n < 10 then S.concatAll ["00", S.fromInt n]
-  else if n < 100 then S.concatAll ["0", S.fromInt n] else S.fromInt n
+  else if n < 100 then S.concatAll ["0", S.fromInt n]
+  else S.fromInt n
 
 @pub fun formatReport (r : Report) : String =
-  S.concatAll
-    [ padTo 22 r.name
-      , padTo 12 (formatNanos r.median)
-      , padTo 12 (formatNanos r.best)
-      , padTo 12 (S.concatAll ["+-", formatNanos r.spread])
-      , padTo 16 (S.concatAll [formatCount (throughput r), "/s"])
-      , S.concatAll ["x", formatCount r.iterations]
-    ]
+  S.concatAll [
+    padTo 22 r.name,
+    padTo 12 (formatNanos r.median),
+    padTo 12 (formatNanos r.best),
+    padTo 12 (S.concatAll ["+-", formatNanos r.spread]),
+    padTo 16 (S.concatAll [formatCount (throughput r), "/s"]),
+    S.concatAll ["x", formatCount r.iterations]
+  ]
 
 -- Units per second where the benchmark counts them, calls per second otherwise.
 @pub fun throughput (r : Report) : Int =
@@ -201,14 +202,14 @@ fun padTo width s =
   if n >= width then S.concatAll [s, " "] else S.concatAll [s, S.repeat " " (width - n)]
 
 @pub def header : String =
-  S.concatAll
-    [ padTo 22 "benchmark"
-      , padTo 12 "median"
-      , padTo 12 "best"
-      , padTo 12 "spread"
-      , padTo 16 "throughput"
-      , "iters"
-    ]
+  S.concatAll [
+    padTo 22 "benchmark",
+    padTo 12 "median",
+    padTo 12 "best",
+    padTo 12 "spread",
+    padTo 16 "throughput",
+    "iters"
+  ]
 
 -- Print a table of already-measured reports.
 @pub fun report (reports : [Report]) : () ! { Console | e } =
@@ -246,16 +247,11 @@ fun padTo width s =
 
 @test fun aReportLinesUp () =
   let r =
-    Report { name = "fib"
-      , iterations = 64
-      , samples = 12
-      , best = 900
-      , median = 1000
-      , spread = 50
-      , perSecond = 1000000
-      , unitsPerCall = 1
-      , unitsPerSecond = 1000000
-    } in
+    Report {
+      name = "fib", iterations = 64, samples = 12, best = 900, median = 1000, spread = 50,
+      perSecond = 1000000, unitsPerCall = 1, unitsPerSecond = 1000000
+    }
+  in
   let line = formatReport r in
   let _ = assertTrue (S.contains "fib" line) "names the benchmark" in
   let _ = assertTrue (S.contains "1.00µs" line) "reports the median" in
@@ -265,26 +261,16 @@ fun padTo width s =
   -- A call that does 1000 units of work at 1us per call is a million units per
   -- second, not a thousand calls.
   let r =
-    Report { name = "n"
-      , iterations = 1
-      , samples = 1
-      , best = 1000
-      , median = 1000
-      , spread = 0
-      , perSecond = 1000000
-      , unitsPerCall = 1000
-      , unitsPerSecond = 1000000000
-    } in
+    Report {
+      name = "n", iterations = 1, samples = 1, best = 1000, median = 1000, spread = 0,
+      perSecond = 1000000, unitsPerCall = 1000, unitsPerSecond = 1000000000
+    }
+  in
   let plain =
-    Report { name = "n"
-      , iterations = 1
-      , samples = 1
-      , best = 1000
-      , median = 1000
-      , spread = 0
-      , perSecond = 1000000
-      , unitsPerCall = 1
-      , unitsPerSecond = 1000000
-    } in
-  let _ = assertEq (throughput r) 1000000000 "units win when there are units"
-  in assertEq (throughput plain) 1000000 "calls otherwise"
+    Report {
+      name = "n", iterations = 1, samples = 1, best = 1000, median = 1000, spread = 0,
+      perSecond = 1000000, unitsPerCall = 1, unitsPerSecond = 1000000
+    }
+  in
+  let _ = assertEq (throughput r) 1000000000 "units win when there are units" in
+  assertEq (throughput plain) 1000000 "calls otherwise"

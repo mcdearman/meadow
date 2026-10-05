@@ -27,7 +27,8 @@ fun collatz (n : Int) = collatzSteps n 0
 
 fun collatzSteps (x : Int) (steps : Int) =
   if x == 1 then steps
-  else if x % 2 == 0 then collatzSteps (x / 2) (steps + 1) else collatzSteps (3 * x + 1) (steps + 1)
+  else if x % 2 == 0 then collatzSteps (x / 2) (steps + 1)
+  else collatzSteps (3 * x + 1) (steps + 1)
 
 -- A worker: take a job, answer it, repeat until told to stop. `None` means stop.
 fun worker jobs results =
@@ -52,8 +53,9 @@ fun pool (size : Int) work =
 -- The longest sequence among the answers.
 fun longest answers =
   V.foldl
-    (\best a -> match (best, a) with
-                | ((bn, bs), (n, s)) -> if s > bs then (n, s) else (bn, bs))
+    (\best a ->
+      match (best, a) with
+      | ((bn, bs), (n, s)) -> if s > bs then (n, s) else (bn, bs))
     (0, 0)
     answers
 
@@ -78,7 +80,10 @@ fun stage f input output =
 -- Chain a stage per function, and answer the channel the last one writes to.
 fun pipeline fs input =
   V.foldl
-    (\ch f -> let out = Thread.newChannel () in let _ = Thread.spawn (\() -> stage f ch out) in out)
+    (\ch f ->
+      let out = Thread.newChannel () in
+      let _ = Thread.spawn (\() -> stage f ch out) in
+      out)
     input
     fs
 

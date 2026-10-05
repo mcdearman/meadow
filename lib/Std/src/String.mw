@@ -54,8 +54,8 @@ fun joinLoop sep acc i xs =
   if i >= V.len xs then acc
   else
     let piece = V.getOr "" xs i in
-    let next = if i == 0 then V.pushBack acc piece else V.pushBack (V.pushBack acc sep) piece
-    in joinLoop sep next (i + 1) xs
+    let next = if i == 0 then V.pushBack acc piece else V.pushBack (V.pushBack acc sep) piece in
+    joinLoop sep next (i + 1) xs
 
 -- Every string in `xs`, with `sep` between them.
 @pub fun join (sep : String) (xs : [String]) : String =
@@ -117,7 +117,9 @@ fun pieces s sep i n =
 fun cutInto s sep i j out =
   let k = stringIndexOf s sep i in
   if k < 0 then St.set out j (slice s i (byteLength s))
-  else let _ = St.set out j (slice s i k) in cutInto s sep (k + byteLength sep) (j + 1) out
+  else
+    let _ = St.set out j (slice s i k) in
+    cutInto s sep (k + byteLength sep) (j + 1) out
 
 -- `s` cut at every occurrence of `sep`. An empty `sep` yields `s` whole, since
 -- splitting on nothing has no useful answer.
@@ -127,10 +129,11 @@ fun cutInto s sep i j out =
 -- a piece at a time, which copied its tail for every piece.
 @pub fun split (sep : String) (s : String) : [String] =
   if isEmpty sep then [s]
-  else runSt (\() ->
-    let out = St.newArray (pieces s sep 0 1) "" in
-    let _ = cutInto s sep 0 0 out in
-    V.fromArray (St.freeze out))
+  else
+    runSt (\() ->
+      let out = St.newArray (pieces s sep 0 1) "" in
+      let _ = cutInto s sep 0 0 out in
+      V.fromArray (St.freeze out))
 
 -- ---------------------------------------------------------------------------
 -- Ordering
@@ -167,7 +170,8 @@ fun cutInto s sep i j out =
 
 fun startOfText s i =
   if i >= byteLength s then i
-  else if isSpaceByte (stringByteAt s i) then startOfText s (i + 1) else i
+  else if isSpaceByte (stringByteAt s i) then startOfText s (i + 1)
+  else i
 
 fun endOfText s i =
   if i <= 0 then 0 else if isSpaceByte (stringByteAt s (i - 1)) then endOfText s (i - 1) else i
@@ -230,14 +234,12 @@ fun digitsFrom s i acc =
 -- the whole string is digits.
 @pub fun toInt (s : String) : Maybe Int =
   if byteLength s == 0 then None
-  else if stringByteAt s 0 == 45 then negateParsed (digitsAfterSign s) else digitsFrom s 0 0
+  else if stringByteAt s 0 == 45 then negateParsed (digitsAfterSign s)
+  else digitsFrom s 0 0
 
 fun digitsAfterSign s = if byteLength s == 1 then None else digitsFrom s 1 0
 
-fun negateParsed m =
-  match m with
-  | None -> None
-  | Just n -> Just (0 - n)
+fun negateParsed m = match m with | None -> None | Just n -> Just (0 - n)
 
 -- --- characters --------------------------------------------------------------
 --
@@ -298,8 +300,8 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let d3 = assertEq (indexOfFrom "l" "hello" 4) None "past the last" in
   let e = assertTrue (contains "ell" "hello") "contains" in
   let f = assertTrue (startsWith "he" "hello") "startsWith" in
-  let g = assertFalse (startsWith "hello!" "hello") "a needle longer than the haystack"
-  in assertTrue (endsWith "llo" "hello") "endsWith"
+  let g = assertFalse (startsWith "hello!" "hello") "a needle longer than the haystack" in
+  assertTrue (endsWith "llo" "hello") "endsWith"
 
 @test fun splittingAndLines () =
   let a = assertEq (split "," "a,b,c") ["a", "b", "c"] "split" in
@@ -340,8 +342,8 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let b = assertEq (byteLength "héllo") 6 "six bytes -- `é` takes two" in
   let c = assertEq (charAt "héllo" 1) (Just 'é') "charAt" in
   let d = assertEq (charAt "hi" 9) None "past the end" in
-  let e = assertEq (fromChars (chars "round trip é")) "round trip é" "round trip"
-  in assertEq (chars "hi") ['h', 'i'] "chars"
+  let e = assertEq (fromChars (chars "round trip é")) "round trip é" "round trip" in
+  assertEq (chars "hi") ['h', 'i'] "chars"
 
 @test fun stringsSortByteByByte () =
   let a = assertEq (compare "apple" "banana") Less "a before b" in
@@ -358,8 +360,8 @@ use Std.Test (assertEq, assertTrue, assertFalse)
 
 @test fun bytesRoundTrip () =
   let a = assertEq (fromBytes (toBytes "hello")) "hello" "round trip" in
-  let b = assertEq (fromBytes #[0xff, 0x41]) "\u{FFFD}A" "what is not UTF-8 becomes U+FFFD"
-  in assertEq (toBytes "abc") #[97, 98, 99] "toBytes"
+  let b = assertEq (fromBytes #[0xff, 0x41]) "\u{FFFD}A" "what is not UTF-8 becomes U+FFFD" in
+  assertEq (toBytes "abc") #[97, 98, 99] "toBytes"
 
 @test fun slicingThroughACharacter () =
   let a = assertEq (slice "é" 0 1) "\u{FFFD}" "half a character" in
@@ -370,5 +372,5 @@ use Std.Test (assertEq, assertTrue, assertFalse)
   let big = repeat "abcdefgh" 100000 in
   let a = assertEq (byteLength big) 800000 "long" in
   let b = assertEq (slice big 799998 800000) "gh" "the end" in
-  let c = assertEq (indexOfFrom "h" big 799990) (Just 799991) "found near the end"
-  in assertEq (byteAt big 400003) (Just 100) "a byte in the middle"
+  let c = assertEq (indexOfFrom "h" big 799990) (Just 799991) "found near the end" in
+  assertEq (byteAt big 400003) (Just 100) "a byte in the middle"

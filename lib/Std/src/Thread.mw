@@ -120,12 +120,16 @@ fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
 @test fun threadsTalkBothWays () =
   let requests = newChannel () in
   let replies = newChannel () in
-  let server = spawn (\() ->
-    let rec serve (k : Int) = if k == 0 then () else
-      let n = receive requests in
-      let _ = send replies (n * 2) in
-      serve (k - 1)
-    in serve 3) in
+  let server =
+    spawn (\() ->
+      let rec serve (k : Int) =
+        if k == 0 then ()
+        else
+          let n = receive requests in
+          let _ = send replies (n * 2) in
+          serve (k - 1)
+      in serve 3)
+  in
   let ask n = let _ = send requests n in receive replies in
   let answers = [ask 1, ask 2, ask 3] in
   let _ = await server in
@@ -135,16 +139,19 @@ fun fib (n : Int) = if n < 2 then n else fib (n - 1) + fib (n - 2)
   let ts = V.map (\i -> spawn (\() -> i + 1)) (V.range (toInt 0) 1000) in
   assertEq (V.foldl (\acc t -> acc + await t) 0 ts) 500500 "a thousand threads"
 
-effect Tally { tally : Int -> () }
+effect Tally {
+  tally : Int -> ()
+}
 
 fun countUp (n : Int) = if n == 0 then () else let _ = tally n in countUp (n - 1)
 
 @test fun aThreadMayHandleItsOwnEffects () =
   -- `Tally` is not one the runtime answers, so the thread handles it itself,
   -- and its type is none the wiser.
-  let t = spawn (\() ->
-    let total = newRef (toInt 0) in
-    let _ = handle countUp 4 with { tally n k -> let _ = setRef total (getRef total + n) in k () }
-    in
-    getRef total) in
-  assertTrue (await t == 10) "handled inside the thread"
+  let t =
+    spawn (\() ->
+      let total = newRef (toInt 0) in
+      let _ =
+        handle countUp 4 with { tally n k -> let _ = setRef total (getRef total + n) in k () }
+      in getRef total)
+  in assertTrue (await t == 10) "handled inside the thread"

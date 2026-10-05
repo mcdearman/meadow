@@ -114,8 +114,8 @@ use Std.Maybe.Maybe.*
 @test fun aSetKeepsTheLowEightBits () =
   -- Any integer goes in, and only its low byte is stored.
   let (b : #[UInt8]) = #[0] in
-  let a = assertEq (bytesGetOr 0 (bytesSet b 0 0x1FF) 0) (toUInt8 0xFF) "0x1FF becomes 0xFF"
-  in assertEq (bytesGetOr 0 (bytesSet b 0 (0 - 1)) 0) (toUInt8 255) "-1 is all ones"
+  let a = assertEq (bytesGetOr 0 (bytesSet b 0 0x1FF) 0) (toUInt8 0xFF) "0x1FF becomes 0xFF" in
+  assertEq (bytesGetOr 0 (bytesSet b 0 (0 - 1)) 0) (toUInt8 255) "-1 is all ones"
 
 @test fun multiByteReadsRespectEndianness () =
   let (b : #[UInt8]) = #[0x34, 0x12] in

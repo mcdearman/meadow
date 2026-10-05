@@ -34,15 +34,13 @@ use Std.Collections.Vector (vecFromArray)
 -- entry, with its key's hash.
 use Slot.*
 @derive(Debug, Display, PartialEq, Eq)
-@pub data Slot k v
-  = Empty
-  | Tomb
-  | Full Int k v
+@pub data Slot k v = Empty | Tomb | Full Int k v
 
 -- The slots, how many hold an entry, and how many hold a tombstone. The slots
 -- are in a cell because growing replaces the array.
 use HashTable.*
-@pub data HashTable s k v = Table (StRef s (StArray s (Slot k v))) (StRef s Int) (StRef s Int)
+@pub data HashTable s k v
+  = Table (StRef s (StArray s (Slot k v))) (StRef s Int) (StRef s Int)
 
 def initialCapacity = 16
 
@@ -90,9 +88,11 @@ fun place slots mask h k i free =
   | Table slotsRef n tombs ->
       let slots = St.getRef slotsRef in
       let idx = find slots (St.length slots - 1) (hash k) k 0 in
-      if idx < 0 then None else match St.get slots idx with
-      | Full h2 k2 v -> Just v
-      | _ -> None
+      if idx < 0 then None
+      else
+        match St.get slots idx with
+        | Full h2 k2 v -> Just v
+        | _ -> None
 
 @pub fun member (k : a) (t : HashTable b a c) : Bool ! { St b | e } =
   match lookup k t with | Just v -> True | None -> False
@@ -109,8 +109,8 @@ fun place slots mask h k i free =
 -- Put `v` at `k` -- or, if `k` already holds `old`, `f v old`. One probe
 -- either way, which is what makes counting cheap: `insertWith (\a b -> a + b)
 -- w 1 t` is a lookup and a write in one.
-@pub fun insertWith (f : a -> a -> a ! { St b | e }) (k : c) (v : a)
-    (t : HashTable b c a) : () ! { St b | e } =
+@pub fun insertWith (f : a -> a -> a ! { St b | e }) (k : c) (v : a) (t : HashTable b c a)
+    : () ! { St b | e } =
   match t with
   | Table slotsRef n tombs ->
       let slots = St.getRef slotsRef in
@@ -128,15 +128,16 @@ fun place slots mask h k i free =
           grow t
 
 -- Apply `f` to what `k` holds, if anything.
-@pub fun adjust (k : a) (f : b -> b ! { St c | e }) (t : HashTable c a b) :
-    () ! { St c | e } =
+@pub fun adjust (k : a) (f : b -> b ! { St c | e }) (t : HashTable c a b) : () ! { St c | e } =
   match t with
   | Table slotsRef n tombs ->
       let slots = St.getRef slotsRef in
       let idx = find slots (St.length slots - 1) (hash k) k 0 in
-      if idx < 0 then () else match St.get slots idx with
-                              | Full h k2 old -> St.set slots idx (Full h k2 (f old))
-                              | _ -> ()
+      if idx < 0 then ()
+      else
+        match St.get slots idx with
+        | Full h k2 old -> St.set slots idx (Full h k2 (f old))
+        | _ -> ()
 
 -- Remove `k`, if it is there.
 @pub fun delete (k : a) (t : HashTable b a c) : () ! { St b | e } =
@@ -171,10 +172,12 @@ fun grow t =
       else
         let newCap = if St.getRef n * 2 >= cap then cap * 2 else cap in
         let fresh = St.newArray newCap Empty in
-        let _ = St.forRange 0 cap (\i ->
-          match St.get slots i with
-          | Full h k v -> reinsert fresh (newCap - 1) h k v 0
-          | _ -> ()) in
+        let _ =
+          St.forRange 0 cap (\i ->
+            match St.get slots i with
+            | Full h k v -> reinsert fresh (newCap - 1) h k v 0
+            | _ -> ())
+        in
         let _ = St.setRef slotsRef fresh in
         St.setRef tombs 0
 
@@ -190,17 +193,19 @@ fun reinsert slots mask h k v i =
 
 -- Fold over every entry as `f acc key value`, in slot order, which is no
 -- order anyone should rely on.
-@pub fun foldl (f : a -> b -> c -> a ! { St d | e }) (acc : a)
-    (t : HashTable d b c) : a ! { St d | e } =
+@pub fun foldl (f : a -> b -> c -> a ! { St d | e }) (acc : a) (t : HashTable d b c)
+    : a ! { St d | e } =
   match t with
   | Table slotsRef n tombs ->
       let slots = St.getRef slotsRef in
       foldSlots f acc slots 0 (St.length slots)
 
 fun foldSlots f acc slots i cap =
-  if i >= cap then acc else match St.get slots i with
-  | Full h k v -> foldSlots f (f acc k v) slots (i + 1) cap
-  | _ -> foldSlots f acc slots (i + 1) cap
+  if i >= cap then acc
+  else
+    match St.get slots i with
+    | Full h k v -> foldSlots f (f acc k v) slots (i + 1) cap
+    | _ -> foldSlots f acc slots (i + 1) cap
 
 @pub fun toVec (t : HashTable a b c) : [(b, c)] ! { St a | e } =
   foldl (\acc k v -> V.pushBack acc (k, v)) V.empty t
@@ -259,10 +264,10 @@ use Std.Sort as Sort
     let _ = St.forRange 0 n (\i -> insert i (i * i) t) in
     let a = assertEq (size t) n "all in" in
     let missing = St.newRef 0 in
-    let _ = St.forRange 0 n (\i ->
-      if lookup i t == Just (i * i)
-      then ()
-      else St.setRef missing (St.getRef missing + 1)) in
+    let _ =
+      St.forRange 0 n (\i ->
+        if lookup i t == Just (i * i) then () else St.setRef missing (St.getRef missing + 1))
+    in
     let b = assertEq (St.getRef missing) 0 "every one comes back" in
     assertEq (lookup n t) None "and nothing else")
 
@@ -281,18 +286,20 @@ use Std.Sort as Sort
     assertEq (lookup 7 t) (Just 7) "and still findable")
 
 @test fun wholeTableOperations () =
-  let pairs = runSt (\() ->
-    let t = fromVec [("b", 2), ("a", 1), ("c", 3), ("a", 10)] in
-    let _ = clear t in
-    let _ = insert "k" 9 t in
-    let _ = insert "j" 8 t in
-    toVec t) in
+  let pairs =
+    runSt (\() ->
+      let t = fromVec [("b", 2), ("a", 1), ("c", 3), ("a", 10)] in
+      let _ = clear t in
+      let _ = insert "k" 9 t in
+      let _ = insert "j" 8 t in
+      toVec t)
+  in
   let sorted = Sort.sortBy (\p q -> match (p, q) with | ((_, a), (_, b)) -> compare a b) pairs in
   let a = assertEq sorted [("j", 8), ("k", 9)] "cleared, then two" in
   let ks = runSt (\() -> Sort.sort (keys (fromVec [(3, "x"), (1, "y"), (2, "z")]))) in
   let b = assertEq ks [1, 2, 3] "keys" in
-  let total = runSt (\() -> foldl (\acc k v -> acc + v) 0 (fromVec [(1, 10), (2, 20), (3, 30)]))
-  in assertEq total 60 "folded"
+  let total = runSt (\() -> foldl (\acc k v -> acc + v) 0 (fromVec [(1, 10), (2, 20), (3, 30)])) in
+  assertEq total 60 "folded"
 
 @test fun anyStructuredValueIsAKey () =
   runSt (\() ->

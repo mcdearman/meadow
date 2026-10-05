@@ -77,11 +77,19 @@ use Vis.*
 
 -- One module of a unit: where it is in the unit, its file as a dump names
 -- it, and its syntax.
-@pub record Source = { path : [String], file : String, ast : AstProgram }
+@pub record Source = {
+  path : [String],
+  file : String,
+  ast : AstProgram
+}
 
 -- A module, declared: its source, what it declares, and its `use`s -- each
 -- with how far it re-exports what it brings.
-record ModFrame = { src : Source, items : [Item], uses : [(Int, Vis)] }
+record ModFrame = {
+  src : Source,
+  items : [Item],
+  uses : [(Int, Vis)]
+}
 
 fun framePath (f : ModFrame) : [String] = f.src.path
 
@@ -89,12 +97,21 @@ fun framePath (f : ModFrame) : [String] = f.src.path
 -- library, whether any of its declarations mentions visibility -- a unit
 -- that never does has none, and everything is seen everywhere -- its
 -- modules, and what its dependencies export, by the name it knows each by.
-record UnitCx = { pkg : String, isStd : Bool, anyVis : Bool, frames : [ModFrame], deps : [Dep]
+record UnitCx = {
+  pkg : String,
+  isStd : Bool,
+  anyVis : Bool,
+  frames : [ModFrame],
+  deps : [Dep]
 }
 
 -- A dependency: the name a `use` knows it by, what it exports -- each with the
 -- module it is in -- and whether it says what it exports at all.
-record Dep = { name : String, items : [([String], Item)], anyVis : Bool }
+record Dep = {
+  name : String,
+  items : [([String], Item)],
+  anyVis : Bool
+}
 
 -- --- declarations ------------------------------------------------------------
 
@@ -102,7 +119,7 @@ record Dep = { name : String, items : [([String], Item)], anyVis : Bool }
 fun peel (a : AstArena) (d : AstDecl) : ([AstAttr], AstDecl) =
   if kindAstDecl a d == AstDeclKind.Attributed then
     (let inner = peel a (astDeclAttributedDecl a d) in
-      (V.append (astDeclAttributedAttrs a d) (fst inner), snd inner))
+     (V.append (astDeclAttributedAttrs a d) (fst inner), snd inner))
   else ([], d)
 
 fun nameText (a : AstArena) (n : AstName) : String = astNameText a n
@@ -117,7 +134,8 @@ fun visOf (a : AstArena) (attrs : [AstAttr]) : Maybe Vis =
          | [] -> Just Exported
          | args ->
              if V.elem "pkg" args then Just InPkg
-             else if V.elem "super" args then Just Super else Just Exported))
+             else if V.elem "super" args then Just Super
+             else Just Exported))
     None
     attrs
 
@@ -132,18 +150,19 @@ fun holds (a : AstArena) (m : AstAttrMeta) : Bool =
     (let w = nameText a (astAttrMetaWordName a m) in w == "windows" or w == "debug")
   else if k == AstAttrMetaKind.Value then
     (let key = nameText a (astAttrMetaValueName a m) in
-      let v = nameText a (astAttrMetaValueValue a m) in
-      (key == "os" and v == "windows")
-        or (key == "family" and v == "windows")
-        or (key == "arch" and v == "x86_64")
-        or (key == "profile" and v == "debug")
-        or (key == "opt_level" and v == "0"))
+     let v = nameText a (astAttrMetaValueValue a m) in
+     (key == "os" and v == "windows")
+       or (key == "family" and v == "windows")
+       or (key == "arch" and v == "x86_64")
+       or (key == "profile" and v == "debug")
+       or (key == "opt_level" and v == "0"))
   else if k == AstAttrMetaKind.List then
     (let n = nameText a (astAttrMetaListName a m) in
-      let args = astAttrMetaListMetas a m in
-      if n == "all" then V.all (holds a) args
-      else if n == "any" then V.any (holds a) args
-      else if n == "not" then not (V.all (holds a) args) else False)
+     let args = astAttrMetaListMetas a m in
+     if n == "all" then V.all (holds a) args
+     else if n == "any" then V.any (holds a) args
+     else if n == "not" then not (V.all (holds a) args)
+     else False)
   else False
 
 -- Whether declaration `d` is there at all: every `@cfg` on it holds here.
@@ -162,8 +181,7 @@ fun binderOf (src : Source) (a : AstArena) (n : AstName) (kind : String)
   declareBinderTo (nameText a n) kind (siteIn src (metaAstName a n)) (metaEnd (metaAstName a n))
 
 -- What a module of package `pkg` declares, and its `use`s.
-fun frameOf (pkg : String) (src : Source) :
-    (ModFrame, Bool) ! { Table Binder | e } =
+fun frameOf (pkg : String) (src : Source) : (ModFrame, Bool) ! { Table Binder | e } =
   match src.ast with
   | AstProgram a root ->
       let decls = declsOf src in
@@ -175,22 +193,16 @@ fun frameOf (pkg : String) (src : Source) :
       in
       let uses =
         V.concatMap
-          (\x -> if kindAstDecl a (snd x) == AstDeclKind.Use
-            then [(snd x, M.unwrapOr Private (visOf a (fst x)))]
+          (\x ->
+            if kindAstDecl a (snd x) == AstDeclKind.Use then
+              [(snd x, M.unwrapOr Private (visOf a (fst x)))]
             else [])
           decls
       in (ModFrame { src = src, items = items, uses = uses }, said)
 
-fun item (name : String) (kind : String) (id : Int) (vis : Vis) (owner : String)
-    : Item =
+fun item (name : String) (kind : String) (id : Int) (vis : Vis) (owner : String) : Item =
   Item {
-    name = name,
-    kind = kind,
-    id = id,
-    vis = vis,
-    owner = owner,
-    flat = False,
-    fields = None,
+    name = name, kind = kind, id = id, vis = vis, owner = owner, flat = False, fields = None,
     canon = ""
   }
 
@@ -198,7 +210,8 @@ fun item (name : String) (kind : String) (id : Int) (vis : Vis) (owner : String)
 -- a type's its qualified path, a constructor's its type's and its own.
 fun canonical (pkg : String) (path : [String]) (i : Item) : Item =
   if i.kind == "t" then { i | canon = qualified pkg path i.name }
-  else if i.kind == "c" then { i | canon = qualified pkg path i.owner ++ "." ++ i.name } else i
+  else if i.kind == "c" then { i | canon = qualified pkg path i.owner ++ "." ++ i.name }
+  else i
 
 -- A type's canonical name, `meadow-rename`'s `qualify_in`: its path as the
 -- source writes one, `pkg.Mod.Sub.Name`, `pkg.Name` at the root -- but the
@@ -209,83 +222,81 @@ fun canonical (pkg : String) (path : [String]) (i : Item) : Item =
 -- The types and effects the language itself knows, which no package's path
 -- qualifies (`meadow-rename`'s `LANGUAGE_NAMES`).
 @pub def languageNames : [String] =
-  [ "Int", "BigInt", "Float", "String", "Char", "Bool", "Int64", "Int32", "Int16", "Int8", "UInt64",
+  [
+    "Int", "BigInt", "Float", "String", "Char", "Bool", "Int64", "Int32", "Int16", "Int8", "UInt64",
     "UInt32", "UInt16", "UInt8", "Float64", "Float32", "Unit", "List", "Array", "Ref", "StRef",
     "StArray", "Compact", "Task", "Channel", "TVar", "Vector", "VNode", "Maybe", "Result",
-    "FileMeta",
-    "Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut", "Stm", "St",
-    "Eff" ]
+    "FileMeta", "Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut", "Stm", "St",
+    "Eff"
+  ]
 
 -- The names of fields `fs`.
 fun fieldNames (a : AstArena) (fs : [AstField]) : [String] =
   V.map (\f -> nameText a (astFieldName a f)) fs
 
-fun declItems (src : Source) (a : AstArena) (vis : Vis) (d : AstDecl) :
-    [Item] ! { Table Binder | e } =
+fun declItems (src : Source) (a : AstArena) (vis : Vis) (d : AstDecl)
+    : [Item] ! { Table Binder | e } =
   let k = kindAstDecl a d in
-  let one = \n kind owner -> item (nameText a n) kind (binderOf src a n kind) vis owner
-  in if k == AstDeclKind.Bind then
+  let one = \n kind owner -> item (nameText a n) kind (binderOf src a n kind) vis owner in
+  if k == AstDeclKind.Bind then
     (let b = astDeclBindBind a d in
-      if kindAstBind a b == AstBindKind.Fun
-      then [one (astBindFunName a b) "v" ""]
-      else V.map (\n -> one n "v" "") (patNames a (astBindPatPat a b)))
-     else if k == AstDeclKind.Data then
-       (let ty = nameText a (astDeclDataName a d) in
-         V.pushFront
-           (V.map
-             (\v ->
-               {(one (astVariantName a v) "c" ty) | fields = if astVariantNamed a v
-                 then Just (fieldNames a (astVariantFields a v))
-                 else None})
-             (astDeclDataVariants a d))
-           (one (astDeclDataName a d) "t" "data"))
-     else if k == AstDeclKind.Record then
-       (let n = astDeclRecordName a d in
-         -- A record's one constructor is named as its type is, and declared
-         -- nowhere an editor looks: a use of it goes nowhere.
-         [
-           one n "t" "record",
-           { (item (nameText a n) "c" (declareBinder (nameText a n) "c" "-") vis (nameText a n)) | fields = Just (fieldNames a (astDeclRecordFields a d)) }
-         ])
-     else if k == AstDeclKind.Effect then
-       (let e = nameText a (astDeclEffectName a d) in
-         V.pushFront
-           (V.map (\f -> one (astFieldName a f) "v" ("op:" ++ e)) (astDeclEffectOps a d))
-           (one (astDeclEffectName a d) "t" "effect"))
-     else if k == AstDeclKind.Alias
-     then [one (astDeclAliasName a d) "t" "alias"]
-     else if k == AstDeclKind.EffectAlias
-     then [one (astDeclEffectAliasName a d) "t" "effectAlias"]
-     else if k == AstDeclKind.Trait then
-       (let t = nameText a (astDeclTraitName a d) in
-         V.concat
-           [ [one (astDeclTraitName a d) "t" "trait"],
-             V.map (\x -> one (astAssocName a x) "t" ("assoc:" ++ t)) (astDeclTraitAssocs a d),
-             V.map (\s -> one (astMethodSigName a s) "v" t) (astDeclTraitSigs a d) ])
-     else []
+     if kindAstBind a b == AstBindKind.Fun then [one (astBindFunName a b) "v" ""]
+     else V.map (\n -> one n "v" "") (patNames a (astBindPatPat a b)))
+  else if k == AstDeclKind.Data then
+    (let ty = nameText a (astDeclDataName a d) in
+     V.pushFront
+       (V.map
+          (\v ->
+            {
+              (one (astVariantName a v) "c" ty)
+                | fields =
+                  if astVariantNamed a v then Just (fieldNames a (astVariantFields a v)) else None
+            })
+          (astDeclDataVariants a d))
+       (one (astDeclDataName a d) "t" "data"))
+  else if k == AstDeclKind.Record then
+    (let n = astDeclRecordName a d in
+     -- A record's one constructor is named as its type is, and declared
+     -- nowhere an editor looks: a use of it goes nowhere.
+     [
+       one n "t" "record",
+       {
+         (item (nameText a n) "c" (declareBinder (nameText a n) "c" "-") vis (nameText a n))
+           | fields = Just (fieldNames a (astDeclRecordFields a d))
+       }
+     ])
+  else if k == AstDeclKind.Effect then
+    (let e = nameText a (astDeclEffectName a d) in
+     V.pushFront
+       (V.map (\f -> one (astFieldName a f) "v" ("op:" ++ e)) (astDeclEffectOps a d))
+       (one (astDeclEffectName a d) "t" "effect"))
+  else if k == AstDeclKind.Alias then [one (astDeclAliasName a d) "t" "alias"]
+  else if k == AstDeclKind.EffectAlias then [one (astDeclEffectAliasName a d) "t" "effectAlias"]
+  else if k == AstDeclKind.Trait then
+    (let t = nameText a (astDeclTraitName a d) in
+     V.concat [
+       [one (astDeclTraitName a d) "t" "trait"],
+       V.map (\x -> one (astAssocName a x) "t" ("assoc:" ++ t)) (astDeclTraitAssocs a d),
+       V.map (\s -> one (astMethodSigName a s) "v" t) (astDeclTraitSigs a d)
+     ])
+  else []
 
 -- The names a pattern binds, as written.
 fun patNames (a : AstArena) (p : AstPat) : [AstName] =
   let k = kindAstPat a p in
   if k == AstPatKind.Var then [astPatVarName a p]
-  else if k == AstPatKind.As
-  then V.pushFront (patNames a (astPatAsPat a p)) (astPatAsName a p)
+  else if k == AstPatKind.As then V.pushFront (patNames a (astPatAsPat a p)) (astPatAsName a p)
   else if k == AstPatKind.Ann then patNames a (astPatAnnPat a p)
-  else if k == AstPatKind.Cons
-  then V.concatMap (patNames a) (astPatConsArgs a p)
-  else if k == AstPatKind.QualCons
-  then V.concatMap (patNames a) (astPatQualConsArgs a p)
-  else if k == AstPatKind.Tuple
-  then V.concatMap (patNames a) (astPatTupleItems a p)
-  else if k == AstPatKind.Array
-  then V.concatMap (patNames a) (astPatArrayItems a p)
-  else if k == AstPatKind.Vector
-  then V.concatMap (patNames a) (astPatVectorItems a p)
-  else if k == AstPatKind.List
-  then V.concatMap (patNames a) (astPatListItems a p)
-  else if k == AstPatKind.Record
-  then V.concatMap (\f -> patNames a (astPatFieldPat a f)) (astPatRecordFields a p)
-  else if k == AstPatKind.View then patNames a (astPatViewPat a p) else []
+  else if k == AstPatKind.Cons then V.concatMap (patNames a) (astPatConsArgs a p)
+  else if k == AstPatKind.QualCons then V.concatMap (patNames a) (astPatQualConsArgs a p)
+  else if k == AstPatKind.Tuple then V.concatMap (patNames a) (astPatTupleItems a p)
+  else if k == AstPatKind.Array then V.concatMap (patNames a) (astPatArrayItems a p)
+  else if k == AstPatKind.Vector then V.concatMap (patNames a) (astPatVectorItems a p)
+  else if k == AstPatKind.List then V.concatMap (patNames a) (astPatListItems a p)
+  else if k == AstPatKind.Record then
+    V.concatMap (\f -> patNames a (astPatFieldPat a f)) (astPatRecordFields a p)
+  else if k == AstPatKind.View then patNames a (astPatViewPat a p)
+  else []
 
 fun isCapital (s : String) : Bool =
   not (S.isEmpty s)
@@ -295,23 +306,21 @@ fun isCapital (s : String) : Bool =
 -- Whether value `value` is part of pattern synonym `name`: its builder `$bP`,
 -- or a matcher `$m2P` (`meadow_rename::part_of_synonym`).
 fun partOfSynonym (value : String) (name : String) : Bool =
-  if S.startsWith "$b" value
-  then stringSlice value 2 (stringByteLength value) == name
+  if S.startsWith "$b" value then stringSlice value 2 (stringByteLength value) == name
   else if S.startsWith "$m" value then
     let rest = stringSlice value 2 (stringByteLength value) in
     let digits =
       V.len
         (V.takeWhile
-          (\i -> (let ch = stringSlice rest i (i + 1) in ch >= "0" and ch <= "9"))
-          (V.range 0 (stringByteLength rest)))
+           (\i -> (let ch = stringSlice rest i (i + 1) in ch >= "0" and ch <= "9"))
+           (V.range 0 (stringByteLength rest)))
     in digits > 0 and stringSlice rest digits (stringByteLength rest) == name
   else False
 
 -- --- visibility --------------------------------------------------------------
 
 -- Whether module `from` of the unit sees what module `owner` declares `vis`.
-fun reaches (cx : UnitCx) (vis : Vis) (owner : [String]) (from : [String])
-    : Bool =
+fun reaches (cx : UnitCx) (vis : Vis) (owner : [String]) (from : [String]) : Bool =
   if not cx.anyVis then True
   else
     match vis with
@@ -328,28 +337,36 @@ fun startsWith (prefix : [String]) (xs : [String]) : Bool =
 -- What every module has at the bottom of its scope, before the prelude: the
 -- compiler's own primitives (`meadow_hir::PRIMS`), declared nowhere.
 def primNames : [String] =
-  [ "display", "hash", "_primAdd", "_primSub", "_primMul", "_primDiv", "_primMod", "_primPow", "_primEq", "_primNe",
-    "_primLt", "_primGt", "_primLe", "_primGe", "neg", "_primAddF", "_primSubF", "_primMulF", "_primDivF", "_primLtF",
-    "_primGtF", "_primLeF", "_primGeF", "toFloat", "toFloat64", "toFloat32", "floor", "toBigInt", "toInt", "toInt64",
-    "toInt8", "toInt16", "toInt32", "toUInt8", "toUInt16", "toUInt32", "toUInt64", "bitWidth", "arrayLen", "arrayGet",
-    "arrayGetOr", "arraySet", "arrayPush", "arrayPop", "arraySlice", "arrayConcat", "shl", "shr", "ushr", "_primShl",
-    "_primShr", "_primUshr", "_primDisplay", "bitAnd", "bitOr", "bitXor", "bitNot", "popCount", "stringToBytes",
-    "bytesToString", "bytesToHex", "bytesFromHex", "show", "charCode", "charFromCode", "stringToChars", "charsToString",
-    "newRef", "getRef", "setRef", "runSt", "stNewRef", "stGetRef", "stSetRef", "stNewArray", "stGetArray", "stSetArray",
-    "stArrayLen", "stFreeze", "stThaw", "compact", "getCompact", "compactAdd", "compactSize", "threadSpawn",
-    "threadAwait", "threadYield", "channelNew", "channelSend", "channelReceive", "stmNew", "stmNewIO", "stmRead",
-    "stmWrite", "stmBegin", "stmCommit", "stmWait", "stmNest", "stmMerge", "stmRollback", "concatStrings",
-    "stringByteLength", "stringByteAt", "stringSlice", "stringIndexOf", "stringCompare" ]
+  [
+    "display", "hash", "_primAdd", "_primSub", "_primMul", "_primDiv", "_primMod", "_primPow",
+    "_primEq", "_primNe", "_primLt", "_primGt", "_primLe", "_primGe", "neg", "_primAddF",
+    "_primSubF", "_primMulF", "_primDivF", "_primLtF", "_primGtF", "_primLeF", "_primGeF",
+    "toFloat", "toFloat64", "toFloat32", "floor", "toBigInt", "toInt", "toInt64", "toInt8",
+    "toInt16", "toInt32", "toUInt8", "toUInt16", "toUInt32", "toUInt64", "bitWidth", "arrayLen",
+    "arrayGet", "arrayGetOr", "arraySet", "arrayPush", "arrayPop", "arraySlice", "arrayConcat",
+    "shl", "shr", "ushr", "_primShl", "_primShr", "_primUshr", "_primDisplay", "bitAnd", "bitOr",
+    "bitXor", "bitNot", "popCount", "stringToBytes", "bytesToString", "bytesToHex", "bytesFromHex",
+    "show", "charCode", "charFromCode", "stringToChars", "charsToString", "newRef", "getRef",
+    "setRef", "runSt", "stNewRef", "stGetRef", "stSetRef", "stNewArray", "stGetArray", "stSetArray",
+    "stArrayLen", "stFreeze", "stThaw", "compact", "getCompact", "compactAdd", "compactSize",
+    "threadSpawn", "threadAwait", "threadYield", "channelNew", "channelSend", "channelReceive",
+    "stmNew", "stmNewIO", "stmRead", "stmWrite", "stmBegin", "stmCommit", "stmWait", "stmNest",
+    "stmMerge", "stmRollback", "concatStrings", "stringByteLength", "stringByteAt", "stringSlice",
+    "stringIndexOf", "stringCompare"
+  ]
 
 -- The standard library's modules in the order `meadow` compiles them, each
 -- a unit seeing only those before it (`buildtools/meadow/src/stdlib.rs`).
 def stdOrder : [String] =
-  [ "Lib", "Ops", "Display", "Debug", "Test", "Bool", "Ref", "Ordering", "Function", "Tuple", "Num", "Num.Int", "Maybe",
-    "Cmp", "Char", "Result", "Num.Bits", "Bytes", "Yield", "Collections", "Collections.Vector", "Collections.List",
-    "Collections.Tree", "Collections.Set", "Collections.Map", "Either", "St", "Sort", "Collections.HashMap",
-    "Collections.HashTable", "Compact", "Thread", "Stm", "State", "Exn", "Stream", "Random", "Fs", "Process", "String",
-    "String.Parse", "String.Parse.Char", "String.Parse.Lexer", "Path", "Json", "Macro", "Macro.Parse", "Console",
-    "Macro.Serve", "Time", "Bench", "Prelude" ]
+  [
+    "Lib", "Ops", "Display", "Debug", "Test", "Bool", "Ref", "Ordering", "Function", "Tuple", "Num",
+    "Num.Int", "Maybe", "Cmp", "Char", "Result", "Num.Bits", "Bytes", "Yield", "Collections",
+    "Collections.Vector", "Collections.List", "Collections.Tree", "Collections.Set",
+    "Collections.Map", "Either", "St", "Sort", "Collections.HashMap", "Collections.HashTable",
+    "Compact", "Thread", "Stm", "State", "Exn", "Stream", "Random", "Fs", "Process", "String",
+    "String.Parse", "String.Parse.Char", "String.Parse.Lexer", "Path", "Json", "Macro",
+    "Macro.Parse", "Console", "Macro.Serve", "Time", "Bench", "Prelude"
+  ]
 
 -- The modules every later one of the standard library has unqualified, and so
 -- does every program: the operators, `display`, `debug` and comparison.
@@ -358,8 +375,11 @@ def flatModules : [String] = ["Ops", "Display", "Debug", "Cmp"]
 -- The types every module can name without asking (`meadow-rename`'s
 -- `builtin_tycons`).
 def builtinTyconNames : [String] =
-  [ "Int", "BigInt", "Float", "String", "Char", "Bool", "Int64", "Int32", "Int16", "Int8", "UInt64", "UInt32", "UInt16",
-    "UInt8", "Float64", "Float32", "Unit", "List", "Array", "Ref", "StRef", "StArray", "Compact", "Task", "Channel", "TVar" ]
+  [
+    "Int", "BigInt", "Float", "String", "Char", "Bool", "Int64", "Int32", "Int16", "Int8", "UInt64",
+    "UInt32", "UInt16", "UInt8", "Float64", "Float32", "Unit", "List", "Array", "Ref", "StRef",
+    "StArray", "Compact", "Task", "Channel", "TVar"
+  ]
 
 fun dotted (path : [String]) : String = S.join "." path
 
@@ -391,16 +411,14 @@ fun bring (acc : Layers) (vis : Vis) (items : [Item]) : Layers =
   let values = V.filter (\(i : Item) -> i.kind == "v") items in
   let types = V.filter (\(i : Item) -> i.kind == "t") items in
   let ctors = V.filter (\(i : Item) -> i.kind == "c") items in
-  { acc |
-    values = V.append acc.values (V.map (\(i : Item) -> (i.name, i.id)) values),
+  {
+    acc | values = V.append acc.values (V.map (\(i : Item) -> (i.name, i.id)) values),
     types = V.append acc.types (V.map (\(i : Item) -> (i.name, i.id)) types),
     ctors = V.append acc.ctors (V.map (\(i : Item) -> (i.name, i.id)) ctors),
-    reexports = if vis == Private
-                then acc.reexports
-                else
-                  V.append
-                  acc.reexports
-                  (V.map (\(i : Item) -> { i | vis = vis, flat = True }) items) }
+    reexports =
+      if vis == Private then acc.reexports
+      else V.append acc.reexports (V.map (\(i : Item) -> { i | vis = vis, flat = True }) items)
+  }
 
 -- A type's constructors, from what declares it.
 fun ctorsOfType (items : [Item]) (ty : String) : [Item] =
@@ -413,18 +431,25 @@ fun structCtor (items : [Item]) (ty : String) : [Item] =
 -- What naming type `t` brings: the type; its constructor named like it; a
 -- trait's associated types and methods; an effect's operations.
 fun withType (items : [Item]) (t : Item) : [Item] =
-  V.concat
-    [ [t],
-      structCtor items t.name,
-      (if t.owner == "trait" then V.filter (\(i : Item) -> i.kind == "v" and i.owner == t.name) items else []),
-      (if t.owner == "effect" then V.filter (\(i : Item) -> i.kind == "v" and i.owner == "op:" ++ t.name) items else []),
-      (if t.owner == "trait" then V.filter (\(i : Item) -> i.kind == "t" and i.owner == "assoc:" ++ t.name) items else []) ]
+  V.concat [
+    [t],
+    structCtor items t.name,
+    (if t.owner == "trait" then V.filter (\(i : Item) -> i.kind == "v" and i.owner == t.name) items
+     else []),
+    (if t.owner == "effect" then
+       V.filter (\(i : Item) -> i.kind == "v" and i.owner == "op:" ++ t.name) items
+     else []),
+    (if t.owner == "trait" then
+       V.filter (\(i : Item) -> i.kind == "t" and i.owner == "assoc:" ++ t.name) items
+     else [])
+  ]
 
 -- `use Ty`, `use Ty (C, D)`, `use Ty.*` for a type among `items`: the type
 -- alone, the constructors named, or all of them. A dependency's type comes
 -- with its constructors named (`dep`) as naming it would.
 fun useType (acc : Layers) (vis : Vis) (items : [Item]) (t : Item) (at : Meta)
-    (names : [(String, Meta)]) (glob : Bool) (dep : Bool) : Layers =
+    (names : [(String, Meta)]) (glob : Bool) (dep : Bool)
+    : Layers =
   let ctors = ctorsOfType items t.name in
   let named =
     if glob then ctors else V.filter (\(c : Item) -> V.any (\n -> fst n == c.name) names) ctors
@@ -440,8 +465,8 @@ fun useType (acc : Layers) (vis : Vis) (items : [Item]) (t : Item) (at : Meta)
 -- What module `path` of the unit lets module `from` see.
 fun siblingItems (cx : UnitCx) (path : [String]) (from : [String]) : [Item] =
   V.concatMap
-    (\(f : ModFrame) -> if framePath f == path
-      then V.filter (\(i : Item) -> reaches cx i.vis path from) f.items
+    (\(f : ModFrame) ->
+      if framePath f == path then V.filter (\(i : Item) -> reaches cx i.vis path from) f.items
       else [])
     cx.frames
 
@@ -471,20 +496,24 @@ fun valuesMap (items : [Item]) : HashMap String Int =
 -- with what each brings, and -- at a package's root -- the constructors it
 -- re-exports.
 fun bareUse (items : [Item]) (root : Bool) : [Item] =
-  V.concat
-    [ V.filter (\(i : Item) -> i.kind == "v") items,
-      V.concatMap (withType items) (V.filter (\(i : Item) -> i.kind == "t") items),
-      (if root then V.filter (\(i : Item) -> i.kind == "c" and i.flat) items else []) ]
+  V.concat [
+    V.filter (\(i : Item) -> i.kind == "v") items,
+    V.concatMap (withType items) (V.filter (\(i : Item) -> i.kind == "t") items),
+    (if root then V.filter (\(i : Item) -> i.kind == "c" and i.flat) items else [])
+  ]
 
 -- `names` of a module's `items`: each value, type -- with what it brings --
 -- or constructor re-exported flat.
 fun namedIn (items : [Item]) (names : [String]) : [Item] =
   V.concatMap
     (\n ->
-      V.concat
-        [ V.filter (\(i : Item) -> i.kind == "v" and (i.name == n or partOfSynonym i.name n)) items,
-          V.concatMap (withType items) (V.filter (\(i : Item) -> i.name == n and i.kind == "t") items),
-          V.filter (\(i : Item) -> i.name == n and i.kind == "c") items ])
+      V.concat [
+        V.filter (\(i : Item) -> i.kind == "v" and (i.name == n or partOfSynonym i.name n)) items,
+        V.concatMap
+          (withType items)
+          (V.filter (\(i : Item) -> i.name == n and i.kind == "t") items),
+        V.filter (\(i : Item) -> i.name == n and i.kind == "c") items
+      ])
     names
 
 -- Each name a `use` list wrote, as a use of what it names there: a value if
@@ -497,8 +526,7 @@ fun namedRefs (items : [Item]) (names : [(String, Meta)]) : [(Meta, Int)] =
       | None ->
           -- A pattern synonym is its matcher and builder, and is itself a use
           -- of neither.
-          if V.any (\(i : Item) -> i.kind == "v" and partOfSynonym i.name (fst n)) items
-          then []
+          if V.any (\(i : Item) -> i.kind == "v" and partOfSynonym i.name (fst n)) items then []
           else
             (match V.find (\(i : Item) -> i.name == fst n and i.kind == "t") items with
              | Just t -> [(snd n, t.id)]
@@ -507,8 +535,7 @@ fun namedRefs (items : [Item]) (names : [(String, Meta)]) : [(Meta, Int)] =
     names
 
 -- One `use` of module `m`, on top of what the ones before it brought.
-fun applyUse (cx : UnitCx) (m : ModFrame) (acc : Layers) (one : (AstDecl, Vis))
-    : Layers =
+fun applyUse (cx : UnitCx) (m : ModFrame) (acc : Layers) (one : (AstDecl, Vis)) : Layers =
   match m.src.ast with
   | AstProgram a _ ->
       let u = fst one in
@@ -529,28 +556,26 @@ fun applyUse (cx : UnitCx) (m : ModFrame) (acc : Layers) (one : (AstDecl, Vis))
       let local = if V.getOr "" segs 0 == cx.pkg then V.drop segs 1 else segs in
       let localOwner = V.take local (max 0 (V.len local - 1)) in
       let typeIn = \items -> V.find (\(i : Item) -> i.kind == "t" and i.name == last) items in
-      let moduleUse = \items ->
-        -- A bare `use` brings no constructor bare but a type's own-named one,
-        -- and, of a package's root, what it re-exports.
-        let root = V.len segs == 1 and V.getOr "" segs 0 != cx.pkg in
-        (match alias with
-         | Just q ->
-             (let qualified = { acc | quals = V.pushBack acc.quals (q, valuesMap items) }
-               in if V.isEmpty names
-                  then qualified
-                  else
-                    withRefs (bring qualified vis (namedIn items names)) (namedRefs items written))
-         | None ->
-             if V.isEmpty names
-             then bring acc vis (bareUse items root)
-             else withRefs (bring acc vis (namedIn items names)) (namedRefs items written)) in
+      let moduleUse =
+        \items ->
+          -- A bare `use` brings no constructor bare but a type's own-named one,
+          -- and, of a package's root, what it re-exports.
+          let root = V.len segs == 1 and V.getOr "" segs 0 != cx.pkg in
+          (match alias with
+           | Just q ->
+               (let qualified = { acc | quals = V.pushBack acc.quals (q, valuesMap items) } in
+                if V.isEmpty names then qualified
+                else withRefs (bring qualified vis (namedIn items names)) (namedRefs items written))
+           | None ->
+               if V.isEmpty names then bring acc vis (bareUse items root)
+               else withRefs (bring acc vis (namedIn items names)) (namedRefs items written))
+      in
       -- `use Ty ...` for a type this very module declares.
       match (if V.len segs == 1 then typeIn m.items else None) with
       | Just t -> useType acc vis m.items t lastAt written glob False
       | None ->
-          if (not (V.isEmpty local) or V.getOr "" segs 0 == cx.pkg)
-          and hasSibling cx local
-          then moduleUse (siblingItems cx local here)
+          if (not (V.isEmpty local) or V.getOr "" segs 0 == cx.pkg) and hasSibling cx local then
+            moduleUse (siblingItems cx local here)
           else
             (match (if V.isEmpty local then None else typeIn (siblingItems cx localOwner here)) with
              | Just t ->
@@ -563,9 +588,9 @@ fun applyUse (cx : UnitCx) (m : ModFrame) (acc : Layers) (one : (AstDecl, Vis))
                       if depHas d path then moduleUse (depItems d path)
                       else
                         (let items = depItems d (V.drop owner 1) in
-                          match typeIn items with
-                          | Just t -> useType acc vis items t lastAt written glob True
-                          | None -> acc)))
+                         match typeIn items with
+                         | Just t -> useType acc vis items t lastAt written glob True
+                         | None -> acc)))
 
 -- The base every module of the unit shares: the primitives, then the
 -- prelude. For a module of the standard library, the modules before it whose
@@ -576,14 +601,14 @@ fun baseOf (cx : UnitCx) (prims : [(String, Int)]) (m : ModFrame) : Layers =
   if cx.isStd then
     let before = V.take stdOrder (indexIn (moduleName m) stdOrder) in
     V.foldl
-      (\acc f -> if V.elem f before
-        then
+      (\acc f ->
+        if V.elem f before then
           bring
-          acc
-          Private
-          (V.filter
-            (\(i : Item) -> i.vis == Exported or not cx.anyVis)
-            (siblingItems cx (S.split "." f) (framePath m)))
+            acc
+            Private
+            (V.filter
+               (\(i : Item) -> i.vis == Exported or not cx.anyVis)
+               (siblingItems cx (S.split "." f) (framePath m)))
         else acc)
       start
       flatModules
@@ -594,8 +619,8 @@ fun baseOf (cx : UnitCx) (prims : [(String, Int)]) (m : ModFrame) : Layers =
 
 -- A module of the standard library by the name `stdOrder` has it.
 fun moduleName (m : ModFrame) : String =
-  if V.isEmpty (framePath m)
-  then (if S.endsWith "Prelude.mw" m.src.file then "Prelude" else "Lib") else dotted (framePath m)
+  if V.isEmpty (framePath m) then (if S.endsWith "Prelude.mw" m.src.file then "Prelude" else "Lib")
+  else dotted (framePath m)
 
 -- What every module of a unit shares: the primitives, what stands for a name
 -- nothing declares -- an unknown value, a built-in type or constructor -- and
@@ -625,36 +650,33 @@ fun firstWins (xs : [(String, a)]) : HashMap String a =
 
 -- Each constructor name's meanings: every distinct one `brought` has, in
 -- order, or else the one `base` has.
-fun candidates (base : HashMap String Int) (brought : [(String, Int)])
-    : HashMap String [Int] =
+fun candidates (base : HashMap String Int) (brought : [(String, Int)]) : HashMap String [Int] =
   let own =
     V.foldl
       (\h x ->
         (let cs = M.unwrapOr [] (H.lookup (fst x) h) in
-          if V.elem (snd x) cs then h else H.insert (fst x) (V.pushBack cs (snd x)) h))
+         if V.elem (snd x) cs then h else H.insert (fst x) (V.pushBack cs (snd x)) h))
       H.empty
       brought
   in V.foldl
-    (\h kv -> if M.isSome (H.lookup (fst kv) h) then h else H.insert (fst kv) [snd kv] h)
-    own
-    (H.toVec base)
+       (\h kv -> if M.isSome (H.lookup (fst kv) h) then h else H.insert (fst kv) [snd kv] h)
+       own
+       (H.toVec base)
 
 -- What module `m` can name: the base, its own declarations, and its `use`s --
 -- and what it re-exports.
-fun scopeOf (cx : UnitCx) (sh : Shared) (m : ModFrame) :
-    (Scope, [Item], [(Meta, Int)]) =
+fun scopeOf (cx : UnitCx) (sh : Shared) (m : ModFrame) : (Scope, [Item], [(Meta, Int)]) =
   let base = baseOf cx sh.prims m in
   let own =
     bring
       noLayers
       Private
-      (V.concat
-        [
-          V.filter (\(i : Item) -> i.kind != "c") m.items,
-          V.concatMap
-            (\(t : Item) -> if t.kind == "t" then structCtor m.items t.name else [])
-            m.items
-        ])
+      (V.concat [
+         V.filter (\(i : Item) -> i.kind != "c") m.items,
+         V.concatMap
+           (\(t : Item) -> if t.kind == "t" then structCtor m.items t.name else [])
+           m.items
+       ])
   in
   let used = V.foldl (applyUse cx m) own m.uses in
   let firstFirst =
@@ -683,14 +705,19 @@ fun scopeOf (cx : UnitCx) (sh : Shared) (m : ModFrame) :
       builtinCtor = sh.builtinCtor,
       bools = sh.bools,
       traitAssocs = sh.traitAssocs,
-      vectorEmpty = sh.vectorEmpty } in
-  (scope, used.reexports, used.refs)
+      vectorEmpty = sh.vectorEmpty
+    }
+  in (scope, used.reexports, used.refs)
 
 -- --- a unit ------------------------------------------------------------------
 
 -- What a unit is renamed with: each dependency by the name a `use` knows it
 -- by, with what it exports and whether it says what it exports at all.
-@pub record DepExports = { name : String, exports : [Export], anyVis : Bool }
+@pub record DepExports = {
+  name : String,
+  exports : [Export],
+  anyVis : Bool
+}
 
 -- What renaming a unit made: each module's program, what each binder is --
 -- its uses among it -- what the unit exports, and whether it says. And what
@@ -709,12 +736,16 @@ fun scopeOf (cx : UnitCx) (sh : Shared) (m : ModFrame) :
 
 -- A module's file as a dump names it, its path in its unit, and what it
 -- declares.
-@pub record Declared = { file : String, path : [String], items : [Item] }
+@pub record Declared = {
+  file : String,
+  path : [String],
+  items : [Item]
+}
 
 -- Rename unit `pkg` -- the standard library when `isStd` -- its modules
 -- `sources`, against what its dependencies export.
-@pub fun renameUnit (pkg : String) (isStd : Bool) (sources : [Source])
-    (deps : [DepExports]) : Renamed =
+@pub fun renameUnit (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExports])
+    : Renamed =
   match tabled (\() -> renaming pkg isStd sources deps) with
   | ((programs, exports, anyVis, modules, depItems, prims), binders) ->
       Renamed {
@@ -734,8 +765,7 @@ fun siteOfId (binders : [Binder]) (id : String) : String =
   | Just (b : Binder) -> b.site
   | None -> "-"
 
-fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
-    (deps : [DepExports]) =
+fun renaming (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExports]) =
   let unknown = declareBinder "?" "v" "?" in
   let builtinType = declareBinder "" "t" "-" in
   let builtinCtor = declareBinder "" "c" "-" in
@@ -746,7 +776,8 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
   let depCx =
     V.map
       (\(d : DepExports) -> Dep { name = d.name, items = depItemsOf d.exports, anyVis = d.anyVis })
-      deps in
+      deps
+  in
   let cx = UnitCx { pkg = pkg, isStd = isStd, anyVis = anyVis, frames = frames, deps = depCx } in
   -- Every constructor of every type the unit knows, by its type: its own
   -- modules', each type with the constructors declared beside it, and its
@@ -759,20 +790,24 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
   let depCtors = V.concatMap (\(d : Dep) -> V.map snd d.items) depCx in
   let typeCtors =
     V.foldl
-    (\h (items : [Item]) ->
-      V.foldl
-        (\g (t : Item) ->
-          if t.kind != "t" then g
-          else
-            let pool = if V.len items == 1 then depCtors else items in
-            H.insert
-              t.id
-              (V.foldl (\c (k : Item) -> H.insert k.name k.id c) H.empty (ctorsOfType pool t.name))
-              g)
-        h
-        items)
-    H.empty
-    groups in
+      (\h (items : [Item]) ->
+        V.foldl
+          (\g (t : Item) ->
+            if t.kind != "t" then g
+            else
+              let pool = if V.len items == 1 then depCtors else items in
+              H.insert
+                t.id
+                (V.foldl
+                   (\c (k : Item) -> H.insert k.name k.id c)
+                   H.empty
+                   (ctorsOfType pool t.name))
+                g)
+          h
+          items)
+      H.empty
+      groups
+  in
   -- `and` and `or` are `Bool`'s constructors, whatever is in scope.
   let allItems =
     V.append
@@ -792,46 +827,51 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
       M.unwrapOr
         builtinType
         (M.map
-          (\(i : Item) -> i.id)
-          (V.find (\(i : Item) -> i.kind == "t" and i.name == n) allItems))
+           (\(i : Item) -> i.id)
+           (V.find (\(i : Item) -> i.kind == "t" and i.name == n) allItems))
   in
   let ctorNamed =
     \o n ->
       M.unwrapOr
         builtinCtor
         (M.map
-          (\(i : Item) -> i.id)
-          (V.find (\(i : Item) -> i.kind == "c" and i.owner == o and i.name == n) allItems))
+           (\(i : Item) -> i.id)
+           (V.find (\(i : Item) -> i.kind == "c" and i.owner == o and i.name == n) allItems))
   in
   let builtinTypes = V.map (\n -> (n, typeNamed n)) builtinTyconNames in
   let builtinCtors =
-    V.map
-      (\oc -> (snd oc, ctorNamed (fst oc) (snd oc)))
-      [("List", "Nil"), ("List", "Cons"), ("Bool", "True"), ("Bool", "False")]
+    V.map (\oc -> (snd oc, ctorNamed (fst oc) (snd oc))) [
+      ("List", "Nil"),
+      ("List", "Cons"),
+      ("Bool", "True"),
+      ("Bool", "False")
+    ]
   in
   -- Every trait's associated types, by the trait: what an `impl`'s `type`
   -- is, whatever is in scope.
   let traitAssocs =
     V.foldl
-    (\h (t : Item) ->
-      if t.kind == "t" and t.owner == "trait"
-      then
-        H.insert
-          t.id
-          (V.foldl
-            (\g (x : Item) ->
-              if x.kind == "t" and x.owner == "assoc:" ++ t.name then H.insert x.name x.id g else g)
-            H.empty
-            allItems)
-          h
-      else h)
-    H.empty
-    allItems in
+      (\h (t : Item) ->
+        if t.kind == "t" and t.owner == "trait" then
+          H.insert
+            t.id
+            (V.foldl
+               (\g (x : Item) ->
+                 if x.kind == "t" and x.owner == "assoc:" ++ t.name then H.insert x.name x.id g
+                 else g)
+               H.empty
+               allItems)
+            h
+        else h)
+      H.empty
+      allItems
+  in
   let ctorFields =
     V.foldl
-      (\h (c : Item) -> match c.fields with
-                        | Just fs -> (if c.kind == "c" then H.insert c.id fs h else h)
-                        | None -> h)
+      (\h (c : Item) ->
+        match c.fields with
+        | Just fs -> (if c.kind == "c" then H.insert c.id fs h else h)
+        | None -> h)
       H.empty
       allItems
   in
@@ -856,49 +896,48 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
         (match scopeOf cx sh f with
          | (sc, re, refs) ->
              (let u =
-                 V.foldl
+                V.foldl
                   (\z r -> useOf f.src.file (if snd r < 0 then builtinType else snd r) (fst r))
                   ()
                   refs
-               in (f, sc, re))))
+              in (f, sc, re))))
       frames
   in
   let programs = V.map (\x -> match x with | (f, sc, _) -> renameSource sc f) done in
   let exports =
     V.concatMap
-    (\x ->
-      match x with
-      | (f, _, re) ->
-          V.map
-            (\(i : Item) ->
-              Export {
-                module = framePath f,
-                name = i.name,
-                kind = i.kind,
-                site = show i.id,
-                vis = i.vis,
-                owner = i.owner,
-                flat = i.flat,
-                fields = i.fields,
-                canon = i.canon,
-                binder = i.id,
-                scheme = None
-              })
-            (V.append f.items re))
-    done in
+      (\x ->
+        match x with
+        | (f, _, re) ->
+            V.map
+              (\(i : Item) ->
+                Export {
+                  module = framePath f,
+                  name = i.name,
+                  kind = i.kind,
+                  site = show i.id,
+                  vis = i.vis,
+                  owner = i.owner,
+                  flat = i.flat,
+                  fields = i.fields,
+                  canon = i.canon,
+                  binder = i.id,
+                  scheme = None
+                })
+              (V.append f.items re))
+      done
+  in
   -- The standard library's operators, `display`, `debug` and comparison are
   -- at its root too: every program has them unqualified.
   let flat =
-    if isStd
-    then
+    if isStd then
       V.concatMap
         (\(e : Export) ->
-          if V.elem (dotted e.module) flatModules
-          and e.vis == Exported
-          then [{ e | module = [] }]
+          if V.elem (dotted e.module) flatModules and e.vis == Exported then [{ e | module = [] }]
           else [])
         exports
-    else [] in
+    else []
+  in
   let modules =
     V.map
       (\(f : ModFrame) -> Declared { file = f.src.file, path = framePath f, items = f.items })
@@ -908,30 +947,29 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
 -- A dependency's exports as items, each with the module it is in: one binder
 -- for each thing exported, however many places export it -- a module and the
 -- package's root both -- as one `VarId` is in the Rust compiler.
-fun depItemsOf (exports : [Export]) :
-    [([String], Item)] ! { Table Binder | e } =
+fun depItemsOf (exports : [Export]) : [([String], Item)] ! { Table Binder | e } =
   fst
     (V.foldl
-      (\acc (e : Export) ->
-        match acc with
-        | (items, seen) ->
-            let key = "${e.kind}|${e.name}|${e.site}|${e.canon}" in
-            let id =
-              (match H.lookup key seen with
-               | Just x -> x
-               | None -> declareBinder e.name e.kind e.site)
-            in (
-              V.pushBack items (
-                e.module,
-                {
-                  (item e.name e.kind id e.vis e.owner) | flat = e.flat,
-                  fields = e.fields,
-                  canon = e.canon
-                }
-              ),
-              H.insert key id seen
-            ))
-      ([], H.empty)
-      exports)
+       (\acc (e : Export) ->
+         match acc with
+         | (items, seen) ->
+             let key = "${e.kind}|${e.name}|${e.site}|${e.canon}" in
+             let id =
+               (match H.lookup key seen with
+                | Just x -> x
+                | None -> declareBinder e.name e.kind e.site)
+             in (
+                  V.pushBack items (
+                    e.module,
+                    {
+                      (item e.name e.kind id e.vis e.owner) | flat = e.flat,
+                      fields = e.fields,
+                      canon = e.canon
+                    }
+                  ),
+                  H.insert key id seen
+                ))
+       ([], H.empty)
+       exports)
 
 fun renameSource (sc : Scope) (f : ModFrame) = (f.src.file, rename (envOf sc) f.src.ast)

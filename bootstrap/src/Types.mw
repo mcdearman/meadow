@@ -58,17 +58,29 @@ use VarKind.*
 
 -- `tys` implement trait `tr`, whose associated types are `assocs` there.
 @derive(Debug, PartialEq, Reflect)
-@pub record Pred = { tr : String, tys : [Type], assocs : [Type] }
+@pub record Pred = {
+  tr : String,
+  tys : [Type],
+  assocs : [Type]
+}
 
 -- A polytype: the kind of each quantified variable, the traits they have to
 -- implement, the type over them (`Bound i`), and for each quantified row
 -- variable that must lack labels, by its place, which.
 @derive(Debug, PartialEq, Reflect)
-@pub record Scheme = { quant : [VarKind], preds : [Pred], ty : Type, lacks : [Lacking] }
+@pub record Scheme = {
+  quant : [VarKind],
+  preds : [Pred],
+  ty : Type,
+  lacks : [Lacking]
+}
 
 -- A quantified row variable, by its place, and the labels it may never have.
 @derive(Debug, PartialEq, Reflect)
-@pub record Lacking = { at : Int, labels : [String] }
+@pub record Lacking = {
+  at : Int,
+  labels : [String]
+}
 
 @pub fun mono (t : Type) : Scheme = Scheme { quant = [], preds = [], ty = t, lacks = [] }
 
@@ -233,17 +245,14 @@ fun setSlot (ar : Arena s) (id : Int) (slot : Slot) : () ! { St s | e } =
 
 -- `row` without the `St s` labels at its front whose `s` was made deeper than
 -- `level`: the `runSt`s a variable at `level` is older than.
-@pub fun withoutInnerState (ar : Arena s) (row : Type) (level : Int)
-    : Type ! { St s | e } =
+@pub fun withoutInnerState (ar : Arena s) (row : Type) (level : Int) : Type ! { St s | e } =
   match prune ar row with
   | RowExtend label field rest ->
-      if label == "St" and innerState ar field level
-      then withoutInnerState ar rest level
+      if label == "St" and innerState ar field level then withoutInnerState ar rest level
       else RowExtend label field rest
   | other -> other
 
-fun innerState (ar : Arena s) (field : Type) (level : Int)
-    : Bool ! { St s | e } =
+fun innerState (ar : Arena s) (field : Type) (level : Int) : Bool ! { St s | e } =
   match rigidName (zonk ar field) with
   | Just name -> M.unwrapOr False (M.map (\l -> l > level) (H.lookup name (stGetRef ar.skolems)))
   | None -> False
@@ -274,8 +283,7 @@ fun innerState (ar : Arena s) (field : Type) (level : Int)
   | other -> other
 
 -- The unbound variables of `t`, after `out`, each once, in the order met.
-@pub fun freeVars (ar : Arena s) (t : Type) (out : [Int]) :
-    [Int] ! { St s | e } =
+@pub fun freeVars (ar : Arena s) (t : Type) (out : [Int]) : [Int] ! { St s | e } =
   match prune ar t with
   | Var id -> if V.elem id out then out else V.pushBack out id
   | Con _ args -> V.foldl (\acc a -> freeVars ar a acc) out args
@@ -297,24 +305,30 @@ fun innerState (ar : Arena s) (field : Type) (level : Int)
   | Tuple args -> V.foldl (\u a -> holdBack ar a level) () args
   | Fun args ret eff ->
       (let u = V.foldl (\w a -> holdBack ar a level) () args in
-        let v = holdBack ar ret level in
-        holdBack ar eff level)
+       let v = holdBack ar ret level in
+       holdBack ar eff level)
   | Record row -> holdBack ar row level
   | RowExtend _ f rest -> (let u = holdBack ar f level in holdBack ar rest level)
   | _ -> ()
 
 -- The same, for the number variables in `t` only.
-@pub fun holdBackClasses (ar : Arena s) (t : Type) (level : Int) :
-    () ! { St s | e } =
+@pub fun holdBackClasses (ar : Arena s) (t : Type) (level : Int) : () ! { St s | e } =
   V.foldl
     (\u id -> if isClass (slotKind ar id) then holdBack ar (Var id) level else ())
     ()
     (freeVars ar t [])
 
-fun isClass (k : VarKind) : Bool = match k with | Num -> True | Frac -> True | _ -> False
+fun isClass (k : VarKind) : Bool =
+  match k with
+  | Num -> True
+  | Frac -> True
+  | _ -> False
 
 -- A point to roll back to: how many slots there were, and how long the trail.
-@pub record Snapshot = { slotCount : Int, trailLength : Int }
+@pub record Snapshot = {
+  slotCount : Int,
+  trailLength : Int
+}
 
 @pub fun snapshot (ar : Arena s) : Snapshot ! { St s | e } =
   let _ = stSetRef ar.snapshots (stGetRef ar.snapshots + 1) in
@@ -334,8 +348,8 @@ fun undo (ar : Arena s) (to : Int) : () ! { St s | e } =
   else
     let entry = B.at ar.trail (n - 1) in
     let _ = truncate ar.trail (n - 1) in
-    let _ = (if fst entry < B.len ar.slots then B.put ar.slots (fst entry) (snd entry) else ())
-    in undo ar to
+    let _ = (if fst entry < B.len ar.slots then B.put ar.slots (fst entry) (snd entry) else ()) in
+    undo ar to
 
 -- `b` with only its first `n` slots.
 fun truncate (b : Buf s a) (n : Int) : () ! { St s | e } =
@@ -353,17 +367,17 @@ fun truncate (b : Buf s a) (n : Int) : () ! { St s | e } =
     | Var id ->
         (match slotAt ar id with
          | Unbound level kind ls ->
-             let more = V.foldl (\acc l -> if V.elem l acc then acc else V.pushBack acc l) ls labels
-             in if V.len more != V.len ls
-                then (let u = setSlot ar id (Unbound level kind more) in Ok ())
+             let more =
+               V.foldl (\acc l -> if V.elem l acc then acc else V.pushBack acc l) ls labels
+             in if V.len more != V.len ls then
+                  (let u = setSlot ar id (Unbound level kind more) in Ok ())
                 else Ok ()
          | Solved _ -> Ok ())
     | _ -> Ok ()
 
 -- A fresh variable for each of `scheme`'s quantifiers, each row variable
 -- promising again what it lacked.
-@pub fun freshQuantifiers (ar : Arena s) (scheme : Scheme) :
-    [Type] ! { St s | e } =
+@pub fun freshQuantifiers (ar : Arena s) (scheme : Scheme) : [Type] ! { St s | e } =
   let made = V.map (\k -> freshIn ar k) scheme.quant in
   let u =
     V.foldl
@@ -379,19 +393,15 @@ fun truncate (b : Buf s a) (n : Int) : () ! { St s | e } =
 
 fun andThen (r : Result UnifyError ()) (k : () -> Result UnifyError () ! e)
     : Result UnifyError () ! e =
-  match r with
-  | Ok _ -> k ()
-  | Err x -> Err x
+  match r with | Ok _ -> k () | Err x -> Err x
 
-fun unifyAll (ar : Arena s) (xs : [Type]) (ys : [Type]) : Result UnifyError
-    () ! { St s | e } =
+fun unifyAll (ar : Arena s) (xs : [Type]) (ys : [Type]) : Result UnifyError () ! { St s | e } =
   V.foldl
     (\acc i -> andThen acc (\() -> unify ar (V.getOr Error xs i) (V.getOr Error ys i)))
     (Ok ())
     (V.range 0 (V.len xs))
 
-@pub fun unify (ar : Arena s) (a : Type) (b : Type) : Result UnifyError
-    () ! { St s | e } =
+@pub fun unify (ar : Arena s) (a : Type) (b : Type) : Result UnifyError () ! { St s | e } =
   let x = prune ar a in
   let y = prune ar b in
   match (x, y) with
@@ -417,8 +427,7 @@ fun unifyAll (ar : Arena s) (xs : [Type]) (ys : [Type]) : Result UnifyError
 
 -- Two variables: a number variable meeting a plain one is kept, so a literal
 -- passed through a polymorphic function stays a number.
-fun unifyVars (ar : Arena s) (i : Int) (j : Int) : Result UnifyError
-    () ! { St s | e } =
+fun unifyVars (ar : Arena s) (i : Int) (j : Int) : Result UnifyError () ! { St s | e } =
   match (slotKind ar i, slotKind ar j) with
   | (Num, Plain) -> bindVar ar j (Var i)
   | (Frac, Plain) -> bindVar ar j (Var i)
@@ -433,24 +442,21 @@ fun poison (ar : Arena s) (i : Int) : Result UnifyError () ! { St s | e } =
   | Plain -> bindVar ar i Error
   | _ -> Ok ()
 
-fun unifyRows (ar : Arena s) (l1 : String) (t1 : Type) (rest1 : Type)
-    (row2 : Type) : Result UnifyError () ! { St s | e } =
+fun unifyRows (ar : Arena s) (l1 : String) (t1 : Type) (rest1 : Type) (row2 : Type)
+    : Result UnifyError () ! { St s | e } =
   match rewriteRow ar row2 l1 t1 with
   | Err x -> Err x
   | Ok (t2, rest2) -> andThen (unify ar t1 t2) (\() -> unify ar rest1 rest2)
 
-fun bindVar (ar : Arena s) (id : Int) (t : Type) : Result UnifyError
-    () ! { St s | e } =
+fun bindVar (ar : Arena s) (id : Int) (t : Type) : Result UnifyError () ! { St s | e } =
   andThen (occursAdjust ar id t) (\() ->
     andThen (requireLacks ar t (lacksOf ar id)) (\() ->
       match slotKind ar id with
       | Num ->
-          if isIntegerType t
-          then (let u = setSlot ar id (Solved t) in Ok ())
+          if isIntegerType t then (let u = setSlot ar id (Solved t) in Ok ())
           else Err (NotANumber True t)
       | Frac ->
-          if isFloatType t
-          then (let u = setSlot ar id (Solved t) in Ok ())
+          if isFloatType t then (let u = setSlot ar id (Solved t) in Ok ())
           else Err (NotANumber False t)
       | _ -> (let u = setSlot ar id (Solved t) in Ok ())))
 
@@ -474,8 +480,7 @@ fun bindVar (ar : Arena s) (id : Int) (t : Type) : Result UnifyError
 
 -- Every number variable nothing pinned down, but those `quantified` stands
 -- for: `Int`, or `Float`.
-@pub fun defaultNumVars (ar : Arena s) (quantified : HashMap Int Bool) :
-    () ! { St s | e } =
+@pub fun defaultNumVars (ar : Arena s) (quantified : HashMap Int Bool) : () ! { St s | e } =
   V.foldl
     (\u id ->
       if M.isSome (H.lookup id quantified) then ()
@@ -489,8 +494,7 @@ fun bindVar (ar : Arena s) (id : Int) (t : Type) : Result UnifyError
 
 -- The occurs check, and the level adjustment, in one walk: every variable `t`
 -- reaches deeper than `id` is lifted to `id`'s level.
-fun occursAdjust (ar : Arena s) (id : Int) (t : Type) : Result UnifyError
-    () ! { St s | e } =
+fun occursAdjust (ar : Arena s) (id : Int) (t : Type) : Result UnifyError () ! { St s | e } =
   match prune ar t with
   | Var j ->
       if j == id then Err (Occurs (Var id) (Var j))
@@ -506,15 +510,13 @@ fun occursAdjust (ar : Arena s) (id : Int) (t : Type) : Result UnifyError
        | None -> occursAll ar id args)
   | Tuple args -> occursAll ar id args
   | Fun args ret eff ->
-      andThen
-        (occursAll ar id args)
-        (\() -> andThen (occursAdjust ar id ret) (\() -> occursAdjust ar id eff))
+      andThen (occursAll ar id args) (\() ->
+        andThen (occursAdjust ar id ret) (\() -> occursAdjust ar id eff))
   | Record row -> occursAdjust ar id row
   | RowExtend _ f rest -> andThen (occursAdjust ar id f) (\() -> occursAdjust ar id rest)
   | _ -> Ok ()
 
-fun occursAll (ar : Arena s) (id : Int) (ts : [Type]) : Result UnifyError
-    () ! { St s | e } =
+fun occursAll (ar : Arena s) (id : Int) (ts : [Type]) : Result UnifyError () ! { St s | e } =
   V.foldl (\acc a -> andThen acc (\() -> occursAdjust ar id a)) (Ok ()) ts
 
 -- `row` as `{ label : field | rest }`: the field and the rest. A row that ends
@@ -523,8 +525,7 @@ fun rewriteRow (ar : Arena s) (row : Type) (label : String) (want : Type)
     : Result UnifyError (Type, Type) ! { St s | e } =
   match prune ar row with
   | RowExtend l field rest ->
-      if l == label and not (rigidlyDistinct ar field want)
-      then Ok (field, rest)
+      if l == label and not (rigidlyDistinct ar field want) then Ok (field, rest)
       else
         (match rewriteRow ar rest label want with
          | Ok (found, rest2) -> Ok (found, RowExtend l field rest2)
@@ -558,30 +559,33 @@ fun rigidlyDistinct (ar : Arena s) (a : Type) (b : Type) : Bool ! { St s | e } =
 fun rigidName (t : Type) : Maybe String =
   match t with
   | Tuple items ->
-      (if V.len items == 1
-        then
-          (match V.getOr Error items 0 with
-           | Con name args -> (if V.isEmpty args then Just name else None)
-           | _ -> None)
-        else None)
+      (if V.len items == 1 then
+         (match V.getOr Error items 0 with
+          | Con name args -> (if V.isEmpty args then Just name else None)
+          | _ -> None)
+       else None)
   | _ -> None
 
 -- --- generalizing ------------------------------------------------------------
 
 -- What quantifying has found so far: each arena variable's quantifier, and
 -- each quantifier's kind, in the order found.
-@pub record Quantified = { map : HashMap Int Int, kinds : [VarKind] }
+@pub record Quantified = {
+  map : HashMap Int Int,
+  kinds : [VarKind]
+}
 
 @pub def noneQuantified : Quantified = Quantified { map = H.empty, kinds = [] }
 
 -- `t` with every variable deeper than `level` -- every one, for `None` --
 -- quantified, but number variables unless `classes`.
-@pub fun quantifyFrom (ar : Arena s) (t : Type) (level : Maybe Int)
-    (q : Quantified) (classes : Bool) : (Type, Quantified) ! { St s | e } =
+@pub fun quantifyFrom (ar : Arena s) (t : Type) (level : Maybe Int) (q : Quantified)
+    (classes : Bool)
+    : (Type, Quantified) ! { St s | e } =
   match t with
   | Var id ->
-      let deep = (match level with | Just l -> slotLevel ar id > l | None -> True)
-      in if (not (isClass (slotKind ar id)) or classes) and deep then
+      let deep = (match level with | Just l -> slotLevel ar id > l | None -> True) in
+      if (not (isClass (slotKind ar id)) or classes) and deep then
         (match H.lookup id q.map with
          | Just i -> (Bound i, q)
          | None ->
@@ -590,35 +594,30 @@ fun rigidName (t : Type) : Maybe String =
                Bound i,
                Quantified { map = H.insert id i q.map, kinds = V.pushBack q.kinds (slotKind ar id) }
              ))
-         else (Var id, q)
+      else (Var id, q)
   | Con name args ->
-      (match quantifyAll ar args level q classes with
-       | (xs, q2) -> (Con name xs, q2))
-  | Tuple items ->
-      (match quantifyAll ar items level q classes with
-       | (xs, q2) -> (Tuple xs, q2))
+      (match quantifyAll ar args level q classes with | (xs, q2) -> (Con name xs, q2))
+  | Tuple items -> (match quantifyAll ar items level q classes with | (xs, q2) -> (Tuple xs, q2))
   | Fun args ret eff ->
       (match quantifyAll ar args level q classes with
        | (xs, q2) ->
            (match quantifyFrom ar ret level q2 classes with
             | (r, q3) ->
                 (match quantifyFrom ar eff level q3 classes with | (e, q4) -> (Fun xs r e, q4))))
-  | Record row ->
-      (match quantifyFrom ar row level q classes with
-       | (r, q2) -> (Record r, q2))
+  | Record row -> (match quantifyFrom ar row level q classes with | (r, q2) -> (Record r, q2))
   | RowExtend l f rest ->
       (match quantifyFrom ar f level q classes with
        | (f2, q2) ->
            (match quantifyFrom ar rest level q2 classes with | (r2, q3) -> (RowExtend l f2 r2, q3)))
   | other -> (other, q)
 
-fun quantifyAll (ar : Arena s) (ts : [Type]) (level : Maybe Int)
-    (q : Quantified) (classes : Bool) : ([Type], Quantified) ! { St s | e } =
+fun quantifyAll (ar : Arena s) (ts : [Type]) (level : Maybe Int) (q : Quantified) (classes : Bool)
+    : ([Type], Quantified) ! { St s | e } =
   V.foldl
-    (\acc t -> match acc with
-               | (xs, q1) ->
-                   (match quantifyFrom ar t level q1 classes with
-                    | (x, q2) -> (V.pushBack xs x, q2)))
+    (\acc t ->
+      match acc with
+      | (xs, q1) ->
+          (match quantifyFrom ar t level q1 classes with | (x, q2) -> (V.pushBack xs x, q2)))
     ([], q)
     ts
 
@@ -709,20 +708,17 @@ def arrow : Int = 1
 def app : Int = 2
 
 -- `t` at precedence `prec`, the scheme's hidden effect quantifiers `hidden`.
-fun writeType (nm : Namer) (t : Type) (prec : Int) (hidden : [Int]) :
-    (String, Namer) =
+fun writeType (nm : Namer) (t : Type) (prec : Int) (hidden : [Int]) : (String, Namer) =
   match t with
   | Var id -> nameVar nm id
   | Bound i -> (boundName nm i, nm)
   | Error -> ("{error}", nm)
   | Con name [] -> (if name == "Unit" then "()" else spelling name, nm)
   | Con name args ->
-      if name == "Vector" and V.len args == 1
-      then
+      if name == "Vector" and V.len args == 1 then
         (match writeType nm (V.getOr Error args 0) top hidden with
          | (s, n2) -> ("[" ++ s ++ "]", n2))
-      else if name == "Array"
-      then
+      else if name == "Array" then
         (match writeType nm (V.getOr Error args 0) top hidden with
          | (s, n2) -> ("#[" ++ s ++ "]", n2))
       else
@@ -730,37 +726,33 @@ fun writeType (nm : Namer) (t : Type) (prec : Int) (hidden : [Int]) :
          | (s, n2) -> (wrapped (prec >= app) (spelling name ++ " " ++ s), n2))
   | Fun args ret eff ->
       let params =
-        (if V.len args == 1
-          then writeType nm (V.getOr Error args 0) arrow hidden
-          else
-            (match writeEach nm args top hidden ", " with
-             | (s, n2) -> ("(" ++ s ++ ")", n2)))
+        (if V.len args == 1 then writeType nm (V.getOr Error args 0) arrow hidden
+         else (match writeEach nm args top hidden ", " with | (s, n2) -> ("(" ++ s ++ ")", n2)))
       in (match params with
           | (ps, n2) ->
               (match writeType n2 ret top hidden with
                | (r, n3) ->
-                   (match effectSuffix n3 eff hidden with | (e, n4) -> (wrapped (prec >= arrow) (ps ++ " -> " ++ r ++ e), n4))))
+                   (match effectSuffix n3 eff hidden with
+                    | (e, n4) -> (wrapped (prec >= arrow) (ps ++ " -> " ++ r ++ e), n4))))
   | Tuple items ->
-      (match writeEach nm items top hidden ", " with
-       | (s, n2) -> ("(" ++ s ++ ")", n2))
+      (match writeEach nm items top hidden ", " with | (s, n2) -> ("(" ++ s ++ ")", n2))
   | Record row -> (match writeRow nm row hidden with | (s, n2) -> ("{ " ++ s ++ " }", n2))
   | RowEmpty -> ("()", nm)
   | RowExtend _ _ _ -> (match writeRow nm t hidden with | (s, n2) -> ("(| " ++ s ++ " |)", n2))
 
 fun wrapped (yes : Bool) (s : String) : String = if yes then "(" ++ s ++ ")" else s
 
-fun writeEach (nm : Namer) (ts : [Type]) (prec : Int) (hidden : [Int])
-    (sep : String) : (String, Namer) =
+fun writeEach (nm : Namer) (ts : [Type]) (prec : Int) (hidden : [Int]) (sep : String)
+    : (String, Namer) =
   let scrutinee =
     V.foldl
-      (\acc t -> match acc with
-                 | (parts, n1) ->
-                     (match writeType n1 t prec hidden with
-                      | (s, n2) -> (V.pushBack parts s, n2)))
+      (\acc t ->
+        match acc with
+        | (parts, n1) ->
+            (match writeType n1 t prec hidden with | (s, n2) -> (V.pushBack parts s, n2)))
       ([], nm)
       ts
-  in match scrutinee with
-  | (parts, n) -> (S.join sep parts, n)
+  in match scrutinee with | (parts, n) -> (S.join sep parts, n)
 
 -- ` ! e` after an arrow whose effect is not pure: `Console`, `State Int`,
 -- `{ Console, State Int }`, `{ Console | e }` -- one closed label needs no
@@ -769,39 +761,37 @@ fun effectSuffix (nm : Namer) (eff : Type) (hidden : [Int]) : (String, Namer) =
   match rowLabels eff with
   | (labels, tail) ->
       let hiddenTail =
-        (match tail with
-         | Just (Bound i) -> V.isEmpty labels and V.elem i hidden
-         | _ -> False)
+        (match tail with | Just (Bound i) -> V.isEmpty labels and V.elem i hidden | _ -> False)
       in if hiddenTail then ("", nm)
          else
            (match tailName nm tail with
             | (named, n2) ->
-                if V.isEmpty labels
-                then
-                  (match named with
-                   | Just tn -> (" ! " ++ tn, n2)
-                   | None -> ("", n2))
+                if V.isEmpty labels then
+                  (match named with | Just tn -> (" ! " ++ tn, n2) | None -> ("", n2))
                 else
                   let braces = V.len labels != 1 or M.isSome named in
                   (let scrutinee =
-                      V.foldl
-                        (\acc (lab : (String, [Type])) -> match acc with
-                                                          | (parts, n3) ->
-                                                              (match writeEach n3 (snd lab) app hidden " " with
-                                                               | (s, n4) ->
-                                                                   (
-                                                                     V.pushBack parts (if V.isEmpty (snd lab) then spelling (fst lab) else spelling (fst lab) ++ " " ++ s),
-                                                                     n4
-                                                                   )))
-                        ([], n2)
-                        labels
-                    in match scrutinee with
-                    | (parts, n5) ->
-                        let body =
-                          S.join ", " parts
-                            ++ (match named with | Just tn -> " | " ++ tn | None -> "")
-                        in ( " ! " ++ (if braces then "{ " ++ body ++ " }" else body), n5
-                        )))
+                     V.foldl
+                       (\acc (lab : (String, [Type])) ->
+                         match acc with
+                         | (parts, n3) ->
+                             (match writeEach n3 (snd lab) app hidden " " with
+                              | (s, n4) ->
+                                  (
+                                    V.pushBack
+                                      parts
+                                      (if V.isEmpty (snd lab) then spelling (fst lab)
+                                       else spelling (fst lab) ++ " " ++ s),
+                                    n4
+                                  )))
+                       ([], n2)
+                       labels
+                   in match scrutinee with
+                      | (parts, n5) ->
+                          let body =
+                            S.join ", " parts
+                              ++ (match named with | Just tn -> " | " ++ tn | None -> "")
+                          in (" ! " ++ (if braces then "{ " ++ body ++ " }" else body), n5)))
 
 -- An effect row's labels, each with its arguments, and what it ends in: a
 -- variable, or nothing.
@@ -809,8 +799,7 @@ fun rowLabels (t : Type) : ([(String, [Type])], Maybe Type) =
   match t with
   | RowExtend name field rest ->
       let args = (match field with | Tuple a -> a | _ -> []) in
-      (match rowLabels rest with
-       | (more, tail) -> (V.pushFront more (name, args), tail))
+      (match rowLabels rest with | (more, tail) -> (V.pushFront more (name, args), tail))
   | Var id -> ([], Just (Var id))
   | Bound i -> ([], Just (Bound i))
   | _ -> ([], None)
@@ -824,8 +813,8 @@ fun tailName (nm : Namer) (tail : Maybe Type) : (Maybe String, Namer) =
 fun writeRow (nm : Namer) (row : Type) (hidden : [Int]) : (String, Namer) =
   writeRowFrom nm row hidden True ""
 
-fun writeRowFrom (nm : Namer) (row : Type) (hidden : [Int]) (first : Bool)
-    (acc : String) : (String, Namer) =
+fun writeRowFrom (nm : Namer) (row : Type) (hidden : [Int]) (first : Bool) (acc : String)
+    : (String, Namer) =
   match row with
   | RowExtend label field rest ->
       (match writeType nm field top hidden with
@@ -838,8 +827,7 @@ fun writeRowFrom (nm : Namer) (row : Type) (hidden : [Int]) (first : Bool)
              (acc ++ (if first then "" else ", ") ++ label ++ " : " ++ s))
   | RowEmpty -> (acc, nm)
   | Var id ->
-      (match nameVar nm id with
-       | (n, n2) -> (acc ++ (if first then "" else " ") ++ "| " ++ n, n2))
+      (match nameVar nm id with | (n, n2) -> (acc ++ (if first then "" else " ") ++ "| " ++ n, n2))
   | Bound i -> (acc ++ (if first then "" else " ") ++ "| " ++ boundName nm i, nm)
   | other ->
       (match writeType nm other top hidden with
@@ -860,12 +848,9 @@ fun writeRowFrom (nm : Namer) (row : Type) (hidden : [Int]) (first : Bool)
             and not (V.elem i tails))
         (V.range 0 (V.len scheme.quant))
 
-fun counted (t : Type) (acc : (HashMap Int Int, [Int])) :
-    (HashMap Int Int, [Int]) =
+fun counted (t : Type) (acc : (HashMap Int Int, [Int])) : (HashMap Int Int, [Int]) =
   match t with
-  | Bound i ->
-      (match acc with
-       | (c, ts) -> (H.insert i (M.unwrapOr 0 (H.lookup i c) + 1) c, ts))
+  | Bound i -> (match acc with | (c, ts) -> (H.insert i (M.unwrapOr 0 (H.lookup i c) + 1) c, ts))
   | Con _ args -> V.foldl (\a x -> counted x a) acc args
   | Tuple args -> V.foldl (\a x -> counted x a) acc args
   | Fun args ret eff -> counted eff (counted ret (V.foldl (\a x -> counted x a) acc args))
@@ -874,9 +859,7 @@ fun counted (t : Type) (acc : (HashMap Int Int, [Int])) :
       let a1 = counted f acc in
       let a2 =
         (match rest with
-         | Bound i ->
-             (match a1 with
-              | (c, ts) -> (c, if V.elem i ts then ts else V.pushBack ts i))
+         | Bound i -> (match a1 with | (c, ts) -> (c, if V.elem i ts then ts else V.pushBack ts i))
          | _ -> a1)
       in counted rest a2
   | _ -> acc
@@ -887,30 +870,31 @@ fun counted (t : Type) (acc : (HashMap Int Int, [Int])) :
   let nm = { newNamer | boundKinds = scheme.quant } in
   let visible = V.filter (\i -> not (V.elem i hidden)) (V.range 0 (V.len scheme.quant)) in
   let head =
-    if V.isEmpty visible
-    then ""
+    if V.isEmpty visible then ""
     else "forall " ++ S.join " " (V.map (\i -> boundName nm i) visible) ++ ". "
   in
   let scrutinee =
     V.foldl
-      (\acc (p : Pred) -> match acc with
-                          | (parts, n1) ->
-                              (match writeEach n1 p.tys app hidden " " with
-                               | (s, n2) ->
-                                   (
-                                     V.pushBack parts (if V.isEmpty p.tys then spelling p.tr else spelling p.tr ++ " " ++ s),
-                                     n2
-                                   )))
+      (\acc (p : Pred) ->
+        match acc with
+        | (parts, n1) ->
+            (match writeEach n1 p.tys app hidden " " with
+             | (s, n2) ->
+                 (
+                   V.pushBack
+                     parts
+                     (if V.isEmpty p.tys then spelling p.tr else spelling p.tr ++ " " ++ s),
+                   n2
+                 )))
       ([], nm)
       scheme.preds
   in match scrutinee with
-  | (parts, n3) ->
-      let several = V.len parts > 1 in
-      let context =
-        if V.isEmpty parts
-        then ""
-        else (if several then "(" ++ S.join ", " parts ++ ")" else S.join ", " parts) ++ " => "
-      in head ++ context ++ fst (writeType n3 scheme.ty top hidden)
+     | (parts, n3) ->
+         let several = V.len parts > 1 in
+         let context =
+           if V.isEmpty parts then ""
+           else (if several then "(" ++ S.join ", " parts ++ ")" else S.join ", " parts) ++ " => "
+         in head ++ context ++ fst (writeType n3 scheme.ty top hidden)
 
 -- --- tests -------------------------------------------------------------------
 
@@ -940,16 +924,19 @@ use Std.Test (assertEq)
   let a =
     assertEq
       (showScheme
-        (Scheme { quant = [Plain, Plain], preds = [], ty = func [Bound 0] (Bound 1), lacks = [] }))
+         (Scheme { quant = [Plain, Plain], preds = [], ty = func [Bound 0] (Bound 1), lacks = [] }))
       "forall a b. a -> b"
       "two"
   in assertEq (showScheme (mono (intT ()))) "Int" "none"
 
 @test fun aLoneEffectVariableIsLeftOut () =
   let s =
-    Scheme
-      { quant = [Plain, Effect], preds = [], ty = funcEff [Bound 0] (Bound 0) (Bound 1), lacks = []
-      }
+    Scheme {
+      quant = [Plain, Effect],
+      preds = [],
+      ty = funcEff [Bound 0] (Bound 0) (Bound 1),
+      lacks = []
+    }
   in
   let a = assertEq (showScheme s) "forall a. a -> a" "said once, it says nothing" in
   let t =
@@ -960,9 +947,9 @@ use Std.Test (assertEq)
       lacks = []
     }
   in assertEq
-    (showScheme t)
-    "forall n e. Add n => n -> n ! { Console | e }"
-    "as a labelled row's tail it is written"
+       (showScheme t)
+       "forall n e. Add n => n -> n ! { Console | e }"
+       "as a labelled row's tail it is written"
 
 @test fun aVariableUnifiesWithWhatItMeets () =
   let got =
@@ -974,8 +961,8 @@ use Std.Test (assertEq)
       let u = unify ar v (intT ()) in
       let w = unify ar x y in
       let z = unify ar y (boolT ()) in
-      (showType (zonk ar v), showType (zonk ar x))) in
-  assertEq got ("Int", "Bool") "directly, and through another"
+      (showType (zonk ar v), showType (zonk ar x)))
+  in assertEq got ("Int", "Bool") "directly, and through another"
 
 @test fun aRecursiveTypeIsRefused () =
   let got =
@@ -984,8 +971,8 @@ use Std.Test (assertEq)
       let v = fresh ar in
       match unify ar v (func [v] v) with
       | Err (Occurs _ _) -> True
-      | _ -> False) in
-  assertEq got True "`a = a -> a` is no type"
+      | _ -> False)
+  in assertEq got True "`a = a -> a` is no type"
 
 @test fun rowsAreLinedUpByLabel () =
   let got =
@@ -994,8 +981,8 @@ use Std.Test (assertEq)
       let lhs = Record (RowExtend "x" (intT ()) (freshRow ar)) in
       let rhs = Record (RowExtend "y" (boolT ()) (RowExtend "x" (intT ()) RowEmpty)) in
       let u = unify ar lhs rhs in
-      showType (zonk ar lhs)) in
-  assertEq got "{ x : Int, y : Bool }" "the rest takes `y`"
+      showType (zonk ar lhs))
+  in assertEq got "{ x : Int, y : Bool }" "the rest takes `y`"
 
 @test fun aTrialIsTakenBack () =
   let got =
@@ -1005,8 +992,8 @@ use Std.Test (assertEq)
       let snap = snapshot ar in
       let u = unify ar v (intT ()) in
       let w = rollback ar snap in
-      showType (zonk ar v)) in
-  assertEq got "a" "unbound again"
+      showType (zonk ar v))
+  in assertEq got "a" "unbound again"
 
 @test fun onlyDeeperVariablesAreQuantified () =
   let got =
@@ -1020,5 +1007,5 @@ use Std.Test (assertEq)
       (
         V.len (snd (quantifyFrom ar deep (Just l) noneQuantified True)).kinds,
         V.len (snd (quantifyFrom ar shallow (Just l) noneQuantified True)).kinds
-      )) in
-  assertEq got (1, 0) "the one made inside"
+      ))
+  in assertEq got (1, 0) "the one made inside"

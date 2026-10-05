@@ -22,4 +22,13 @@ use Std.Random (Random)
 use Std.Time (Time)
 use Std.Test (Test)
 
-@pub effect Eff = { Console, Fs, Process, Random, Time, Test, Mut, Thread }
+@pub effect Eff = {
+  Console,
+  Fs,
+  Process,
+  Random,
+  Time,
+  Test,
+  Mut,
+  Thread
+}

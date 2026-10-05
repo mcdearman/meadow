@@ -35,15 +35,9 @@ use Std.String as S
 @pub(pkg) fun runSource src =
   match parse src with
   | Err e -> Err e
-  | Ok ast ->
-      match typeOf ast with
-      | Err e -> Err e
-      | Ok ty -> run ast
+  | Ok ast -> match typeOf ast with | Err e -> Err e | Ok ty -> run ast
 
-fun typeOfSource src =
-  match parse src with
-  | Err e -> Err e
-  | Ok ast -> typeOf ast
+fun typeOfSource src = match parse src with | Err e -> Err e | Ok ast -> typeOf ast
 
 -- What the REPL prints for one line: the type, then the value, or the first
 -- thing that went wrong. Separated out so a test can check it without a
@@ -66,13 +60,11 @@ fun loop () =
       let trimmed = S.trim line in
       if trimmed == "" then loop ()
       else if trimmed == ":q" then ()
-      else
-        let ignored = println (replLine trimmed) in
-        loop ()
+      else let ignored = println (replLine trimmed) in loop ()
 
 @pub(pkg) fun main () =
-  let ignored = println "mini-ml. An expression per line, `:q` or Ctrl-D to stop."
-  in loop ()
+  let ignored = println "mini-ml. An expression per line, `:q` or Ctrl-D to stop." in
+  loop ()
 
 -- --- tests -------------------------------------------------------------------
 --
@@ -90,12 +82,16 @@ fun loop () =
   assertEq (show (parse "let x = 1 in x")) (show (Ok (Let "x" (Int 1) (Var "x")))) "let"
 
 @test fun parsesLambdaAndApp () =
-  assertEq (show (parse "(fun x y -> x) 1 2"))
-           (show (Ok (App (App (Lam "x" (Lam "y" (Var "x"))) (Int 1)) (Int 2)))) "curried"
+  assertEq
+    (show (parse "(fun x y -> x) 1 2"))
+    (show (Ok (App (App (Lam "x" (Lam "y" (Var "x"))) (Int 1)) (Int 2))))
+    "curried"
 
 @test fun parsesLetRec () =
-  assertEq (show (parse "let rec f n = f n in f 1"))
-           (show (Ok (LetRec "f" "n" (App (Var "f") (Var "n")) (App (Var "f") (Int 1))))) "let rec"
+  assertEq
+    (show (parse "let rec f n = f n in f 1"))
+    (show (Ok (LetRec "f" "n" (App (Var "f") (Var "n")) (App (Var "f") (Int 1)))))
+    "let rec"
 
 @test fun keywordsAreNotIdentifiers () =
   assertEq (show (parse "letter")) (show (Ok (Var "letter"))) "`let` is a prefix of `letter`"
@@ -103,8 +99,8 @@ fun loop () =
 -- --- inference ---------------------------------------------------------------
 
 @test fun infersSimpleTypes () =
-  let got = map typeOfSource ["1 + 1", "1 < 2", "fun x -> x + 1", "if true then 1 else 2"]
-  in assertEq got [Ok "Int", Ok "Bool", Ok "(Int -> Int)", Ok "Int"] "ground types"
+  let got = map typeOfSource ["1 + 1", "1 < 2", "fun x -> x + 1", "if true then 1 else 2"] in
+  assertEq got [Ok "Int", Ok "Bool", Ok "(Int -> Int)", Ok "Int"] "ground types"
 
 @test fun infersPolymorphicIdentity () =
   assertEq (typeOfSource "fun x -> x") (Ok "(t0 -> t0)") "identity"
@@ -112,20 +108,24 @@ fun loop () =
 @test fun letIsGeneralized () =
   -- `id` is used at two different types, which only works if the `let`
   -- generalized it.
-  assertEq (typeOfSource "let id = fun x -> x in if id true then id 1 else 2")
-           (Ok "Int") "let-polymorphism"
+  assertEq
+    (typeOfSource "let id = fun x -> x in if id true then id 1 else 2")
+    (Ok "Int")
+    "let-polymorphism"
 
 @test fun lambdaIsNotGeneralized () =
   -- The same function bound by a lambda instead: monomorphic, so using it at
   -- two types must fail. This is the difference `let` makes.
   assertEq
-    (isErr
-      (typeOfSource "(fun id -> if id true then id 1 else 2) (fun x -> x)"))
-           True "lambda-bound names are monomorphic"
+    (isErr (typeOfSource "(fun id -> if id true then id 1 else 2) (fun x -> x)"))
+    True
+    "lambda-bound names are monomorphic"
 
 @test fun occursCheckFires () =
-  assertEq (typeOfSource "fun x -> x x")
-           (Err "occurs check: a type would contain itself") "self-application"
+  assertEq
+    (typeOfSource "fun x -> x x")
+    (Err "occurs check: a type would contain itself")
+    "self-application"
 
 @test fun mismatchIsReported () =
   assertEq (typeOfSource "1 + true") (Err "cannot unify Bool with Int") "adding a bool"
@@ -135,24 +135,29 @@ fun loop () =
 
 @test fun recursiveFunctionsType () =
   assertEq
-    (typeOfSource
-      "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5") (Ok "Int") "factorial"
+    (typeOfSource "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5")
+    (Ok "Int")
+    "factorial"
 
 -- --- evaluation --------------------------------------------------------------
 
 @test fun evaluatesArithmetic () =
-  assertEq (map runSource ["1 + 2 * 3", "(1 + 2) * 3", "7 / 2", "1 < 2"])
-           [Ok "7", Ok "9", Ok "3", Ok "true"] "arithmetic"
+  assertEq
+    (map runSource ["1 + 2 * 3", "(1 + 2) * 3", "7 / 2", "1 < 2"])
+    [Ok "7", Ok "9", Ok "3", Ok "true"]
+    "arithmetic"
 
 @test fun evaluatesClosures () =
-  assertEq (runSource "let add = fun x y -> x + y in let inc = add 1 in inc 41")
-           (Ok "42") "partial application captures"
+  assertEq
+    (runSource "let add = fun x y -> x + y in let inc = add 1 in inc 41")
+    (Ok "42")
+    "partial application captures"
 
 @test fun evaluatesRecursion () =
   assertEq
-    (runSource
-      "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10")
-           (Ok "3628800") "factorial"
+    (runSource "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 10")
+    (Ok "3628800")
+    "factorial"
 
 @test fun evaluatesMutualShadowing () =
   assertEq (runSource "let x = 1 in let x = x + 1 in x") (Ok "2") "shadowing sees the old binding"
@@ -164,9 +169,9 @@ fun loop () =
 
 @test fun replReportsTypeAndValue () =
   assertEq
-    (replLine
-      "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5")
-           "120 : Int" "value and type"
+    (replLine "let rec fact n = if n < 2 then 1 else n * fact (n - 1) in fact 5")
+    "120 : Int"
+    "value and type"
 
 @test fun replReportsEachKindOfFailure () =
   let got = map replLine ["1 +", "1 + true", "1 / 0"] in
@@ -174,8 +179,10 @@ fun loop () =
 
 @test fun replRunsUnderWithInput () =
   -- `main`'s own loop, driven by the `Console` effect: no terminal involved.
-  assertEq (withInput ["1 + 1", "let id = fun x -> x in id 41", ":q"] loop) ()
-           "a session plays through"
+  assertEq
+    (withInput ["1 + 1", "let id = fun x -> x in id 41", ":q"] loop)
+    ()
+    "a session plays through"
 
 @test fun levelsPreventUnsoundGeneralization () =
   -- `g`'s type comes from the lambda-bound `f`, so `let` must *not* generalize
@@ -183,9 +190,12 @@ fun loop () =
   -- levels are exactly what reject it.
   assertEq
     (isErr (typeOfSource "fun f -> let g = f in if g true then g 1 else 2"))
-           True "a let whose type escaped into the environment"
+    True
+    "a let whose type escaped into the environment"
 
 @test fun levelsStillGeneralizeWhatTheyShould () =
   -- The same shape, but the right-hand side really is local.
-  assertEq (typeOfSource "let g = fun x -> x in if g true then g 1 else 2")
-           (Ok "Int") "a genuinely local let"
+  assertEq
+    (typeOfSource "let g = fun x -> x in if g true then g 1 else 2")
+    (Ok "Int")
+    "a genuinely local let"

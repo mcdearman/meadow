@@ -4101,7 +4101,7 @@ as it comes.
 | `meadow test --test-threads N`, `--no-capture`                              | …`N` at a time instead of one per core; and writing what they print instead of keeping it for the failures               |
 | `meadow build -p app`, `meadow test --workspace [--exclude app]`            | in a [workspace](#workspaces): the members named, or all of them; `run`, `build`, `test` and `dis` take these            |
 | `meadow init [--workspace] <path>`                                          | create a package, or a workspace; a package made inside a workspace joins it                                             |
-| `meadow fmt <path>`                                                         | re-indent in place                                                                                                       |
+| `meadow fmt <path>`                                                         | format in place                                                                                                          |
 | `meadow fmt --check <path>`                                                 | report, exit 1 if anything differs                                                                                       |
 | `meadow lsp`                                                                | run the language server (editors start this)                                                                             |
 | `meadow update`                                                             | replace the binary with the latest release                                                                               |
@@ -4209,15 +4209,45 @@ falls back to plain syntax highlighting if the executable is not on your `PATH`.
 
 ### The formatter
 
-`meadow fmt` is an _indenter_, not a pretty-printer: it fixes leading and trailing
-whitespace, tabs and blank-line runs, and never moves a token to another line.
-Comments therefore survive exactly as written, and since the grammar is not
-layout-sensitive, formatting cannot change what a program means.
+`meadow fmt` is a pretty-printer, as rustfmt is. It reads a file's tokens and
+prints them again, deciding every line break itself, so the same code comes out
+the same however it was typed, and formatting what is formatted changes nothing.
+No token is added, dropped or reordered, and `meadow fmt` checks that against the
+compiler's own lexer before it writes a file, so formatting cannot change what a
+program means.
 
-Indentation follows structure — brackets, `match` arms lining up with their
-`match`, `then`/`else` with their `if`, `in` with its `let`, two units for an arm
-body on its own line. A line that merely _continues_ the expression above it keeps
-the column you chose, so deliberate alignment survives.
+The rule is rustfmt's: what fits in the width (100 columns; `--width` sets
+another) is one line, and what does not is cut at its outermost joint first.
+
+```meadow
+fun total (orders : [Order]) : Int =
+  V.foldl (\acc o -> acc + o.price * o.count) 0 (V.filter (\o -> o.count > 0) orders)
+
+fun describe n =
+  Decl.Record {
+    name = someFunction n,
+    fields = V.map (\f -> lowerField context f) (fieldsOf n),
+    span = spanOf n
+  }
+```
+
+- A definition is cut after its `=`, a call has what it is given a line each, a
+  function given last starts on the line of the call, and a record is set out as
+  rustfmt sets out a struct.
+- The steps of a `let … in` have a line each, and so do the arms of a `match`; a
+  `match` with two short arms, or one `let` with its body, stays on one line.
+- An `if` keeps its `then` on its line, and each `else` starts one.
+- A `record`, an `effect`, a `trait`, an `impl` and a `mod` have a line to each
+  thing in them, always.
+
+Three things are kept from how the file was written, because its tokens do not
+say them: comments, each with the token it is before or after; one empty line
+where there were any, between declarations, steps and arms; and, inside a macro
+call such as `lang! { … }`, which lines start a new entry, since what a macro
+reads is a language of its own with a rule to a line. Two tokens that touch are
+left touching, so `a+b` and `f -1` stay as they are.
+
+A file whose brackets do not match is only indented.
 
 ---
 

@@ -50,43 +50,35 @@
 
 @pub use Std.Tuple (fst, snd, pair, swap, mapFst, mapSnd)
 
-@pub use Std.Num.Int ( min, max, abs, signum, clamp, succ, pred, even, odd, gcd, lcm,
-)
+@pub use Std.Num.Int (min, max, abs, signum, clamp, succ, pred, even, odd, gcd, lcm,)
 
 @pub use Std.Num.Bits (
-  lowMask, lowBits, bit, testBit, setBit, clearBit, flipBit, byteOf, fromBytes4,
-  countLeadingZeros, countTrailingZeros, rotateLeft, rotateRight,
+  lowMask, lowBits, bit, testBit, setBit, clearBit, flipBit, byteOf, fromBytes4, countLeadingZeros,
+  countTrailingZeros, rotateLeft, rotateRight,
 )
 
 @pub use Std.Bytes (
-  bytesEmpty, bytesLength, bytesIsEmpty, bytesGet, bytesGetOr, bytesSet,
-  bytesPush, bytesPop, bytesSlice, bytesConcat,
-  bytesGetU16LE, bytesGetU16BE, bytesGetU32LE, bytesGetU32BE,
+  bytesEmpty, bytesLength, bytesIsEmpty, bytesGet, bytesGetOr, bytesSet, bytesPush, bytesPop,
+  bytesSlice, bytesConcat, bytesGetU16LE, bytesGetU16BE, bytesGetU32LE, bytesGetU32BE,
   bytesSetU16LE, bytesSetU16BE, bytesSetU32LE, bytesSetU32BE,
 )
 
 @pub use Std.Fs (
-  readToString, readBytes, writeString, writeBytes, appendString, removeFile,
-  createDir, createDirAll, removeDir, removeDirAll, rename, copy, readDir,
-  metadata, exists, isFile, isDir,
+  readToString, readBytes, writeString, writeBytes, appendString, removeFile, createDir,
+  createDirAll, removeDir, removeDirAll, rename, copy, readDir, metadata, exists, isFile, isDir,
   readToStringOr, tryReadDir, existsAll,
 )
 
 @pub use Std.Process (
-  command, withArg, withArgs, withCwd, withEnv, run, runInherit,
-  outputStatus, outputStdout, outputStderr, succeeded,
-  exit, currentPid, argv, getEnv, setEnv, removeEnv,
+  command, withArg, withArgs, withCwd, withEnv, run, runInherit, outputStatus, outputStdout,
+  outputStderr, succeeded, exit, currentPid, argv, getEnv, setEnv, removeEnv,
 )
 
 -- `Vector` is the default sequence.
 @pub use Std.Collections.Vector (
-  vecFromArray,
-  empty, singleton, fromArray, fromList, toArray, toList,
-  len, length, isEmpty, get, getOr, head, last, nth, set,
-  pushBack, pushFront, popBack, popFront,
-  append, splitAt, slice, take, drop,
-  map, filter, foldl, foldr, reverse, updateAt, forEach,
-  range, elem, notElem, sum, product, sumBy, all, any, find,
-  concat, concatMap, replicate, takeWhile, dropWhile, partition,
-  zip, zipWith, unzip, maximum, minimum,
+  vecFromArray, empty, singleton, fromArray, fromList, toArray, toList, len, length, isEmpty, get,
+  getOr, head, last, nth, set, pushBack, pushFront, popBack, popFront, append, splitAt, slice, take,
+  drop, map, filter, foldl, foldr, reverse, updateAt, forEach, range, elem, notElem, sum, product,
+  sumBy, all, any, find, concat, concatMap, replicate, takeWhile, dropWhile, partition, zip,
+  zipWith, unzip, maximum, minimum,
 )

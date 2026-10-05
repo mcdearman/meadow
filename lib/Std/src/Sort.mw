@@ -132,10 +132,8 @@ fun reverseOnto acc xs =
 @pub fun isSorted (v : [a]) : Bool = isSortedBy compare v
 
 fun sortedFrom cmp arr i =
-  if i >= arrayLen arr
-  then True
-  else if isGreater (cmp (arrayGet arr (i - 1)) (arrayGet arr i))
-  then False
+  if i >= arrayLen arr then True
+  else if isGreater (cmp (arrayGet arr (i - 1)) (arrayGet arr i)) then False
   else sortedFrom cmp arr (i + 1)
 
 -- --- the scratch space -------------------------------------------------------
@@ -175,16 +173,15 @@ fun introsort cmp cells lo hi depth =
 fun insertionSort cmp cells lo hi = insertOuter cmp cells lo hi (lo + 1)
 
 fun insertOuter cmp cells lo hi i =
-  if i >= hi
-  then ()
-  else let ignored = insertInner cmp cells lo i in insertOuter cmp cells lo hi (i + 1)
+  if i >= hi then ()
+  else
+    let ignored = insertInner cmp cells lo i in
+    insertOuter cmp cells lo hi (i + 1)
 
 -- Walk `j` down while it is smaller than the element before it.
 fun insertInner cmp cells lo j =
-  if j <= lo
-  then ()
-  else if isLess (cmp (at cells j) (at cells (j - 1)))
-  then
+  if j <= lo then ()
+  else if isLess (cmp (at cells j) (at cells (j - 1))) then
     let ignored = swapAt cells j (j - 1) in
     insertInner cmp cells lo (j - 1)
   else ()
@@ -212,10 +209,10 @@ fun medianOfThree cmp cells lo mid last =
 
 -- `j` scans, `i` is where the next smaller-than-pivot element goes.
 fun lomuto cmp cells j last i pivot =
-  if j >= last
-  then i
-  else if isLess (cmp (at cells j) pivot)
-  then let ignored = swapAt cells i j in lomuto cmp cells (j + 1) last (i + 1) pivot
+  if j >= last then i
+  else if isLess (cmp (at cells j) pivot) then
+    let ignored = swapAt cells i j in
+    lomuto cmp cells (j + 1) last (i + 1) pivot
   else lomuto cmp cells (j + 1) last i pivot
 
 -- --- heapsort ----------------------------------------------------------------
@@ -225,17 +222,20 @@ fun lomuto cmp cells j last i pivot =
 
 fun heapSort cmp cells lo hi =
   let n = hi - lo in
-  if n <= 1
-  then ()
-  else let ignored = buildHeap cmp cells lo n (n / 2 - 1) in popAll cmp cells lo (n - 1)
+  if n <= 1 then ()
+  else
+    let ignored = buildHeap cmp cells lo n (n / 2 - 1) in
+    popAll cmp cells lo (n - 1)
 
 fun buildHeap cmp cells lo n i =
-  if i < 0 then () else let ignored = siftDown cmp cells lo n i in buildHeap cmp cells lo n (i - 1)
+  if i < 0 then ()
+  else
+    let ignored = siftDown cmp cells lo n i in
+    buildHeap cmp cells lo n (i - 1)
 
 -- Repeatedly move the largest to the end and shrink the heap.
 fun popAll cmp cells lo i =
-  if i <= 0
-  then ()
+  if i <= 0 then ()
   else
     let ignored = swapAt cells lo (lo + i) in
     let ignored2 = siftDown cmp cells lo i 0 in
@@ -246,10 +246,12 @@ fun siftDown cmp cells lo n i =
   let l = 2 * i + 1 in
   let r = l + 1 in
   let bigL = if l < n and isGreater (cmp (at cells (lo + l)) (at cells (lo + i))) then l else i in
-  let big = if r < n and isGreater (cmp (at cells (lo + r)) (at cells (lo + bigL))) then r else bigL
-  in if big == i
-     then ()
-     else let ignored = swapAt cells (lo + i) (lo + big) in siftDown cmp cells lo n big
+  let big =
+    if r < n and isGreater (cmp (at cells (lo + r)) (at cells (lo + bigL))) then r else bigL
+  in if big == i then ()
+     else
+       let ignored = swapAt cells (lo + i) (lo + big) in
+       siftDown cmp cells lo n big
 
 -- --- tests -------------------------------------------------------------------
 
@@ -289,8 +291,8 @@ fun siftDown cmp cells lo n i =
 
 @test fun byAndOnAndDesc () =
   let a = assertEq (sortDesc [1, 3, 2]) [3, 2, 1] "descending" in
-  let b = assertEq (sortBy (\x y -> compare y x) [1, 3, 2]) [3, 2, 1] "a reversed comparison"
-  in assertEq (sortOn (\p -> snd p) [(1, 3), (2, 1), (3, 2)]) [(2, 1), (3, 2), (1, 3)] "sortOn"
+  let b = assertEq (sortBy (\x y -> compare y x) [1, 3, 2]) [3, 2, 1] "a reversed comparison" in
+  assertEq (sortOn (\p -> snd p) [(1, 3), (2, 1), (3, 2)]) [(2, 1), (3, 2), (1, 3)] "sortOn"
 
 @test fun theArrayFormSortsInPlaceAndComesBack () =
   let a = assertEq (sortArray #[3, 1, 2]) #[1, 2, 3] "sortArray" in
@@ -311,11 +313,11 @@ fun siftDown cmp cells lo n i =
     assertEq
       (stableSortBy (\x y -> compare (fst x) (fst y)) ps)
       [(0, "b"), (0, "d"), (1, "a"), (1, "c"), (1, "e")]
-      "ties keep their original order" in
-  assertEq
-  (stableSortListBy (\x y -> compare (fst x) (fst y)) (V.toList ps))
-  [(0, "b"); (0, "d"); (1, "a"); (1, "c"); (1, "e")]
-  "and the same for a List"
+      "ties keep their original order"
+  in assertEq
+       (stableSortListBy (\x y -> compare (fst x) (fst y)) (V.toList ps))
+       [(0, "b"); (0, "d"); (1, "a"); (1, "c"); (1, "e")]
+       "and the same for a List"
 
 @test fun theStableSortAgreesWithTheFastOneOnValues () =
   let v = V.map (\i -> (i * 31) % 97) (V.range 0 300) in

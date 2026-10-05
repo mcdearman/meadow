@@ -50,23 +50,88 @@ use Std.Result.Result.*
   lexer Token
   lookahead 5
   tokens {
-    "int" = Int _, "real" = Real _, "string" = Str _, "interp_start" = InterpStart _,
-    "interp_mid" = InterpMid _, "interp_end" = InterpEnd _, "char" = Char _,
-    "lower" = LowerIdent _, "upper" = UpperIdent _, "op" = OpIdent _, "conop" = ConOpIdent _,
-    ".*" as DotStar = OpIdent ".*", "<:" as Subtrait = OpIdent "<:", ":?" as DebugFmt = ConOpIdent ":?",
-    "_" = Wildcard, "\\" = Backslash, "<-" = LArrow, "->" = RArrow,
-    "=>" = FatArrow, "+" = Plus, "-" = Minus, "*" = Star, "/" = Slash, "%" = Percent,
-    "^" = Caret, "and" = And, "or" = Or, "=" = Eq, "==" = EqEq, "!=" = Neq, "<" = Lt,
-    ">" = Gt, "<=" = Leq, ">=" = Geq, "!" = Bang, "declbang" = DeclBang, "," = Comma,
-    "." = Period, ".." = DoublePeriod, "..=" = DoublePeriodEq, "::" = ColonColon,
-    ":" = Colon, ";" = SemiColon, "(" = LParen, ")" = RParen, "{" = LBrace, "}" = RBrace,
-    "[" = LBrack, "]" = RBrack, "#" = Hash, "|" = Bar, "<|" = LPipe, "|>" = RPipe,
-    "@" = At, "`" = Backtick, "$" = Dollar, "mod" = Mod, "end" = End, "use" = Use,
-    "def" = Def, "fun" = Fun, "let" = Let, "in" = In, "match" = Match, "with" = With,
-    "if" = If, "then" = Then, "else" = Else, "data" = Data, "record" = Record,
-    "effect" = Effect, "handle" = Handle, "type" = Type, "trait" = Trait, "impl" = Impl,
-    "where" = Where, "as" = As, "macro" = Macro, "infix" = Infix, "infixl" = Infixl,
-    "infixr" = Infixr, "error" = Error
+    "int" = Int _,
+    "real" = Real _,
+    "string" = Str _,
+    "interp_start" = InterpStart _,
+    "interp_mid" = InterpMid _,
+    "interp_end" = InterpEnd _,
+    "char" = Char _,
+    "lower" = LowerIdent _,
+    "upper" = UpperIdent _,
+    "op" = OpIdent _,
+    "conop" = ConOpIdent _,
+    ".*" as DotStar = OpIdent ".*",
+    "<:" as Subtrait = OpIdent "<:",
+    ":?" as DebugFmt = ConOpIdent ":?",
+    "_" = Wildcard,
+    "\\" = Backslash,
+    "<-" = LArrow,
+    "->" = RArrow,
+    "=>" = FatArrow,
+    "+" = Plus,
+    "-" = Minus,
+    "*" = Star,
+    "/" = Slash,
+    "%" = Percent,
+    "^" = Caret,
+    "and" = And,
+    "or" = Or,
+    "=" = Eq,
+    "==" = EqEq,
+    "!=" = Neq,
+    "<" = Lt,
+    ">" = Gt,
+    "<=" = Leq,
+    ">=" = Geq,
+    "!" = Bang,
+    "declbang" = DeclBang,
+    "," = Comma,
+    "." = Period,
+    ".." = DoublePeriod,
+    "..=" = DoublePeriodEq,
+    "::" = ColonColon,
+    ":" = Colon,
+    ";" = SemiColon,
+    "(" = LParen,
+    ")" = RParen,
+    "{" = LBrace,
+    "}" = RBrace,
+    "[" = LBrack,
+    "]" = RBrack,
+    "#" = Hash,
+    "|" = Bar,
+    "<|" = LPipe,
+    "|>" = RPipe,
+    "@" = At,
+    "`" = Backtick,
+    "$" = Dollar,
+    "mod" = Mod,
+    "end" = End,
+    "use" = Use,
+    "def" = Def,
+    "fun" = Fun,
+    "let" = Let,
+    "in" = In,
+    "match" = Match,
+    "with" = With,
+    "if" = If,
+    "then" = Then,
+    "else" = Else,
+    "data" = Data,
+    "record" = Record,
+    "effect" = Effect,
+    "handle" = Handle,
+    "type" = Type,
+    "trait" = Trait,
+    "impl" = Impl,
+    "where" = Where,
+    "as" = As,
+    "macro" = Macro,
+    "infix" = Infix,
+    "infixl" = Infixl,
+    "infixr" = Infixr,
+    "error" = Error
   }
   context {
     "line_lower" = LowerIdent _ ending DeclBang via Period,
@@ -134,15 +199,89 @@ use Std.Result.Result.*
     BrackGroup = "[" trees:Tt* "]"
     BraceGroup = "{" trees:Tt* "}"
     Tt = Group | TtToken
-    TtToken = token:("int" | "real" | "string" | "interp_start" | "interp_mid" | "interp_end"
-        | "char" | "lower" | "upper" | "line_lower" | "line_upper" | "mac_lower" | "mac_upper" | "op"
-        | "<:" | ".*" | "conop"
-        | ":?" | "pattern" | "rec" | "_" | "\\" | "<-" | "->" | "=>" | "+" | "-" | "*" | "/" | "%"
-        | "^" | "and" | "or" | "=" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "!" | "declbang" | ","
-        | "." | ".." | "..=" | "::" | ":" | ";" | "#" | "|" | "<|" | "|>" | "@" | "`" | "$" | "mod"
-        | "end" | "use" | "def" | "fun" | "let" | "in" | "match" | "with" | "if" | "then" | "else"
-        | "data" | "record" | "effect" | "handle" | "type" | "trait" | "impl" | "where" | "as"
-        | "macro" | "infix" | "infixl" | "infixr" | "error")
+    TtToken =
+      token:("int"
+         | "real"
+         | "string"
+         | "interp_start"
+         | "interp_mid"
+         | "interp_end"
+         | "char"
+         | "lower"
+         | "upper"
+         | "line_lower"
+         | "line_upper"
+         | "mac_lower"
+         | "mac_upper"
+         | "op"
+         | "<:"
+         | ".*"
+         | "conop"
+         | ":?"
+         | "pattern"
+         | "rec"
+         | "_"
+         | "\\"
+         | "<-"
+         | "->"
+         | "=>"
+         | "+"
+         | "-"
+         | "*"
+         | "/"
+         | "%"
+         | "^"
+         | "and"
+         | "or"
+         | "="
+         | "=="
+         | "!="
+         | "<"
+         | ">"
+         | "<="
+         | ">="
+         | "!"
+         | "declbang"
+         | ","
+         | "."
+         | ".."
+         | "..="
+         | "::"
+         | ":"
+         | ";"
+         | "#"
+         | "|"
+         | "<|"
+         | "|>"
+         | "@"
+         | "`"
+         | "$"
+         | "mod"
+         | "end"
+         | "use"
+         | "def"
+         | "fun"
+         | "let"
+         | "in"
+         | "match"
+         | "with"
+         | "if"
+         | "then"
+         | "else"
+         | "data"
+         | "record"
+         | "effect"
+         | "handle"
+         | "type"
+         | "trait"
+         | "impl"
+         | "where"
+         | "as"
+         | "macro"
+         | "infix"
+         | "infixl"
+         | "infixr"
+         | "error")
 
     MacCall = path:MacPath bang:("!" | "declbang") arg:Group
     MacPath = segs:(AnySeg ("." AnySeg)*)
@@ -169,11 +308,20 @@ use Std.Result.Result.*
 
     Type = head:THead arrow:Arrow?
     Arrow = "->" result:Type eff:EffAnnot?
-    THead = con:TCon | paren:TParen | array:TArray | brack:TBrack | recTy:RecTy | var:("lower" | "mac_lower")
+    THead = con:TCon
+      | paren:TParen
+      | array:TArray
+      | brack:TBrack
+      | recTy:RecTy
+      | var:("lower" | "mac_lower")
     TCon = name:("upper" | "mac_upper") args:TAtom*
     TAtom = paren:TParen | array:TArray | brack:TBrack | recTy:RecTy | var:("lower" | "mac_lower")
       | name:("upper" | "mac_upper")
-    HeadTy = paren:TParen | array:TArray | brack:TBrack | var:("lower" | "mac_lower") | name:("upper" | "mac_upper")
+    HeadTy = paren:TParen
+      | array:TArray
+      | brack:TBrack
+      | var:("lower" | "mac_lower")
+      | name:("upper" | "mac_upper")
     TParen = "(" tys:(Type ("," Type)*)? ")"
     TArray = "#" "[" ty:Type "]"
     TBrack = "[" ty:Type ";"? "]"
@@ -194,7 +342,11 @@ use Std.Result.Result.*
     QualTail = "." name:"upper"
     Parg = con:NullCon | arg:Arg
     NullCon = name:"upper" qual:QualTail?
-    Arg = paren:PatParen | recPat:RecPat | var:Vid | wild:"_" | lit:("int" | "real" | "string" | "char")
+    Arg = paren:PatParen
+      | recPat:RecPat
+      | var:Vid
+      | wild:"_"
+      | lit:("int" | "real" | "string" | "char")
       | array:ArrPat | brack:BrackPat | mac:MacCall
     Param = con:NullCon | paren:PatParen | recPat:RecPat | var:Vid | wild:"_"
       | lit:("int" | "real" | "string" | "char") | brack:BrackParam | array:ArrParam
@@ -229,7 +381,21 @@ use Std.Result.Result.*
     -- them grouped in its place (`Fixity`).
     Ops = first:Operand rest:InfixTail*
     InfixTail = op:InfixOp operand:Operand
-    InfixOp = "op" | "<:" | "+" | "-" | "*" | "/" | "%" | "^" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "::"
+    InfixOp = "op"
+      | "<:"
+      | "+"
+      | "-"
+      | "*"
+      | "/"
+      | "%"
+      | "^"
+      | "=="
+      | "!="
+      | "<"
+      | ">"
+      | "<="
+      | ">="
+      | "::"
     Operand = negs:"-"* base:Base
 
     -- An operand: what is applied, and what it is applied to. A macro call

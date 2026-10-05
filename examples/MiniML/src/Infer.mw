@@ -43,10 +43,7 @@ fun newTv counter level =
 -- can afford the walk -- but the same idea.
 fun force t =
   match t with
-  | Ty.Var r ->
-      (match getRef r with
-       | Tv.Link inner -> force inner
-       | Tv.Unbound n l -> t)
+  | Ty.Var r -> (match getRef r with | Tv.Link inner -> force inner | Tv.Unbound n l -> t)
   | other -> other
 
 -- --- unification ----------------------------------------------------------
@@ -72,18 +69,19 @@ fun occursAdjust id level t =
       (match getRef r with
        | Tv.Unbound n l ->
            if n == id then raise "occurs check: a type would contain itself"
-           else if l > level then setRef r (Tv.Unbound n level) else ()
+           else if l > level then setRef r (Tv.Unbound n level)
+           else ()
        | Tv.Link inner -> occursAdjust id level inner)
-  | Ty.Fun a b -> let ignored = occursAdjust id level a in occursAdjust id level b
+  | Ty.Fun a b ->
+      let ignored = occursAdjust id level a in
+      occursAdjust id level b
   | other -> ()
 
 fun unify a b =
   match (force a, force b) with
   | (Ty.Int, Ty.Int) -> ()
   | (Ty.Bool, Ty.Bool) -> ()
-  | (Ty.Fun a1 b1, Ty.Fun a2 b2) ->
-      let ignored = unify a1 a2 in
-      unify b1 b2
+  | (Ty.Fun a1 b1, Ty.Fun a2 b2) -> let ignored = unify a1 a2 in unify b1 b2
   | (Ty.Var r1, Ty.Var r2) ->
       if r1 == r2 then ()
       else
@@ -123,9 +121,7 @@ fun substitute pairs t =
   | Ty.Var r ->
       (match getRef r with
        | Tv.Unbound n l ->
-           (match V.find (\p -> fst p == n) pairs with
-            | Just (id, fresh) -> fresh
-            | None -> t)
+           (match V.find (\p -> fst p == n) pairs with | Just (id, fresh) -> fresh | None -> t)
        | Tv.Link inner -> substitute pairs inner)
   | Ty.Fun a b -> Ty.Fun (substitute pairs a) (substitute pairs b)
   | other -> other
@@ -151,8 +147,7 @@ fun lookupVar env name =
   | None -> raise (S.concat "unbound variable: " name)
 
 fun binOpType op =
-  if op == "+" or op == "-" or op == "*" or op == "/"
-  then (Ty.Int, Ty.Int, Ty.Int)
+  if op == "+" or op == "-" or op == "*" or op == "/" then (Ty.Int, Ty.Int, Ty.Int)
   else (Ty.Int, Ty.Int, Ty.Bool)
 
 fun infer counter env level e =
@@ -162,8 +157,8 @@ fun infer counter env level e =
   | Expr.Var name -> instantiate counter level (lookupVar env name)
   | Expr.Lam param body ->
       let argT = newTv counter level in
-      let bodyT = infer counter ((param, Scheme.Forall V.empty argT) :: env) level body
-      in Ty.Fun argT bodyT
+      let bodyT = infer counter ((param, Scheme.Forall V.empty argT) :: env) level body in
+      Ty.Fun argT bodyT
   | Expr.App f a ->
       let fT = infer counter env level f in
       let aT = infer counter env level a in
@@ -210,6 +205,4 @@ fun infer counter env level e =
 -- unification or an unbound name raised -- `Exn` is doing the unwinding, so
 -- nothing between here and `raise` has to mention failure.
 @pub(pkg) fun typeOf e =
-  toResult (\() ->
-    let counter = newRef 0 in
-    typeName (infer counter [;] 0 e))
+  toResult (\() -> let counter = newRef 0 in typeName (infer counter [;] 0 e))

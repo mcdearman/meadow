@@ -62,7 +62,11 @@ use Code.*
 
 -- A key, and what was held with it.
 @derive(Debug, PartialEq)
-@pub record Key = { @pub code : Code, @pub ctrl : Bool, @pub alt : Bool, @pub shift : Bool,
+@pub record Key = {
+  @pub code : Code,
+  @pub ctrl : Bool,
+  @pub alt : Bool,
+  @pub shift : Bool,
 }
 
 -- What `nextEvent` answers. After `Resized`, `size` says what to.
@@ -111,8 +115,7 @@ use Event.*
 -- Run `body` with `events` for its input and no terminal: once they are used
 -- up every `nextEvent` answers `Closed`. Raw mode is taken to succeed, and the
 -- terminal to be 80 by 24.
-@pub fun withEvents (events : [Event]) (body : () -> a ! { Console | e })
-    : a ! { Console | e } =
+@pub fun withEvents (events : [Event]) (body : () -> a ! { Console | e }) : a ! { Console | e } =
   let feed =
     handle body () with {
       readKey () k -> \next -> (k (encode (V.get events next))) (next + 1),
@@ -136,11 +139,11 @@ fun decode (raw : (Int, String, Int)) : Event =
       else
         Pressed
           (Key {
-            code = codeOf n text,
-            shift = bitAnd held 1 != 0,
-            alt = bitAnd held 2 != 0,
-            ctrl = bitAnd held 4 != 0
-          })
+             code = codeOf n text,
+             shift = bitAnd held 1 != 0,
+             alt = bitAnd held 2 != 0,
+             ctrl = bitAnd held 4 != 0
+           })
 
 fun codeOf (n : Int) (text : String) : Code =
   if n == 1 then Character text
@@ -156,7 +159,9 @@ fun codeOf (n : Int) (text : String) : Code =
   else if n == 12 then End
   else if n == 13 then PageUp
   else if n == 14 then PageDown
-  else if n == 15 then Insert else if n >= 100 then Function (n - 100) else Escape
+  else if n == 15 then Insert
+  else if n >= 100 then Function (n - 100)
+  else Escape
 
 fun encode (event : Maybe Event) : (Int, String, Int) =
   match event with
@@ -165,7 +170,8 @@ fun encode (event : Maybe Event) : (Int, String, Int) =
   | Just Resized -> (20, "", 0)
   | Just (Pasted text) -> (21, text, 0)
   | Just (Pressed k) ->
-      let held = (if k.shift then 1 else 0) + (if k.alt then 2 else 0) + (if k.ctrl then 4 else 0)
+      let held =
+        (if k.shift then 1 else 0) + (if k.alt then 2 else 0) + (if k.ctrl then 4 else 0)
       in (match k.code with
           | Character text -> (1, text, held)
           | Enter -> (2, "", held)
@@ -190,49 +196,37 @@ use Std.Test (assertEq)
 
 @test fun eventsArriveInOrderAndThenTheInputCloses () =
   let events =
-    [ Pressed (key (Character "é")), Pressed (ctrl "f"), Pasted "a\nb", Resized, Pressed (alt Enter)
-    ]
+    [Pressed (key (Character "é")), Pressed (ctrl "f"), Pasted "a\nb", Resized, Pressed (alt Enter)]
   in
-  let got = withEvents events (\() ->
-    let a = nextEvent () in
-    let b = nextEvent () in
-    let c = nextEvent () in
-    let d = nextEvent () in
-    let e = nextEvent () in
-    let f = nextEvent () in
-    [a, b, c, d, e, f]) in
-  assertEq got (V.pushBack events Closed) "each as it was given, then closed"
+  let got =
+    withEvents events (\() ->
+      let a = nextEvent () in
+      let b = nextEvent () in
+      let c = nextEvent () in
+      let d = nextEvent () in
+      let e = nextEvent () in
+      let f = nextEvent () in
+      [a, b, c, d, e, f])
+  in assertEq got (V.pushBack events Closed) "each as it was given, then closed"
 
 @test fun everyKeySurvivesTheCrossing () =
   let keys =
     [
-      Enter,
-      Tab,
-      Backspace,
-      Delete,
-      Escape,
-      Up,
-      Down,
-      Left,
-      Right,
-      Home,
-      End,
-      PageUp,
-      PageDown,
-      Insert,
-      Function 5
+      Enter, Tab, Backspace, Delete, Escape, Up, Down, Left, Right, Home, End, PageUp, PageDown,
+      Insert, Function 5
     ]
   in
   let held = V.map (\c -> Key { code = c, ctrl = True, alt = False, shift = True }) keys in
-  let got = withEvents (V.map (\k -> Pressed k) held) (\() -> V.map (\k -> nextKey ()) held)
-  in assertEq got (V.map (\k -> Just k) held) "its code and what was held"
+  let got = withEvents (V.map (\k -> Pressed k) held) (\() -> V.map (\k -> nextKey ()) held) in
+  assertEq got (V.map (\k -> Just k) held) "its code and what was held"
 
 @test fun nextKeyPassesOverWhatIsNotAKey () =
-  let got = withEvents [Resized, Pasted "p", Pressed (key Up)] (\() ->
-    let a = nextKey () in
-    let b = nextKey () in
-    (a, b)) in
-  assertEq got (Just (key Up), None) "the key, then the end"
+  let got =
+    withEvents [Resized, Pasted "p", Pressed (key Up)] (\() ->
+      let a = nextKey () in
+      let b = nextKey () in
+      (a, b))
+  in assertEq got (Just (key Up), None) "the key, then the end"
 
 @test fun rawModeAndSizeNeedNoTerminal () =
   assertEq

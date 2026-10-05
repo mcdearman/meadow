@@ -83,16 +83,15 @@ syntax! {
   lexer Word
   trivia { Space }
   tokens {
-    "[" = Open, "]" = Close, "program" = Program, "defs" = Defs, "fields" = Fields,
-    "var" = Var, "lam" = Lam, "app" = App, "let" = Let, "letrec" = LetRec, "if" = If,
-    "tuple" = Tuple, "array" = Array, "proj" = Proj, "record" = Record, "sel" = Sel,
-    "extend" = Extend, "ctor" = Ctor, "prim" = Prim, "case" = Case, "when" = When,
-    "perform" = Perform, "handle" = Handle, "return" = Return, "join" = Join, "jump" = Jump,
-    "error" = Error, "const" = Const, "int" = Int, "bigint" = BigInt, "f64" = F64,
-    "f32" = F32, "word" = Word, "str" = Str, "char" = Char, "true" = True, "false" = False,
-    "unit" = Unit, "wild" = Wild, "pvar" = PVar, "pas" = PAs, "plit" = PLit,
-    "ptuple" = PTuple, "parray" = PArray, "pctor" = PCtor, "precord" = PRecord,
-    "number" = Number, "string" = Quoted
+    "[" = Open, "]" = Close, "program" = Program, "defs" = Defs, "fields" = Fields, "var" = Var,
+    "lam" = Lam, "app" = App, "let" = Let, "letrec" = LetRec, "if" = If, "tuple" = Tuple,
+    "array" = Array, "proj" = Proj, "record" = Record, "sel" = Sel, "extend" = Extend,
+    "ctor" = Ctor, "prim" = Prim, "case" = Case, "when" = When, "perform" = Perform,
+    "handle" = Handle, "return" = Return, "join" = Join, "jump" = Jump, "error" = Error,
+    "const" = Const, "int" = Int, "bigint" = BigInt, "f64" = F64, "f32" = F32, "word" = Word,
+    "str" = Str, "char" = Char, "true" = True, "false" = False, "unit" = Unit, "wild" = Wild,
+    "pvar" = PVar, "pas" = PAs, "plit" = PLit, "ptuple" = PTuple, "parray" = PArray,
+    "pctor" = PCtor, "precord" = PRecord, "number" = Number, "string" = Quoted
   }
   grammar {
     File = "program" entry:"number" "defs" defs:Def* "fields" named:Named*
@@ -175,10 +174,8 @@ lang! {
   Term + Ctor { name : String, args : [Term] }
   Term + Prim { op : String, args : [Term] }
   Term + Perform { eff : String, op : String, arg : Term }
-  Term + Handle { body : Term, clauses : [Clause], retId : Maybe Int, ret : Maybe Term
-  }
-  Clause + Clause { eff : String, op : String, param : Int, resume : Int, body : Term
-  }
+  Term + Handle { body : Term, clauses : [Clause], retId : Maybe Int, ret : Maybe Term }
+  Clause + Clause { eff : String, op : String, param : Int, resume : Int, body : Term }
   Term + Join { id : Int, params : [Int], rhs : Term, body : Term }
   Term + Jump { id : Int, args : [Term] }
   Lit + LInt { value : Int }
@@ -266,8 +263,8 @@ fun unquoted (s : String) : String = unescaped (stringSlice s 1 (stringByteLengt
 fun unescaped (s : String) (run : Int) (i : Int) (acc : String) : String =
   if i >= stringByteLength s then acc ++ stringSlice s run i
   else if toInt (stringByteAt s i) == 92 then
-    let code = hex (toInt (stringByteAt s (i + 2))) * 16 + hex (toInt (stringByteAt s (i + 3)))
-    in unescaped s (i + 4) (i + 4) (acc ++ stringSlice s run i ++ C.toString (C.fromCode code))
+    let code = hex (toInt (stringByteAt s (i + 2))) * 16 + hex (toInt (stringByteAt s (i + 3))) in
+    unescaped s (i + 4) (i + 4) (acc ++ stringSlice s run i ++ C.toString (C.fromCode code))
   else unescaped s run (i + 1) acc
 
 fun hex (b : Int) : Int = if b >= 65 then b - 55 else b - 48
@@ -281,8 +278,8 @@ fun f64Of (bits : Int) : Float =
   let magnitude =
     if exponent == 2047 then (if fraction == 0 then 1.0 /. 0.0 else 0.0 /. 0.0)
     else if exponent == 0 then scaled (toFloat fraction) (0 - 1074)
-    else scaled (toFloat (fraction + 4503599627370496)) (exponent - 1075) in
-  if bits < 0 then magnitude *. (0.0 -. 1.0) else magnitude
+    else scaled (toFloat (fraction + 4503599627370496)) (exponent - 1075)
+  in if bits < 0 then magnitude *. (0.0 -. 1.0) else magnitude
 
 -- The `Float32` whose bits are `bits`, as a `Float`, which holds it exactly.
 fun f32Of (bits : Int) : Float =
@@ -291,8 +288,8 @@ fun f32Of (bits : Int) : Float =
   let magnitude =
     if exponent == 255 then (if fraction == 0 then 1.0 /. 0.0 else 0.0 /. 0.0)
     else if exponent == 0 then scaled (toFloat fraction) (0 - 149)
-    else scaled (toFloat (fraction + 8388608)) (exponent - 150) in
-  if bitAnd bits 2147483648 != 0 then magnitude *. (0.0 -. 1.0) else magnitude
+    else scaled (toFloat (fraction + 8388608)) (exponent - 150)
+  in if bitAnd bits 2147483648 != 0 then magnitude *. (0.0 -. 1.0) else magnitude
 
 fun scaled (x : Float) (e : Int) : Float =
   if e > 0 then scaled (x *. 2.0) (e - 1) else if e < 0 then scaled (x *. 0.5) (e + 1) else x

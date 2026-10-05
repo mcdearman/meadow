@@ -40,8 +40,8 @@ use Std.Result.Result.*
 -- A path as a POSIX shell on Windows writes it, `/c/Users`, as Windows does:
 -- `C:/Users`.
 fun fromShell (p : String) : String =
-  if stringByteLength p >= 3 and S.startsWith "/" p and stringSlice p 2 3 == "/"
-  then S.join "" [S.toUpper (stringSlice p 1 2), ":", stringSlice p 2 (stringByteLength p)]
+  if stringByteLength p >= 3 and S.startsWith "/" p and stringSlice p 2 3 == "/" then
+    S.join "" [S.toUpper (stringSlice p 1 2), ":", stringSlice p 2 (stringByteLength p)]
   else p
 
 -- The unit `file` is in: the nearest directory above it with a `Meadow.toml`.
@@ -67,8 +67,8 @@ fun fromShell (p : String) : String =
 fun expansionsOf (dir : String) : [String] ! { Fs, Process | e } =
   match (getEnv "MEADOWBOOT_EXPANSIONS", readToString (manifestOf dir)) with
   | (Just exps, Ok text) ->
-      let p = Path.normalize (Path.join (absolute exps) "${packageName text}.json")
-      in if exists p then [p] else []
+      let p = Path.normalize (Path.join (absolute exps) "${packageName text}.json") in
+      if exists p then [p] else []
   | _ -> []
 
 @pub fun manifestOf (dir : String) : String = Path.normalize (Path.join dir "Meadow.toml")
@@ -76,7 +76,11 @@ fun expansionsOf (dir : String) : [String] ! { Fs, Process | e } =
 -- The name a manifest gives its package.
 @pub fun packageName (text : String) : String =
   match V.find (\(e : Entry) -> e.section == "package" and e.key == "name") (readToml text) with
-  | Just e -> (match e.value with | Text t -> t | Other t -> t | Table _ -> "")
+  | Just e ->
+      (match e.value with
+       | Text t -> t
+       | Other t -> t
+       | Table _ -> "")
   | None -> ""
 
 fun under (dir : String) : [String] ! { Fs | e } =
@@ -87,7 +91,8 @@ fun under (dir : String) : [String] ! { Fs | e } =
         (\n ->
           let p = Path.join dir n in
           if isDir p then (if n == "target" then [] else under p)
-          else if S.endsWith ".mw" n then [Path.normalize p] else [])
+          else if S.endsWith ".mw" n then [Path.normalize p]
+          else [])
         (sort names)
 
 -- The units `dir` depends on, read off its manifest `text`, in a build of the
@@ -105,15 +110,14 @@ fun under (dir : String) : [String] ! { Fs | e } =
         | Ok ds ->
             (match locate root dir e with | Ok d -> Ok (V.pushBack ds d) | Err why -> Err why))
       (Ok [])
-      named in
-  match (found, std) with
-  | (Err why, _) -> Err why
-  | (Ok ds, Just s) -> Ok (if absolute dir == s then ds else V.pushBack ds s)
-  | (Ok ds, None) -> Ok ds
+      named
+  in match (found, std) with
+     | (Err why, _) -> Err why
+     | (Ok ds, Just s) -> Ok (if absolute dir == s then ds else V.pushBack ds s)
+     | (Ok ds, None) -> Ok ds
 
 -- Where dependency `e` of the unit at `dir` is.
-fun locate (root : String) (dir : String) (e : Entry)
-    : Result String String ! { Fs, Process | f } =
+fun locate (root : String) (dir : String) (e : Entry) : Result String String ! { Fs, Process | f } =
   match (field "path" e.value, field "git" e.value) with
   | (Just p, _) -> Ok (Path.normalize (Path.join dir p))
   | (_, Just url) ->
@@ -123,33 +127,34 @@ fun locate (root : String) (dir : String) (e : Entry)
   | _ -> Err "`${e.key}` is neither a `path` nor a `git` dependency"
 
 -- The commit `meadow.lock` pins package `name` at: the root's, or the unit's.
-fun pinned (root : String) (dir : String) (name : String)
-    : Maybe String ! { Fs | e } =
-  let inLock = \d ->
-    match readToString (Path.join d "meadow.lock") with
-    | Ok text ->
-        M.andThen
-          (\(p : Entry) -> field "rev" p.value)
-          (V.find
-            (\(p : Entry) -> p.section == "package" and field "name" p.value == Just name)
-            (tables (readToml text)))
-    | Err _ -> None
+fun pinned (root : String) (dir : String) (name : String) : Maybe String ! { Fs | e } =
+  let inLock =
+    \d ->
+      match readToString (Path.join d "meadow.lock") with
+      | Ok text ->
+          M.andThen
+            (\(p : Entry) -> field "rev" p.value)
+            (V.find
+               (\(p : Entry) -> p.section == "package" and field "name" p.value == Just name)
+               (tables (readToml text)))
+      | Err _ -> None
   in match inLock root with
-  | Just rev -> Just rev
-  | None -> inLock dir
+     | Just rev -> Just rev
+     | None -> inLock dir
 
 -- Where `meadow` checked out commit `rev` of `url`: `git/checkouts/<name>-<hash
 -- of the url>/<rev>` under its home. The directory holding `rev` whose name
 -- starts with the repository's is it: a commit's name is unique.
-fun checkout (url : String) (rev : String)
-    : Result String String ! { Fs, Process | e } =
+fun checkout (url : String) (rev : String) : Result String String ! { Fs, Process | e } =
   match home () with
   | None -> Err "no home directory to find `meadow`'s git checkouts in"
   | Just h ->
       let root = Path.joinAll [h, "git", "checkouts"] in
       let name = repoName url in
       let dirs = (match readDir root with | Ok ns -> ns | Err _ -> []) in
-      match V.find (\d -> S.startsWith (name ++ "-") d and isDir (Path.joinAll [root, d, rev])) (sort dirs) with
+      match V.find
+        (\d -> S.startsWith (name ++ "-") d and isDir (Path.joinAll [root, d, rev]))
+        (sort dirs) with
       | Just d -> Ok (Path.normalize (Path.joinAll [root, d, rev]))
       | None -> Err "${url} at ${rev} has not been fetched: run `meadow build` once"
 
@@ -174,8 +179,10 @@ fun home () : Maybe String ! { Process | e } =
   S.join
     ""
     (V.map
-      (\i -> let c = stringSlice last i (i + 1) in if safe c then c else "-")
-      (V.range 0 (stringByteLength last)))
+       (\i ->
+         let c = stringSlice last i (i + 1) in
+         if safe c then c else "-")
+       (V.range 0 (stringByteLength last)))
 
 fun strip (suffix : String) (s : String) : String =
   if S.endsWith suffix s then stringSlice s 0 (stringByteLength s - stringByteLength suffix) else s
@@ -187,13 +194,21 @@ fun safe (c : String) : Bool =
 -- --- the manifests -----------------------------------------------------------
 
 -- A value: text, a table of texts, or anything else, as written.
-@pub data TomlValue = Text String | Table [(String, String)] | Other String
+@pub data TomlValue
+  = Text String
+  | Table [(String, String)]
+  | Other String
 
 use TomlValue.*
 
 -- A key's value, in the section it is in: `[dependencies]`, or the `n`th
 -- `[[package]]` (-1 in a section that is not one of several).
-@pub record Entry = { section : String, index : Int, key : String, value : TomlValue }
+@pub record Entry = {
+  section : String,
+  index : Int,
+  key : String,
+  value : TomlValue
+}
 
 -- What `key` says in an inline table, or a section of them.
 fun field (key : String) (v : TomlValue) : Maybe String =
@@ -206,104 +221,99 @@ fun tables (es : [Entry]) : [Entry] =
   let indices =
     V.foldl
       (\acc (e : Entry) ->
-        if e.index >= 0
-        and not (V.any (\x -> fst x == e.section and snd x == e.index) acc)
-        then V.pushBack acc (e.section, e.index)
+        if e.index >= 0 and not (V.any (\x -> fst x == e.section and snd x == e.index) acc) then
+          V.pushBack acc (e.section, e.index)
         else acc)
       []
       es
   in V.map
-    (\si ->
-      let kvs =
-        V.concatMap
-          (\(e : Entry) -> if e.section == fst si and e.index == snd si
-            then
-              (match e.value with
-               | Text t -> [(e.key, t)]
-               | Other t -> [(e.key, t)]
-               | Table _ -> [])
-            else [])
-          es
-      in Entry { section = fst si, index = snd si, key = "", value = Table kvs })
-    indices
+       (\si ->
+         let kvs =
+           V.concatMap
+             (\(e : Entry) ->
+               if e.section == fst si and e.index == snd si then
+                 (match e.value with
+                  | Text t -> [(e.key, t)]
+                  | Other t -> [(e.key, t)]
+                  | Table _ -> [])
+               else [])
+             es
+         in Entry { section = fst si, index = snd si, key = "", value = Table kvs })
+       indices
 
 -- The entries of a manifest, as far as `meadow` writes them.
 @pub fun readToml (text : String) : [Entry] =
-  match
-    V.foldl
-      (\acc raw ->
-        match acc with
-        | (section, index, es) ->
-            let l = S.trim (uncommented raw) in
-            if S.isEmpty l then acc
-            else if S.startsWith "[[" l
-            then
-              (let n = S.trim (stringSlice l 2 (stringByteLength l - 2)) in (n, countOf n es, es))
-            else if S.startsWith "[" l
-            then (S.trim (stringSlice l 1 (stringByteLength l - 1)), 0 - 1, es)
-            else
-              (match S.indexOf "=" l with
-               | Just at ->
-                   (
-                     section,
-                     index,
-                     V.pushBack
-                       es
-                       (Entry {
-                         section = section,
-                         index = index,
-                         key = unquoted (S.trim (stringSlice l 0 at)),
-                         value = valueOf (S.trim (stringSlice l (at + 1) (stringByteLength l)))
-                       })
-                   )
-               | None -> acc))
-      ("", 0 - 1, [])
-      (S.lines text) with
-      | (_, _, es) -> es
+  match V.foldl
+    (\acc raw ->
+      match acc with
+      | (section, index, es) ->
+          let l = S.trim (uncommented raw) in
+          if S.isEmpty l then acc
+          else if S.startsWith "[[" l then
+            (let n = S.trim (stringSlice l 2 (stringByteLength l - 2)) in (n, countOf n es, es))
+          else if S.startsWith "[" l then
+            (S.trim (stringSlice l 1 (stringByteLength l - 1)), 0 - 1, es)
+          else
+            (match S.indexOf "=" l with
+             | Just at ->
+                 (
+                   section,
+                   index,
+                   V.pushBack
+                     es
+                     (Entry {
+                        section = section,
+                        index = index,
+                        key = unquoted (S.trim (stringSlice l 0 at)),
+                        value = valueOf (S.trim (stringSlice l (at + 1) (stringByteLength l)))
+                      })
+                 )
+             | None -> acc))
+    ("", 0 - 1, [])
+    (S.lines text) with
+  | (_, _, es) -> es
 
 -- How many `[[n]]` tables were before: the next one's index. One with no
 -- keys yet counts, which `readToml` places by the index it gives it.
 fun countOf (n : String) (es : [Entry]) : Int =
   V.len
     (V.foldl
-      (\acc (e : Entry) -> if e.section == n and not (V.elem e.index acc)
-        then V.pushBack acc e.index
-        else acc)
-      []
-      es)
+       (\acc (e : Entry) ->
+         if e.section == n and not (V.elem e.index acc) then V.pushBack acc e.index else acc)
+       []
+       es)
 
 -- A line without its comment -- a `#` outside quotes.
 fun uncommented (l : String) : String =
   let n = stringByteLength l in
   let rec go i quoted =
-    if i >= n
-    then l
+    if i >= n then l
     else
       (let b = toInt (stringByteAt l i) in
-        if b == 34
-        then go (i + 1) (not quoted)
-        else if b == 35 and not quoted then stringSlice l 0 i else go (i + 1) quoted)
+       if b == 34 then go (i + 1) (not quoted)
+       else if b == 35 and not quoted then stringSlice l 0 i
+       else go (i + 1) quoted)
   in go 0 False
 
 fun valueOf (v : String) : TomlValue =
   if S.startsWith "{" v and S.endsWith "}" v then
     Table
       (V.concatMap
-        (\part ->
-          match S.indexOf "=" part with
-          | Just at ->
-              [(
-                unquoted (S.trim (stringSlice part 0 at)),
-                unquoted (S.trim (stringSlice part (at + 1) (stringByteLength part)))
-              )]
-          | None -> [])
-        (S.split "," (stringSlice v 1 (stringByteLength v - 1))))
+         (\part ->
+           match S.indexOf "=" part with
+           | Just at ->
+               [(
+                 unquoted (S.trim (stringSlice part 0 at)),
+                 unquoted (S.trim (stringSlice part (at + 1) (stringByteLength part)))
+               )]
+           | None -> [])
+         (S.split "," (stringSlice v 1 (stringByteLength v - 1))))
   else if S.startsWith "\"" v then Text (unquoted v)
   else Other v
 
 fun unquoted (s : String) : String =
-  if stringByteLength s >= 2 and S.startsWith "\"" s and S.endsWith "\"" s
-  then stringSlice s 1 (stringByteLength s - 1)
+  if stringByteLength s >= 2 and S.startsWith "\"" s and S.endsWith "\"" s then
+    stringSlice s 1 (stringByteLength s - 1)
   else s
 
 -- --- tests -------------------------------------------------------------------
@@ -315,24 +325,24 @@ use Std.Test (assertEq)
     readToml
       "[package]\nname = \"MeadowBoot\"\n\n[dependencies]\nLingua = { path = \"../../Lingua\" }\nScythe = { git = \"https://github.com/mcdearman/Scythe.git\", branch = \"master\" } # fetched\n"
   in assertEq
-    (V.map
-      (\(e : Entry) -> (e.key, field "path" e.value, field "git" e.value))
-      (V.filter (\(e : Entry) -> e.section == "dependencies") es))
-    [
-      ("Lingua", Just "../../Lingua", None),
-      ("Scythe", None, Just "https://github.com/mcdearman/Scythe.git")
-    ]
-    "a path and a git repository"
+       (V.map
+          (\(e : Entry) -> (e.key, field "path" e.value, field "git" e.value))
+          (V.filter (\(e : Entry) -> e.section == "dependencies") es))
+       [
+         ("Lingua", Just "../../Lingua", None),
+         ("Scythe", None, Just "https://github.com/mcdearman/Scythe.git")
+       ]
+       "a path and a git repository"
 
 @test fun aLockPinsEachPackage () =
   let es =
     readToml
       "version = 1\n\n[[package]]\nname = \"Nettle\"\nrev = \"b59e\"\n\n[[package]]\nname = \"Scythe\"\nrev = \"36e7\"\n"
   in assertEq
-    (V.map (\(t : Entry) -> (field "name" t.value, field "rev" t.value)) (tables es))
-    [(Just "Nettle", Just "b59e"), (Just "Scythe", Just "36e7")]
-    "one table each"
+       (V.map (\(t : Entry) -> (field "name" t.value, field "rev" t.value)) (tables es))
+       [(Just "Nettle", Just "b59e"), (Just "Scythe", Just "36e7")]
+       "one table each"
 
 @test fun aCheckoutIsNamedForItsRepository () =
-  let a = assertEq (repoName "https://github.com/mcdearman/Scythe.git") "Scythe" "without `.git`"
-  in assertEq (repoName "https://github.com/someone/meadow-json/") "meadow-json" "without the slash"
+  let a = assertEq (repoName "https://github.com/mcdearman/Scythe.git") "Scythe" "without `.git`" in
+  assertEq (repoName "https://github.com/someone/meadow-json/") "meadow-json" "without the slash"

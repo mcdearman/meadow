@@ -55,14 +55,10 @@ use Std.Bool (not)
 -- Turn a `Result` back into a throw, so `Result`-returning code can be used
 -- inside an `Exn` computation without a `match` at every call.
 @pub fun ofResult (r : Result a b) : b ! { Exn a | e } =
-  match r with
-  | Err e -> absurd (throw e)
-  | Ok x -> x
+  match r with | Err e -> absurd (throw e) | Ok x -> x
 
 @pub fun ofMaybe (e : a) (o : Maybe b) : b ! { Exn a | e } =
-  match o with
-  | None -> absurd (throw e)
-  | Just x -> x
+  match o with | None -> absurd (throw e) | Just x -> x
 
 -- Throw unless the condition holds.
 @pub fun ensure (cond : Bool) (e : a) : () ! { Exn a | e } = if cond then () else throw e
@@ -90,8 +86,8 @@ fun half n = if n % 2 == 0 then n / 2 else raise "odd"
 
 @test fun catchAndWithDefaultRecover () =
   let a = assertEq (catch (\e -> 0) (\u2 -> half 7)) 0 "catch" in
-  let b = assertEq (catch (\e -> 0) (\u2 -> half 8)) 4 "catch leaves a success alone"
-  in assertEq (withDefault 0 (\u2 -> half 7)) 0 "withDefault"
+  let b = assertEq (catch (\e -> 0) (\u2 -> half 8)) 4 "catch leaves a success alone" in
+  assertEq (withDefault 0 (\u2 -> half 7)) 0 "withDefault"
 
 @test fun toMaybeAndThrew () =
   let a = assertEq (toMaybe (\u2 -> half 8)) (Just 4) "toMaybe success" in
@@ -108,8 +104,8 @@ fun half n = if n % 2 == 0 then n / 2 else raise "odd"
 @test fun ofResultAndOfMaybeLift () =
   let a = assertEq (toResult (\u2 -> ofResult (Ok 1) + 1)) (Ok 2) "ofResult Ok" in
   let b = assertEq (toResult (\u2 -> ofResult (Err "bad") + 1)) (Err "bad") "ofResult Err" in
-  let c = assertEq (toResult (\u2 -> ofMaybe "none" (Just 1))) (Ok 1) "ofMaybe Just"
-  in assertEq (toResult (\u2 -> ofMaybe "none" None)) (Err "none") "ofMaybe None"
+  let c = assertEq (toResult (\u2 -> ofMaybe "none" (Just 1))) (Ok 1) "ofMaybe Just" in
+  assertEq (toResult (\u2 -> ofMaybe "none" None)) (Err "none") "ofMaybe None"
 
 @test fun ensureAndRefute () =
   let a = assertEq (toResult (\u2 -> ensure True "e")) (Ok ()) "ensure holds" in

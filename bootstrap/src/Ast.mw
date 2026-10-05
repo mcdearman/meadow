@@ -12,118 +12,108 @@
 use Lingua (lang!)
 
 @pub(pkg) lang! {
-  pub Ast with In, set
-  Module + Module { decls : [Decl] }
-  Name + Name { text : String }
-
-  Decl + Bind { bind : Bind }
-  Decl + Mod { name : Name }
-  Decl + Use { path : [Name], names : [Name], macros : [Name], glob : Bool, alias : Maybe Name
-  }
-  Decl + Data { name : Name, params : [Name], variants : [Variant] }
-  Decl + Record { name : Name, params : [Name], fields : [Field] }
-  Decl + Effect { name : Name, params : [Name], ops : [Field] }
-  Decl + Alias { name : Name, params : [Name], ty : Type }
-  Decl + EffectAlias { name : Name, params : [Name], row : Row }
-  Decl + Sig { name : Name, ty : Type, bounds : [Bound] }
-  Decl + Trait {
-    name : Name,
-    params : [Name],
-    supers : [Bound],
-    assocs : [Assoc],
-    sigs : [MethodSig],
-    defaults : [Bind]
-  }
-  Decl + Impl { tr : Name, tys : [Type], context : [Bound], assocs : [AssocDef], methods : [Bind]
-  }
-  Decl + Fixity { ops : [Name] }
-  Decl + Attributed { attrs : [Attr], decl : Decl }
-  Decl + MacCall { call : MacCall }
-  Decl + Macro { name : Name }
-
-  Attr + Attr { name : Name, args : [Name], metas : [AttrMeta] }
-  AttrMeta + Word { name : Name }
-  AttrMeta + Text { text : Name }
-  AttrMeta + Value { name : Name, value : Name }
-  AttrMeta + List { name : Name, metas : [AttrMeta] }
-
-  MacCall + MacCall { path : [Name] }
-
-  Variant + Variant {
-    attrs : [Attr],
-    name : Name,
-    named : Bool,
-    positional : [Type],
-    fields : [Field]
-  }
-  Field + Field { attrs : [Attr], name : Name, ty : Type }
-  Bound + Bound { tr : Name, tys : [Type] }
-  Assoc + Assoc { name : Name, params : [Name] }
-  AssocDef + AssocDef { name : Name, args : [Type], ty : Type }
-  MethodSig + MethodSig { name : Name, ty : Type }
-
-  Type + Var { name : Name }
-  Type + Con { name : Name, args : [Type] }
-  Type + Fun { params : [Type], result : Type, row : Maybe Row }
-  Type + Tuple { items : [Type] }
-  Type + Vector { item : Type }
-  Type + List { item : Type }
-  Type + Record { fields : [TypeField], tail : Maybe Name }
-  TypeField + TypeField { name : Name, ty : Type }
-  Row + Row { labels : [Label], tail : Maybe Name }
-  Label + Label { name : Name, args : [Type] }
-
-  Bind + Pat { pat : Pat, value : Expr }
-  Bind + Fun { name : Name, params : [Pat], ret : Maybe Type, body : Expr }
-
-  Lit + Int { text : String }
-  Lit + Float { text : String }
-  Lit + String { text : String }
-  Lit + Char { text : String }
-
-  Pat + Wild { }
-  Pat + Var { name : Name }
-  Pat + Ann { pat : Pat, ty : Type }
-  Pat + Lit { lit : Lit }
-  Pat + As { name : Name, pat : Pat }
-  Pat + Cons { name : Name, args : [Pat] }
-  Pat + QualCons { qual : Name, name : Name, args : [Pat] }
-  Pat + Tuple { items : [Pat] }
-  Pat + Array { items : [Pat] }
-  Pat + Vector { items : [Pat] }
-  Pat + List { items : [Pat] }
-  Pat + Record { fields : [PatField], open : Bool }
-  Pat + Unit { }
-  Pat + View { fn : Expr, pat : Pat }
-  Pat + MacCall { call : MacCall }
-  PatField + PatField { name : Name, pat : Pat }
-
-  Expr + Var { name : Name }
-  Expr + Lit { lit : Lit }
-  Expr + Interp { texts : [String], holes : [Hole] }
-  Expr + Lam { params : [Pat], body : Expr }
-  Expr + App { func : Expr, args : [Expr] }
-  Expr + Let { binds : [Bind], body : Expr }
-  Expr + If { cond : Expr, yes : Expr, no : Expr }
-  Expr + Match { scrutinee : Expr, arms : [Arm] }
-  Expr + Neg { op : Name, operand : Expr }
-  Expr + And { op : Name, lhs : Expr, rhs : Expr }
-  Expr + Or { op : Name, lhs : Expr, rhs : Expr }
-  Expr + Tuple { items : [Expr] }
-  Expr + Array { items : [Expr] }
-  Expr + List { items : [Expr] }
-  Expr + Cons { name : Name, args : [Expr] }
-  Expr + Qual { qual : Name, name : Name }
-  Expr + Record { fields : [ExprField], base : Maybe Expr }
-  Expr + Update { base : Expr, fields : [ExprField] }
-  Expr + Proj { target : Expr, label : Name }
-  Expr + Handle { body : Expr, arms : [HArm], ret : Maybe Ret }
-  Expr + Unit { }
-  Expr + Hole { }
-  Expr + MacCall { call : MacCall }
-  Hole + Hole { expr : Expr, debug : Bool }
-  Arm + Arm { pat : Pat, guard : Maybe Expr, body : Expr }
-  HArm + HArm { op : Name, param : Pat, resume : Name, body : Expr }
-  Ret + Ret { pat : Pat, body : Expr }
-  ExprField + ExprField { name : Name, value : Expr }
+  pub Ast with In,
+  set Module
+    + Module { decls : [Decl] } Name
+    + Name { text : String } Decl
+    + Bind { bind : Bind } Decl
+    + Mod { name : Name } Decl
+    + Use { path : [Name], names : [Name], macros : [Name], glob : Bool, alias : Maybe Name } Decl
+    + Data { name : Name, params : [Name], variants : [Variant] } Decl
+    + Record { name : Name, params : [Name], fields : [Field] } Decl
+    + Effect { name : Name, params : [Name], ops : [Field] } Decl
+    + Alias { name : Name, params : [Name], ty : Type } Decl
+    + EffectAlias { name : Name, params : [Name], row : Row } Decl
+    + Sig { name : Name, ty : Type, bounds : [Bound] } Decl
+    + Trait
+      {
+        name : Name,
+        params : [Name],
+        supers : [Bound],
+        assocs : [Assoc],
+        sigs : [MethodSig],
+        defaults : [Bind]
+      }
+      Decl
+    + Impl
+      { tr : Name, tys : [Type], context : [Bound], assocs : [AssocDef], methods : [Bind] }
+      Decl
+    + Fixity { ops : [Name] } Decl
+    + Attributed { attrs : [Attr], decl : Decl } Decl
+    + MacCall { call : MacCall } Decl
+    + Macro { name : Name } Attr
+    + Attr { name : Name, args : [Name], metas : [AttrMeta] } AttrMeta
+    + Word { name : Name } AttrMeta
+    + Text { text : Name } AttrMeta
+    + Value { name : Name, value : Name } AttrMeta
+    + List { name : Name, metas : [AttrMeta] } MacCall
+    + MacCall { path : [Name] } Variant
+    + Variant
+      { attrs : [Attr], name : Name, named : Bool, positional : [Type], fields : [Field] }
+      Field
+    + Field { attrs : [Attr], name : Name, ty : Type } Bound
+    + Bound { tr : Name, tys : [Type] } Assoc
+    + Assoc { name : Name, params : [Name] } AssocDef
+    + AssocDef { name : Name, args : [Type], ty : Type } MethodSig
+    + MethodSig { name : Name, ty : Type } Type
+    + Var { name : Name } Type
+    + Con { name : Name, args : [Type] } Type
+    + Fun { params : [Type], result : Type, row : Maybe Row } Type
+    + Tuple { items : [Type] } Type
+    + Vector { item : Type } Type
+    + List { item : Type } Type
+    + Record { fields : [TypeField], tail : Maybe Name } TypeField
+    + TypeField { name : Name, ty : Type } Row
+    + Row { labels : [Label], tail : Maybe Name } Label
+    + Label { name : Name, args : [Type] } Bind
+    + Pat { pat : Pat, value : Expr } Bind
+    + Fun { name : Name, params : [Pat], ret : Maybe Type, body : Expr } Lit
+    + Int { text : String } Lit
+    + Float { text : String } Lit
+    + String { text : String } Lit
+    + Char { text : String } Pat
+    + Wild {} Pat
+    + Var { name : Name } Pat
+    + Ann { pat : Pat, ty : Type } Pat
+    + Lit { lit : Lit } Pat
+    + As { name : Name, pat : Pat } Pat
+    + Cons { name : Name, args : [Pat] } Pat
+    + QualCons { qual : Name, name : Name, args : [Pat] } Pat
+    + Tuple { items : [Pat] } Pat
+    + Array { items : [Pat] } Pat
+    + Vector { items : [Pat] } Pat
+    + List { items : [Pat] } Pat
+    + Record { fields : [PatField], open : Bool } Pat
+    + Unit {} Pat
+    + View { fn : Expr, pat : Pat } Pat
+    + MacCall { call : MacCall } PatField
+    + PatField { name : Name, pat : Pat } Expr
+    + Var { name : Name } Expr
+    + Lit { lit : Lit } Expr
+    + Interp { texts : [String], holes : [Hole] } Expr
+    + Lam { params : [Pat], body : Expr } Expr
+    + App { func : Expr, args : [Expr] } Expr
+    + Let { binds : [Bind], body : Expr } Expr
+    + If { cond : Expr, yes : Expr, no : Expr } Expr
+    + Match { scrutinee : Expr, arms : [Arm] } Expr
+    + Neg { op : Name, operand : Expr } Expr
+    + And { op : Name, lhs : Expr, rhs : Expr } Expr
+    + Or { op : Name, lhs : Expr, rhs : Expr } Expr
+    + Tuple { items : [Expr] } Expr
+    + Array { items : [Expr] } Expr
+    + List { items : [Expr] } Expr
+    + Cons { name : Name, args : [Expr] } Expr
+    + Qual { qual : Name, name : Name } Expr
+    + Record { fields : [ExprField], base : Maybe Expr } Expr
+    + Update { base : Expr, fields : [ExprField] } Expr
+    + Proj { target : Expr, label : Name } Expr
+    + Handle { body : Expr, arms : [HArm], ret : Maybe Ret } Expr
+    + Unit {} Expr
+    + Hole {} Expr
+    + MacCall { call : MacCall } Hole
+    + Hole { expr : Expr, debug : Bool } Arm
+    + Arm { pat : Pat, guard : Maybe Expr, body : Expr } HArm
+    + HArm { op : Name, param : Pat, resume : Name, body : Expr } Ret
+    + Ret { pat : Pat, body : Expr } ExprField
+    + ExprField { name : Name, value : Expr }
 }

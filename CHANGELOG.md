@@ -20,8 +20,15 @@ beyond the last release is under _Unreleased_.
   `#![feature(…)]` is at the top of a crate's. `features = ["ffi"]` under
   `[package]` is an error that says so. A lone file that uses `Std.Ffi` asks
   the same way; a nightly let it through unasked before.
-- `meadow fmt` cuts lines longer than 100 columns by default, as rustfmt does.
-  It was 80. `--width 80` asks for the old width.
+- `meadow fmt` prints a file from its tokens, as rustfmt does, and no longer
+  keeps the line breaks it was written with: the same code comes out the same
+  however it was typed. What fits in the width is one line and what does not
+  is cut at its outermost joint first. Every file it formatted before is
+  formatted differently now; run it once over a project. It kept the lines a
+  file had, and cut or joined them by rules that depended on where they were,
+  so two layouts of one function could both count as formatted.
+- `meadow fmt` keeps lines within 100 columns by default, as rustfmt does. It
+  was 80. `--width 80` asks for the old width.
 
 ### Added
 
@@ -36,19 +43,16 @@ beyond the last release is under _Unreleased_.
   feature the package does not declare is an error that lists the ones it has.
 - `meadow fmt` sets a record out as rustfmt sets out a struct: its brace on the
   line of what it belongs to, a field to a line, and the closing brace back
-  under the start of that line.
+  under the start of that line. A function given last to a call starts on the
+  call's line, as a closure does there.
 - `meadow fmt` puts what is written over several lines back on one when it fits
-  the width, as rustfmt does: a definition and its body, a call and its
-  arguments, an arm and what it answers, a record and its fields, an `if` and
-  its branches. A `match`'s arms, a `data`'s variants, the items of a `trait`
-  or an `impl`, and the steps of a `let … in` sequence keep a line each.
-- `meadow fmt` puts what a `let` binds back on the `let`'s line when it fits
-  the width there, and the `in` after it when that fits too.
-- Formatting on save in an editor does what `meadow fmt` does: it cuts and
-  joins lines as well as indenting. It only indented before.
+  the width: a definition and its body, a call and its arguments, an arm and
+  what it answers, a record and its fields, an `if` and its branches. The
+  steps of a `let … in` have a line each, and the arms of a `match`, unless
+  there are two short ones.
+- Formatting on save in an editor does what `meadow fmt` does.
 - `meadow fmt` puts a space between a name and a `{` written against it,
-  `Ctor{` to `Ctor {`, and indents what follows a bracket that ends its line
-  by one level.
+  `Ctor{` to `Ctor {`.
 - The REPL starts with a short banner, so its name is still on the screen at
   the first prompt, and `:help` lists the commands and the keys.
 - The REPL's banner and the tutorial say which keys force a new line on macOS:

@@ -46,17 +46,8 @@
 -- Unix only, so far: on Windows `open` answers `Err`.
 
 use Std.Process (
-  Process,
-  ffiOpen,
-  ffiSymbol,
-  ffiCall,
-  ffiAlloc,
-  ffiFree,
-  ffiWriteInts,
-  ffiReadInts,
-  ffiWriteFloats,
-  ffiReadFloats,
-  ffiReadText
+  Process, ffiOpen, ffiSymbol, ffiCall, ffiAlloc, ffiFree, ffiWriteInts, ffiReadInts,
+  ffiWriteFloats, ffiReadFloats, ffiReadText
 )
 use Std.Collections.Vector as V
 use Std.Collections.Vector (vecFromArray)
@@ -94,13 +85,10 @@ use Std.Result.Result.*
   | Err why -> Err why
 
 -- The function `name` in `library`.
-@pub fun function (library : Library) (name : String)
-    : Result String Function ! { Process | e } =
+@pub fun function (library : Library) (name : String) : Result String Function ! { Process | e } =
   match library with
   | Library lib ->
-      (match ffiSymbol (lib, name) with
-       | Ok at -> Ok (Function at)
-       | Err why -> Err why)
+      (match ffiSymbol (lib, name) with | Ok at -> Ok (Function at) | Err why -> Err why)
 
 fun wire (a : Arg) : (Int, Int, Float, String) =
   match a with
@@ -109,43 +97,38 @@ fun wire (a : Arg) : (Int, Int, Float, String) =
   | Arg.Float x -> (1, 0, x, "")
   | Arg.String s -> (2, 0, 0.0, s)
 
-fun invoke (f : Function) (answer : Int) (args : [Arg]) : Result String
-    (Int, Float, String) ! { Process | e } =
+fun invoke (f : Function) (answer : Int) (args : [Arg])
+    : Result String (Int, Float, String) ! { Process | e } =
   match f with
   | Function at -> ffiCall (at, answer, V.map wire args)
 
 -- Call a function that answers nothing.
-@pub fun callUnit (f : Function) (args : [Arg]) : Result String
-    () ! { Process | e } =
+@pub fun callUnit (f : Function) (args : [Arg]) : Result String () ! { Process | e } =
   match invoke f 0 args with
   | Ok _ -> Ok ()
   | Err why -> Err why
 
 -- Call a function that answers an integer.
-@pub fun callInt (f : Function) (args : [Arg])
-    : Result String Int ! { Process | e } =
+@pub fun callInt (f : Function) (args : [Arg]) : Result String Int ! { Process | e } =
   match invoke f 1 args with
   | Ok (n, _, _) -> Ok n
   | Err why -> Err why
 
 -- Call a function that answers a pointer.
-@pub fun callPtr (f : Function) (args : [Arg])
-    : Result String Ptr ! { Process | e } =
+@pub fun callPtr (f : Function) (args : [Arg]) : Result String Ptr ! { Process | e } =
   match invoke f 1 args with
   | Ok (n, _, _) -> Ok (Ptr n)
   | Err why -> Err why
 
 -- Call a function that answers a `double`. One that answers a `float` cannot
 -- be called this way: its answer is half the size.
-@pub fun callFloat (f : Function) (args : [Arg])
-    : Result String Float ! { Process | e } =
+@pub fun callFloat (f : Function) (args : [Arg]) : Result String Float ! { Process | e } =
   match invoke f 2 args with
   | Ok (_, x, _) -> Ok x
   | Err why -> Err why
 
 -- Call a function that answers a C string, which is copied.
-@pub fun callString (f : Function) (args : [Arg])
-    : Result String String ! { Process | e } =
+@pub fun callString (f : Function) (args : [Arg]) : Result String String ! { Process | e } =
   match invoke f 3 args with
   | Ok (_, _, s) -> Ok s
   | Err why -> Err why
@@ -159,38 +142,34 @@ fun invoke (f : Function) (answer : Int) (args : [Arg]) : Result String
 @pub fun free (p : Ptr) : () ! { Process | e } = ffiFree (address p)
 
 -- Run `body` with `bytes` bytes of memory, freed after.
-@pub fun withBuffer (bytes : Int) (body : Ptr -> a ! { Process | e })
-    : a ! { Process | e } =
+@pub fun withBuffer (bytes : Int) (body : Ptr -> a ! { Process | e }) : a ! { Process | e } =
   let p = alloc bytes in
   let answer = body p in
   let _ = free p in
   answer
 
 -- Write `xs` from `p` on, each as an integer of `width` bytes: 1, 2, 4 or 8.
-@pub fun writeInts (p : Ptr) (width : Int) (xs : [Int]) : Result String
-    () ! { Process | e } =
+@pub fun writeInts (p : Ptr) (width : Int) (xs : [Int]) : Result String () ! { Process | e } =
   ffiWriteInts (address p, width, xs)
 
 -- Read `count` signed integers of `width` bytes from `p`.
-@pub fun readInts (p : Ptr) (width : Int) (count : Int) : Result String
-    [Int] ! { Process | e } =
+@pub fun readInts (p : Ptr) (width : Int) (count : Int) : Result String [Int] ! { Process | e } =
   ffiReadInts (address p, width, True, count)
 
 -- Read `count` unsigned integers of `width` bytes from `p`: bytes, with a
 -- width of 1.
-@pub fun readUnsigned (p : Ptr) (width : Int) (count : Int) : Result String
-    [Int] ! { Process | e } =
+@pub fun readUnsigned (p : Ptr) (width : Int) (count : Int)
+    : Result String [Int] ! { Process | e } =
   ffiReadInts (address p, width, False, count)
 
 -- Write `xs` from `p` on, each as a float of `width` bytes: 4 for a C
 -- `float`, 8 for a `double`.
-@pub fun writeFloats (p : Ptr) (width : Int) (xs : [Float]) : Result String
-    () ! { Process | e } =
+@pub fun writeFloats (p : Ptr) (width : Int) (xs : [Float]) : Result String () ! { Process | e } =
   ffiWriteFloats (address p, width, xs)
 
 -- Read `count` floats of `width` bytes from `p`.
-@pub fun readFloats (p : Ptr) (width : Int) (count : Int) : Result String
-    [Float] ! { Process | e } =
+@pub fun readFloats (p : Ptr) (width : Int) (count : Int)
+    : Result String [Float] ! { Process | e } =
   ffiReadFloats (address p, width, count)
 
 -- The `bytes` bytes at `p`, as text.
@@ -256,19 +235,21 @@ fun cFunction (name : String) =
   match cFunction "memset" with
   | Err why -> noC why "the C library has memset"
   | Ok memset ->
-      let got = withBuffer 16 (\p ->
-        let _ = callPtr memset [Arg.Ptr p, Arg.Int 104, Arg.Int 3] in
-        (readText p 3, readUnsigned p 1 4)) in
-      assertEq got ("hhh", Ok [104, 104, 104, 0]) "three bytes set, the fourth as it was"
+      let got =
+        withBuffer 16 (\p ->
+          let _ = callPtr memset [Arg.Ptr p, Arg.Int 104, Arg.Int 3] in
+          (readText p 3, readUnsigned p 1 4))
+      in assertEq got ("hhh", Ok [104, 104, 104, 0]) "three bytes set, the fourth as it was"
 
 @test fun numbersAreWrittenAndReadAtTheirWidth () =
   if hasC () then
-    let got = withBuffer 32 (\p ->
-      let _ = writeFloats p 4 [1.5, 2.25] in
-      let floats = readFloats p 4 2 in
-      let _ = writeInts (offset p 16) 2 [0 - 1, 513] in
-      (floats, readInts (offset p 16) 2 2, readUnsigned (offset p 16) 1 4)) in
-    assertEq got (Ok [1.5, 2.25], Ok [0 - 1, 513], Ok [255, 255, 1, 2]) "as C floats and shorts"
+    let got =
+      withBuffer 32 (\p ->
+        let _ = writeFloats p 4 [1.5, 2.25] in
+        let floats = readFloats p 4 2 in
+        let _ = writeInts (offset p 16) 2 [0 - 1, 513] in
+        (floats, readInts (offset p 16) 2 2, readUnsigned (offset p 16) 1 4))
+    in assertEq got (Ok [1.5, 2.25], Ok [0 - 1, 513], Ok [255, 255, 1, 2]) "as C floats and shorts"
   else ()
 
 @test fun whatIsNotThereIsSaid () =
@@ -278,13 +259,11 @@ fun cFunction (name : String) =
         (match open "/no/such/library.dylib" with | Err _ -> True | Ok _ -> False)
         "no such library"
     in match libc () with
-    | Err why -> noC why "the C library opens"
-    | Ok l ->
-        assertTrue
-          (match function l "meadow_no_such_function" with
-           | Err _ -> True
-           | Ok _ -> False)
-          "no such function"
+       | Err why -> noC why "the C library opens"
+       | Ok l ->
+           assertTrue
+             (match function l "meadow_no_such_function" with | Err _ -> True | Ok _ -> False)
+             "no such function"
   else ()
 
 @test fun aLibraryThatIsNotThereIsAnError () =

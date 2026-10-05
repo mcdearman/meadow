@@ -49,9 +49,7 @@ use HNode.*
 -- An occupied slot: an entry with its key's hash, or the node below.
 use HSlot.*
 @derive(Debug, Display, PartialEq, Eq)
-@pub data HSlot k v
-  = Entry Int k v
-  | Child (HNode k v)
+@pub data HSlot k v = Entry Int k v | Child (HNode k v)
 
 -- A 64-bit hash, five bits a level: levels 0 to 12 exhaust it.
 def bitsPerLevel = 5
@@ -80,7 +78,8 @@ fun arrayFold f acc xs =
 -- The index of the pair whose key is `k`, if there is one.
 fun pairIndex k pairs =
   let n = arrayLen pairs in
-  let rec go i = if i >= n then None else if fst (arrayGet pairs i) == k then Just i else go (i + 1)
+  let rec go i =
+    if i >= n then None else if fst (arrayGet pairs i) == k then Just i else go (i + 1)
   in go 0
 
 -- --- slots -------------------------------------------------------------------
@@ -108,20 +107,14 @@ fun lookupIn h shift k node =
          | Entry eh ek ev if eh == h and ek == k -> Just ev
          | Entry _ _ _ -> None)
   | Collision ch pairs if ch == h ->
-      (match pairIndex k pairs with
-       | Just i -> Just (snd (arrayGet pairs i))
-       | None -> None)
+      (match pairIndex k pairs with | Just i -> Just (snd (arrayGet pairs i)) | None -> None)
   | Collision _ _ -> None
 
 @pub fun member (k : a) (m : HashMap a b) : Bool =
-  match lookup k m with
-  | Just v -> True
-  | None -> False
+  match lookup k m with | Just v -> True | None -> False
 
 @pub fun getOr (default : a) (k : b) (m : HashMap b a) : a =
-  match lookup k m with
-  | Just v -> v
-  | None -> default
+  match lookup k m with | Just v -> v | None -> default
 
 -- --- writing -----------------------------------------------------------------
 
@@ -166,10 +159,8 @@ fun split shift h1 k1 v1 h2 k2 v2 =
   else
     let i1 = bitAnd (h1 >>> shift) 31 in
     let i2 = bitAnd (h2 >>> shift) 31 in
-    if i1 == i2
-    then Bitmap (1 << i1) #[Child (split (shift + bitsPerLevel) h1 k1 v1 h2 k2 v2)]
-    else if i1 < i2
-    then Bitmap (bitOr (1 << i1) (1 << i2)) #[Entry h1 k1 v1, Entry h2 k2 v2]
+    if i1 == i2 then Bitmap (1 << i1) #[Child (split (shift + bitsPerLevel) h1 k1 v1 h2 k2 v2)]
+    else if i1 < i2 then Bitmap (bitOr (1 << i1) (1 << i2)) #[Entry h1 k1 v1, Entry h2 k2 v2]
     else Bitmap (bitOr (1 << i1) (1 << i2)) #[Entry h2 k2 v2, Entry h1 k1 v1]
 
 -- Remove `k`, if it is there.
@@ -211,9 +202,7 @@ fun collapse node =
   | Collision ch pairs if arrayLen pairs == 1 ->
       (match arrayGet pairs 0 with | (k, v) -> Entry ch k v)
   | Bitmap _ slots if arrayLen slots == 1 ->
-      (match arrayGet slots 0 with
-       | Entry _ _ _ as entry -> entry
-       | Child _ -> Child node)
+      (match arrayGet slots 0 with | Entry _ _ _ as entry -> entry | Child _ -> Child node)
   | _ -> Child node
 
 -- Apply `f` to what `k` holds, if it holds anything.
@@ -223,16 +212,14 @@ fun collapse node =
   | None -> m
 
 -- `insert`, combining with an existing value as `f new old`.
-@pub fun insertWith (f : a -> a -> a ! e) (k : b) (v : a) (m : HashMap b a)
-    : HashMap b a ! e =
+@pub fun insertWith (f : a -> a -> a ! e) (k : b) (v : a) (m : HashMap b a) : HashMap b a ! e =
   match lookup k m with
   | Just old -> insert k (f v old) m
   | None -> insert k v m
 
 -- Decide what `k` holds from what it held: `f` gets `Just` the value or `None`,
 -- and answers `Just` a value to store or `None` to remove the key.
-@pub fun alter (f : Maybe a -> Maybe a ! e) (k : b) (m : HashMap b a)
-    : HashMap b a ! e =
+@pub fun alter (f : Maybe a -> Maybe a ! e) (k : b) (m : HashMap b a) : HashMap b a ! e =
   match f (lookup k m) with
   | Just v -> insert k v m
   | None -> delete k m
@@ -249,9 +236,10 @@ fun foldNode f acc node =
   | Collision ch pairs -> arrayFold (\a p -> match p with | (k, v) -> f a k v) acc pairs
   | Bitmap bitmap slots ->
       arrayFold
-        (\a s -> match s with
-                 | Entry h k v -> f a k v
-                 | Child sub -> foldNode f a sub)
+        (\a s ->
+          match s with
+          | Entry h k v -> f a k v
+          | Child sub -> foldNode f a sub)
         acc
         slots
 
@@ -275,8 +263,7 @@ fun foldNode f acc node =
 
 -- Transform every value, keeping the keys and the shape.
 @pub fun map (f : a -> b ! e) (m : HashMap c a) : HashMap c b ! e =
-  match m with
-  | HashMap n root -> HashMap n (mapNode f root)
+  match m with | HashMap n root -> HashMap n (mapNode f root)
 
 fun mapNode f node =
   match node with
@@ -286,16 +273,15 @@ fun mapNode f node =
       Bitmap
         bitmap
         (arrayFold
-          (\acc s ->
-            arrayPush
-              acc
-              (match s with | Entry h k v -> Entry h k (f v) | Child sub -> Child (mapNode f sub)))
-          #[]
-          slots)
+           (\acc s ->
+             arrayPush
+               acc
+               (match s with | Entry h k v -> Entry h k (f v) | Child sub -> Child (mapNode f sub)))
+           #[]
+           slots)
 
 -- The entries `keep key value` accepts.
-@pub fun filter (keep : a -> b -> Bool ! e) (m : HashMap a b)
-    : HashMap a b ! e =
+@pub fun filter (keep : a -> b -> Bool ! e) (m : HashMap a b) : HashMap a b ! e =
   foldl (\acc k v -> if keep k v then acc else delete k acc) m m
 
 -- Every entry of both; where a key is in both, `b`'s value wins.
@@ -334,15 +320,16 @@ def sample = fromVec [("one", 1), ("two", 2), ("three", 3)]
   let a = assertEq (lookup "two" m) None "deleted" in
   let b = assertEq (lookup "three" m) (Just 3) "the rest survive" in
   let c = assertEq (size m) 2 "size drops" in
-  let d = assertEq (size (delete "nine" sample)) 3 "deleting a missing key changes nothing"
-  in assertTrue (isEmpty (delete "one" (singleton "one" 1))) "down to empty"
+  let d = assertEq (size (delete "nine" sample)) 3 "deleting a missing key changes nothing" in
+  assertTrue (isEmpty (delete "one" (singleton "one" 1))) "down to empty"
 
 @test fun manyKeysSurviveGrowthAndShrinking () =
   -- Two thousand keys is several levels deep, and far past one node.
   let n = 2000 in
   let full = V.foldl (\m i -> insert i (i * i) m) empty (V.range 0 n) in
   let a = assertEq (size full) n "every key counted once" in
-  let b = assertTrue (V.all (\i -> lookup i full == Just (i * i)) (V.range 0 n)) "every key found"
+  let b =
+    assertTrue (V.all (\i -> lookup i full == Just (i * i)) (V.range 0 n)) "every key found"
   in
   let c = assertEq (lookup n full) None "and nothing else" in
   let half = V.foldl (\m i -> delete (i * 2) m) full (V.range 0 (n / 2)) in
@@ -383,7 +370,9 @@ def sample = fromVec [("one", 1), ("two", 2), ("three", 3)]
 
 -- A key is anything `PartialEq`: a record of its own derives it.
 @derive(PartialEq)
-record Person = { name : String }
+record Person = {
+  name : String
+}
 
 @test fun collidingHashesShareANode () =
   -- Force every key onto one hash, which no real hash of these keys gives: they
@@ -392,7 +381,8 @@ record Person = { name : String }
   let h = 12345 in
   let m = V.foldl (\acc i -> insertHashed h i (i * 10) acc) empty (V.range 0 5) in
   let a = assertEq (size m) 5 "five colliding keys" in
-  let b = assertTrue (V.all (\i -> lookupHashed h i m == Just (i * 10)) (V.range 0 5)) "each found"
+  let b =
+    assertTrue (V.all (\i -> lookupHashed h i m == Just (i * 10)) (V.range 0 5)) "each found"
   in
   let c = assertEq (lookupHashed h 9 m) None "a colliding key that is not there" in
   let m2 = insertHashed h 3 99 m in
@@ -412,8 +402,8 @@ record Person = { name : String }
       (Just 11)
       "insertWith"
   in
-  let d = assertEq (lookup "nine" (alter (\o -> Just 9) "nine" sample)) (Just 9) "alter adds"
-  in assertEq (lookup "one" (alter (\o -> None) "one" sample)) None "alter removes"
+  let d = assertEq (lookup "nine" (alter (\o -> Just 9) "nine" sample)) (Just 9) "alter adds" in
+  assertEq (lookup "one" (alter (\o -> None) "one" sample)) None "alter removes"
 
 @test fun wholeMapOperations () =
   let a = assertEq (sort (values sample)) [1, 2, 3] "values" in

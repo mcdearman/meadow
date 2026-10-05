@@ -32,7 +32,9 @@ use Std.Maybe.Maybe.*
 
 -- --- our own effects ---------------------------------------------------------
 
-effect Log { log : String -> (), }
+effect Log {
+  log : String -> (),
+}
 
 effect Ask {
   -- A configuration value by name.
@@ -41,8 +43,7 @@ effect Ask {
 
 -- Logging to the terminal.
 fun printingLogs act =
-  handle act () with { log line k -> let _ = println (S.concat "[log] " line) in k (),
-  }
+  handle act () with { log line k -> let _ = println (S.concat "[log] " line) in k (), }
 
 -- Logging into a list, returned beside the result.
 fun collectingLogs act =
@@ -54,7 +55,12 @@ fun collectingLogs act =
 -- Settings from a table.
 fun withSettings table act =
   handle act () with {
-    setting name k -> k (V.foldl (\found kv -> match kv with | (key, v) -> if key == name then v else found) 0 table),
+    setting name k ->
+      k
+        (V.foldl
+           (\found kv -> match kv with | (key, v) -> if key == name then v else found)
+           0
+           table),
   }
 
 -- --- a program written against them -----------------------------------------
@@ -64,13 +70,18 @@ fun withSettings table act =
 fun checkout basket =
   let rate = setting "taxPercent" in
   let limit = setting "limit" in
-  let subtotal = V.foldl (\total item ->
-    let _ = put (get () + 1) in
-    let _ = log (S.concatAll ["item ", S.fromInt item]) in
-    total + item) 0 basket in
+  let subtotal =
+    V.foldl
+      (\total item ->
+        let _ = put (get () + 1) in
+        let _ = log (S.concatAll ["item ", S.fromInt item]) in
+        total + item)
+      0
+      basket
+  in
   let _ =
-    if subtotal > limit
-    then raise (S.concatAll ["order of ", S.fromInt subtotal, " is over the limit"])
+    if subtotal > limit then
+      raise (S.concatAll ["order of ", S.fromInt subtotal, " is over the limit"])
     else 0
   in
   let total = subtotal + subtotal * rate / 100 in
@@ -79,9 +90,8 @@ fun checkout basket =
 
 -- Every handler at once: settings, logging, a counter, and failure as a value.
 fun runCheckout table basket =
-  collectingLogs
-    (\() ->
-      withSettings table (\() -> runState (toInt 0) (\() -> toResult (\() -> checkout basket))))
+  collectingLogs (\() ->
+    withSettings table (\() -> runState (toInt 0) (\() -> toResult (\() -> checkout basket))))
 
 -- --- effects the standard library already has -------------------------------
 
@@ -107,11 +117,9 @@ def settings = [("taxPercent", toInt 20), ("limit", 100)]
 fun main () =
   let _ = println "== checkout, printing its log" in
   let result =
-    printingLogs
-      (\() ->
-        withSettings
-          settings
-          (\() -> runState (toInt 0) (\() -> toResult (\() -> checkout [10, 20, 30]))))
+    printingLogs (\() ->
+      withSettings settings (\() ->
+        runState (toInt 0) (\() -> toResult (\() -> checkout [10, 20, 30]))))
   in
   let _ = println (S.concat "result and items counted: " (show result)) in
 

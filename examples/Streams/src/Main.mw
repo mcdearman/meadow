@@ -53,7 +53,11 @@ fun evenSquares u = Stream.map (\n -> n * n) evens
 -- Running totals of what `producer` yields: a consumer and a producer at once.
 fun runningSum producer =
   handle producer () with {
-    yield x k -> \acc -> let total = acc + x in let _ = yield total in (k ()) total,
+    yield x k ->
+      \acc ->
+        let total = acc + x in
+        let _ = yield total in
+        (k ()) total,
     return r -> \acc -> ()
   } 0
 
@@ -68,19 +72,17 @@ fun main () =
   let _ = println (Stream.takeWhile (\n -> n < 200) evenSquares) in
   let _ = println "== the Collatz sequence from 27: its length and its peak" in
   let _ =
-    println
-      (
-        Stream.count (\() -> collatz 27),
-        Stream.fold (\m x -> if x > m then x else m) 0 (\() -> collatz 27)
-      )
+    println (
+      Stream.count (\() -> collatz 27),
+      Stream.fold (\m x -> if x > m then x else m) 0 (\() -> collatz 27)
+    )
   in
   let _ = println "== running totals of 1..10" in
   let _ = println (Stream.toVec (\() -> runningSum (\() -> Stream.range 1 11))) in
   let _ = println "== the first word longer than four letters" in
   println
-    (Stream.find
-      (\w -> S.byteLength w > 4)
-      (\() -> words "the quick brown fox jumps over the lazy dog"))
+    (Stream.find (\w -> S.byteLength w > 4) (\() ->
+       words "the quick brown fox jumps over the lazy dog"))
 
 -- --- tests -------------------------------------------------------------------
 

@@ -47,7 +47,10 @@ use Std.Tuple (fst, snd)
 @pub fun gets (f : a -> b ! { State a | e }) : b ! { State a | e } = f (get ())
 
 -- Replace the state, returning the old one.
-@pub fun swap (s2 : a) : a ! { State a | e } = let old = get () in let ignored = put s2 in old
+@pub fun swap (s2 : a) : a ! { State a | e } =
+  let old = get () in
+  let ignored = put s2 in
+  old
 
 -- --- tests -------------------------------------------------------------------
 
@@ -61,7 +64,10 @@ fun tick () =
 
 @test fun stateThreadsThroughTheComputation () =
   assertEq
-    (runState 0 (\u2 -> let a = tick () in let b = tick () in get ()))
+    (runState 0 (\u2 ->
+       let a = tick () in
+       let b = tick () in
+       get ()))
     (2, 2)
     "two ticks then a read"
 

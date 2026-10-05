@@ -14,17 +14,16 @@ use lsp_types::{Position, Range, TextEdit};
 /// One edit rather than the whole document replaced. An editor applying a
 /// replacement of everything can lose the cursor, the scroll position, folds
 /// and markers on lines the formatter never touched -- and this runs on every
-/// save. The formatter only re-indents, so what changes is usually a few lines
-/// together, and everything before and after them is left alone.
+/// save. A formatted document that was edited differs in a few lines together,
+/// and everything before and after them is left alone.
 ///
 /// The edit starts at a line start and ends at one. Both ends are therefore
 /// ASCII boundaries in both texts -- a newline in the old one, and bytes equal
 /// to the old one's in the new -- so neither can land inside a character.
-/// `text` as `meadow fmt` leaves it: indented, lines longer than the width
-/// cut, and a record or a bracketed `let` set out as the formatter sets them
-/// out -- [`meadow_fmt::format_within`] at [`meadow_fmt::WIDTH`].
+/// `text` as `meadow fmt` leaves it: [`meadow_fmt::format_within`] at
+/// [`meadow_fmt::WIDTH`].
 ///
-/// Cutting and joining lines move tokens, and must move nothing else: what
+/// Printing a file moves its tokens, and must do nothing else to them: what
 /// the compiler's lexer reads out of the result is checked against what it
 /// read out of `text`, as the command line checks it, and a document where
 /// they differ is only indented, which moves none.

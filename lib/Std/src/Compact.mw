@@ -91,6 +91,7 @@ fun squares (n : Int) = V.foldl (\m i -> H.insert i (i * i) m) H.empty (V.range 
 @test fun aCompactCanHoldCompacts () =
   let inner = make [1, 2] in
   let outer = make (inner, "label") in
-  match get outer with | (i, _) -> assertEq (get i) [1, 2] "nested"
+  match get outer with
+  | (i, _) -> assertEq (get i) [1, 2] "nested"
 
 @test fun anImmediateNeedsNoRoom () = assertEq (size (make (toInt 42))) 0 "nothing to copy"

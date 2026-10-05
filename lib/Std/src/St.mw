@@ -45,8 +45,7 @@ use Std.Collections.Vector (vecFromArray)
 @pub fun setRef (r : StRef a b) (x : b) : () ! { St a | e } = stSetRef r x
 
 -- Apply `f` to what the cell holds.
-@pub fun modifyRef (r : StRef a b) (f : b -> b ! { St a | e }) :
-    () ! { St a | e } =
+@pub fun modifyRef (r : StRef a b) (f : b -> b ! { St a | e }) : () ! { St a | e } =
   stSetRef r (f (stGetRef r))
 
 -- --- arrays ------------------------------------------------------------------
@@ -60,8 +59,7 @@ use Std.Collections.Vector (vecFromArray)
 
 @pub fun length (a : StArray a b) : Int = stArrayLen a
 
-@pub fun modify (a : StArray a b) (i : Int) (f : b -> b ! { St a | e }) :
-    () ! { St a | e } =
+@pub fun modify (a : StArray a b) (i : Int) (f : b -> b ! { St a | e }) : () ! { St a | e } =
   stSetArray a i (f (stGetArray a i))
 
 @pub fun swap (a : StArray a b) (i : Int) (j : Int) : () ! { St a | e } =
@@ -128,15 +126,18 @@ fun fibs n =
       let _ = set a 0 99 in
       (snapshot, freeze a))
   in
-  let a = assertEq frozen #[1, 2, 3] "a later write does not reach a frozen copy"
-  in assertEq after #[99, 2, 3] "but does reach the array"
+  let a = assertEq frozen #[1, 2, 3] "a later write does not reach a frozen copy" in
+  assertEq after #[99, 2, 3] "but does reach the array"
 
 @test fun runStNests () =
   let got =
     runSt (\() ->
       let outer = newRef 1 in
       let inner =
-        runSt (\() -> let r = newRef 10 in let _ = modifyRef outer (\x -> x + 1) in getRef r)
+        runSt (\() ->
+          let r = newRef 10 in
+          let _ = modifyRef outer (\x -> x + 1) in
+          getRef r)
       in getRef outer + inner)
   in assertEq got 12 "an inner runSt may use the outer one's cells"
 

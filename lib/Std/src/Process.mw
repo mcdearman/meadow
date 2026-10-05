@@ -20,8 +20,9 @@ use Std.Collections.Vector (Vector)
 
 @pub effect Process {
   -- Run to completion, capturing stdout/stderr.
-  spawn : (String, Vector String, Maybe String, Vector (String, String))
-            -> Result String (Int, String, String),
+  spawn
+    : (String, Vector String, Maybe String, Vector (String, String)) ->
+      Result String (Int, String, String),
   -- Run to completion, inheriting the parent's stdio; just the exit code.
   status : (String, Vector String, Maybe String, Vector (String, String)) -> Result String Int,
   -- Terminate the current process immediately with the given exit code.
@@ -56,25 +57,28 @@ use Std.Collections.Vector (Vector)
 @pub fun command (program : a) : (a, [b], Maybe c, [d]) = (program, V.empty, None, V.empty)
 
 @pub fun withArg (a : a) (cmd : (b, [a], c, d)) : (b, [a], c, d) =
-  match cmd with | (p, xs, cwd, envs) -> (p, V.pushBack xs a, cwd, envs)
+  match cmd with
+  | (p, xs, cwd, envs) -> (p, V.pushBack xs a, cwd, envs)
 
 @pub fun withArgs (extra : [a]) (cmd : (b, [a], c, d)) : (b, [a], c, d) =
-  match cmd with | (p, xs, cwd, envs) -> (p, V.append xs extra, cwd, envs)
+  match cmd with
+  | (p, xs, cwd, envs) -> (p, V.append xs extra, cwd, envs)
 
 @pub fun withCwd (dir : a) (cmd : (b, c, d, e)) : (b, c, Maybe a, e) =
-  match cmd with | (p, xs, cwd, envs) -> (p, xs, Just dir, envs)
+  match cmd with
+  | (p, xs, cwd, envs) -> (p, xs, Just dir, envs)
 
 @pub fun withEnv (pair : a) (cmd : (b, c, d, [a])) : (b, c, d, [a]) =
-  match cmd with | (p, xs, cwd, envs) -> (p, xs, cwd, V.pushBack envs pair)
+  match cmd with
+  | (p, xs, cwd, envs) -> (p, xs, cwd, V.pushBack envs pair)
 
 -- Run `program` with `args` to completion, capturing its output.
-@pub fun run (program : String) (args : [String]) : Result String
-    (Int, String, String) ! { Process | e } =
+@pub fun run (program : String) (args : [String])
+    : Result String (Int, String, String) ! { Process | e } =
   command program |> withArgs args |> spawn
 
 -- Run `program` with `args` to completion, inheriting stdio; just the exit code.
-@pub fun runInherit (program : String) (args : [String])
-    : Result String Int ! { Process | e } =
+@pub fun runInherit (program : String) (args : [String]) : Result String Int ! { Process | e } =
   command program |> withArgs args |> status
 
 @pub fun outputStatus (out : (a, b, c)) : a = match out with | (s, o, e) -> s

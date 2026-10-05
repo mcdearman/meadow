@@ -31,16 +31,12 @@
 -- Both equality and `show` are structural and work at any type, so this is the
 -- assertion to reach for: the message names what was being checked and the
 -- values speak for themselves.
-@pub fun assertEq (actual : a) (expected : a) (msg : String) :
-    () ! { Test | e } =
-  if actual == expected
-  then ()
+@pub fun assertEq (actual : a) (expected : a) (msg : String) : () ! { Test | e } =
+  if actual == expected then ()
   else fail (cat (cat (cat (cat msg ": expected ") (show expected)) ", got ") (show actual))
 
-@pub fun assertNeq (actual : a) (unexpected : a) (msg : String) :
-    () ! { Test | e } =
-  if actual != unexpected
-  then ()
+@pub fun assertNeq (actual : a) (unexpected : a) (msg : String) : () ! { Test | e } =
+  if actual != unexpected then ()
   else fail (cat (cat msg ": expected anything but ") (show unexpected))
 
 @pub fun assertTrue (actual : Bool) (msg : String) : () ! { Test | e } = assertEq actual True msg
@@ -59,8 +55,7 @@
   handle act () with { fail msg k -> True, return x -> False }
 
 -- `act` must fail; if it succeeds, *this* is the failure.
-@pub fun assertFails (act : () -> a ! { Test, Test | e }) (msg : String) :
-    () ! { Test | e } =
+@pub fun assertFails (act : () -> a ! { Test, Test | e }) (msg : String) : () ! { Test | e } =
   assert (didFail act) (cat "expected a failure: " msg)
 
 -- `String.concat`, spelled out from the primitives. `Std.String` is compiled

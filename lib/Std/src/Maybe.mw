@@ -14,24 +14,15 @@ use Maybe.*
   match o with | None -> fallback | Just x -> o
 
 @pub fun map (f : a -> b ! e) (o : Maybe a) : Maybe b ! e =
-  match o with
-  | None -> None
-  | Just x -> Just (f x)
+  match o with | None -> None | Just x -> Just (f x)
 
 @pub fun andThen (f : a -> Maybe b ! e) (o : Maybe a) : Maybe b ! e =
-  match o with
-  | None -> None
-  | Just x -> f x
+  match o with | None -> None | Just x -> f x
 
 @pub fun keepIf (pred : a -> Bool ! e) (o : Maybe a) : Maybe a ! e =
-  match o with
-  | Just x if pred x -> o
-  | _ -> None
+  match o with | Just x if pred x -> o | _ -> None
 
-@pub fun toList (o : Maybe a) : List a =
-  match o with
-  | None -> Nil
-  | Just x -> Cons x Nil
+@pub fun toList (o : Maybe a) : List a = match o with | None -> Nil | Just x -> Cons x Nil
 
 -- --- tests -------------------------------------------------------------------
 

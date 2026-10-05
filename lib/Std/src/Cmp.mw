@@ -25,33 +25,32 @@ use Std.Ordering.Ordering.*
 
 @pub trait PartialEq a {
   fun (==) : a -> a -> Bool
-  fun (!=) : a -> a -> Bool
-    | (!=) x y = if x == y then False else True
+  fun (!=) : a -> a -> Bool | (!=) x y = if x == y then False else True
 }
 
-@pub trait Eq a <: PartialEq a {
-}
+@pub trait Eq a <: PartialEq a {}
 
 @pub trait PartialOrd a <: PartialEq a {
   fun partialCmp : a -> a -> Maybe Ordering
 
-  fun (<) : a -> a -> Bool
-    | (<) x y = match partialCmp x y with | Just Less -> True | _ -> False
+  fun (<) : a -> a -> Bool | (<) x y = match partialCmp x y with | Just Less -> True | _ -> False
 
-  fun (>) : a -> a -> Bool
-    | (>) x y = match partialCmp x y with | Just Greater -> True | _ -> False
+  fun (>) : a -> a -> Bool | (>) x y =
+    match partialCmp x y with
+    | Just Greater -> True
+    | _ -> False
 
-  fun (<=) : a -> a -> Bool
-    | (<=) x y = match partialCmp x y with
-                 | Just Less -> True
-                 | Just Equal -> True
-                 | _ -> False
+  fun (<=) : a -> a -> Bool | (<=) x y =
+    match partialCmp x y with
+    | Just Less -> True
+    | Just Equal -> True
+    | _ -> False
 
-  fun (>=) : a -> a -> Bool
-    | (>=) x y = match partialCmp x y with
-                 | Just Greater -> True
-                 | Just Equal -> True
-                 | _ -> False
+  fun (>=) : a -> a -> Bool | (>=) x y =
+    match partialCmp x y with
+    | Just Greater -> True
+    | Just Equal -> True
+    | _ -> False
 }
 
 @pub trait Ord a <: Eq a, PartialOrd a {
@@ -59,75 +58,83 @@ use Std.Ordering.Ordering.*
 }
 
 -- What `@derive(Eq)` checks each field with: that its type is `Eq`.
-@pub fun requireEq : Eq a => a -> ()
-  | requireEq x = ()
+@pub fun requireEq : Eq a => a -> () | requireEq x = ()
 
 -- What derived orderings are made of: whether a comparison found two fields
 -- equal, so that the next field decides.
-@pub fun isEqualPartial (c : Maybe Ordering) : Bool =
-  match c with
-  | Just Equal -> True
-  | _ -> False
+@pub fun isEqualPartial (c : Maybe Ordering) : Bool = match c with | Just Equal -> True | _ -> False
 
 @pub fun isEqualOrdering (c : Ordering) : Bool =
   match c with
   | Equal -> True
-  | _ -> False
+  | _ ->
+      False
+        -- --- the integer types -----------------------------------------------------
+        --
+        -- Every comparison is its primitive, so that `x < y` on two `Int`s is the one
+        -- instruction it would be if `<` were built in.
 
-  -- --- the integer types -----------------------------------------------------
-  --
-  -- Every comparison is its primitive, so that `x < y` on two `Int`s is the one
-  -- instruction it would be if `<` were built in.
+        macro
+        comparable
+  | ($($t : ident), *) ->
+      {
+        $(impl
+           PartialEq
+           $t
+           { fun (==) x y = _primEq x y fun (!=) x y = _primNe x y }
+           impl
+           Eq
+           $t
+           {}
+           impl
+           PartialOrd
+           $t
+           {
+             fun partialCmp x y =
+               Just
+                 (if _primLt x y then Less else if _primEq x y then Equal else Greater)
+                 fun
+                 (<)
+                 x
+                 y =
+               _primLt x y fun (>) x y =
+               _primGt x y fun (<=) x y =
+               _primLe x y fun (>=) x y =
+               _primGe x y
+           }
+           impl
+           Ord
+           $t
+           {
+             fun compare x y = if _primLt x y then Less else if _primEq x y then Equal else Greater
+           })*
+      }
+        comparable!
+        { Int, BigInt, Int8, Int16, Int32, UInt8, UInt16, UInt32, UInt64 }
+        -- --- floats: partial -------------------------------------------------------
+        --
+        -- IEEE 754: `NaN` equals nothing, itself included, and is ordered against
+        -- nothing; `-0.0` equals `0.0`.
 
-  macro comparable
-  | ($( $t : ident ),*) -> {
-    $(
-      impl PartialEq $t {
-        fun (==) x y = _primEq x y
-        fun (!=) x y = _primNe x y
+        macro
+        floating
+  | ($($t : ident), *) ->
+      {
+        $(impl PartialEq $t { fun (==) x y = _primLeF x y and _primGeF x y } impl PartialOrd $t {
+           fun partialCmp x y =
+             if _primLtF x y then Just Less
+             else if _primGtF x y then Just Greater
+             else if _primLeF x y then Just Equal
+             else
+               None fun (<) x y =
+                 _primLtF x y fun (>) x y =
+                 _primGtF x y fun (<=) x y =
+                 _primLeF x y fun (>=) x y =
+                 _primGeF x y
+         })*
       }
-      impl Eq $t {
-      }
-      impl PartialOrd $t {
-        fun partialCmp x y =
-          Just (if _primLt x y then Less else if _primEq x y then Equal else Greater)
-          fun (<) x y = _primLt x y
-          fun (>) x y = _primGt x y
-          fun (<=) x y = _primLe x y
-          fun (>=) x y = _primGe x y
-      }
-      impl Ord $t {
-        fun compare x y = if _primLt x y then Less else if _primEq x y then Equal else Greater
-      }
-    )*
-  }
-
-  comparable! { Int, BigInt, Int8, Int16, Int32, UInt8, UInt16, UInt32, UInt64 }
-
-  -- --- floats: partial -------------------------------------------------------
-  --
-  -- IEEE 754: `NaN` equals nothing, itself included, and is ordered against
-  -- nothing; `-0.0` equals `0.0`.
-
-  macro floating
-  | ($( $t : ident ),*) -> {
-    $(
-      impl PartialEq $t {
-        fun (==) x y = _primLeF x y and _primGeF x y
-      }
-      impl PartialOrd $t {
-        fun partialCmp x y =
-          if _primLtF x y then Just Less
-          else if _primGtF x y then Just Greater else if _primLeF x y then Just Equal else None
-          fun (<) x y = _primLtF x y
-          fun (>) x y = _primGtF x y
-          fun (<=) x y = _primLeF x y
-          fun (>=) x y = _primGeF x y
-      }
-    )*
-  }
-
-  floating! { Float, Float32 }
+        floating!
+        { Float, Float32 }
 
 -- --- characters and strings --------------------------------------------------
 
@@ -140,8 +147,7 @@ impl PartialEq Char {
   fun (==) x y = _primEq x y
 }
 
-impl Eq Char {
-}
+impl Eq Char {}
 
 impl PartialOrd Char {
   fun partialCmp x y = Just (codeOrder x y)
@@ -161,8 +167,7 @@ impl PartialEq String {
   fun (==) x y = _primEq x y
 }
 
-impl Eq String {
-}
+impl Eq String {}
 
 impl PartialOrd String {
   fun partialCmp x y = Just (stringOrder x y)
@@ -178,8 +183,7 @@ impl PartialEq () {
   fun (==) x y = True
 }
 
-impl Eq () {
-}
+impl Eq () {}
 
 impl PartialOrd () {
   fun partialCmp x y = Just Equal
@@ -195,8 +199,7 @@ impl PartialEq Bool {
   fun (==) x y = _primEq x y
 }
 
-impl Eq Bool {
-}
+impl Eq Bool {}
 
 impl PartialOrd Bool {
   fun partialCmp x y = Just (boolOrder x y)
@@ -216,8 +219,7 @@ impl PartialEq Ordering {
   fun (==) x y = _primEq (rank x) (rank y)
 }
 
-impl Eq Ordering {
-}
+impl Eq Ordering {}
 
 impl PartialOrd Ordering {
   fun partialCmp x y = Just (compare (rank x) (rank y))
@@ -236,8 +238,7 @@ impl PartialEq (Maybe a) where PartialEq a {
     | _ -> False
 }
 
-impl Eq (Maybe a) where Eq a {
-}
+impl Eq (Maybe a) where Eq a {}
 
 impl PartialOrd (Maybe a) where PartialOrd a {
   fun partialCmp x y =
@@ -263,25 +264,24 @@ impl PartialEq (Ref a) {
   fun (==) x y = _primEq x y
 }
 
-impl Eq (Ref a) {
-}
+impl Eq (Ref a) {}
 
 -- A compact region is equal to another holding an equal value.
 impl PartialEq (Compact a) where PartialEq a {
   fun (==) x y = getCompact x == getCompact y
 }
 
-impl Eq (Compact a) where Eq a {
-}
+impl Eq (Compact a) where Eq a {}
 
 -- --- tuples, field by field --------------------------------------------------
 
 impl PartialEq (a, b) where PartialEq a, PartialEq b {
-  fun (==) p q = match (p, q) with | ((a1, b1), (a2, b2)) -> a1 == a2 and b1 == b2
+  fun (==) p q =
+    match (p, q) with
+    | ((a1, b1), (a2, b2)) -> a1 == a2 and b1 == b2
 }
 
-impl Eq (a, b) where Eq a, Eq b {
-}
+impl Eq (a, b) where Eq a, Eq b {}
 
 impl PartialOrd (a, b) where PartialOrd a, PartialOrd b {
   fun partialCmp p q =
@@ -305,8 +305,7 @@ impl PartialEq (a, b, c) where PartialEq a, PartialEq b, PartialEq c {
     | ((a1, b1, c1), (a2, b2, c2)) -> a1 == a2 and b1 == b2 and c1 == c2
 }
 
-impl Eq (a, b, c) where Eq a, Eq b, Eq c {
-}
+impl Eq (a, b, c) where Eq a, Eq b, Eq c {}
 
 impl PartialOrd (a, b, c) where PartialOrd a, PartialOrd b, PartialOrd c {
   fun partialCmp p q =
@@ -336,8 +335,7 @@ impl PartialEq (a, b, c, d) where PartialEq a, PartialEq b, PartialEq c, Partial
     | ((a1, b1, c1, d1), (a2, b2, c2, d2)) -> a1 == a2 and b1 == b2 and c1 == c2 and d1 == d2
 }
 
-impl Eq (a, b, c, d) where Eq a, Eq b, Eq c, Eq d {
-}
+impl Eq (a, b, c, d) where Eq a, Eq b, Eq c, Eq d {}
 
 impl PartialOrd (a, b, c, d) where PartialOrd a, PartialOrd b, PartialOrd c, PartialOrd d {
   fun partialCmp p q =
@@ -362,7 +360,8 @@ impl Ord (a, b, c, d) where Ord a, Ord b, Ord c, Ord d {
 
 fun arrayEq xs ys i =
   if _primGe i (arrayLen xs) then True
-  else if arrayGet xs i == arrayGet ys i then arrayEq xs ys (i + 1) else False
+  else if arrayGet xs i == arrayGet ys i then arrayEq xs ys (i + 1)
+  else False
 
 fun arrayPartialCmp xs ys i =
   let n = arrayLen xs in
@@ -384,8 +383,7 @@ impl PartialEq #[a] where PartialEq a {
   fun (==) xs ys = _primEq (arrayLen xs) (arrayLen ys) and arrayEq xs ys 0
 }
 
-impl Eq #[a] where Eq a {
-}
+impl Eq #[a] where Eq a {}
 
 impl PartialOrd #[a] where PartialOrd a {
   fun partialCmp xs ys = arrayPartialCmp xs ys 0

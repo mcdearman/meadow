@@ -27,7 +27,8 @@ use Std.Maybe.Maybe.*
   if S.isEmpty a then b
   else if S.isEmpty b then a
   else if isAbsolute b then b
-  else if endsWithSeparator a then S.concat a b else S.concatAll [a, separator, b]
+  else if endsWithSeparator a then S.concat a b
+  else S.concatAll [a, separator, b]
 
 @pub fun joinAll (parts : [String]) : String = V.foldl (\acc p -> join acc p) "" parts
 
@@ -64,15 +65,11 @@ use Std.Maybe.Maybe.*
 -- Replace the extension (given without a dot); an empty `ext` removes it.
 @pub fun withExtension (p : String) (ext : String) : String =
   let stem = fileStem p in
-  let base = match parent p with
-             | None -> stem
-             | Just d -> join d stem
-  in if S.isEmpty ext then base else S.concatAll [base, ".", ext]
+  let base = match parent p with | None -> stem | Just d -> join d stem in
+  if S.isEmpty ext then base else S.concatAll [base, ".", ext]
 
 @pub fun withFileName (p : String) (name : String) : String =
-  match parent p with
-  | None -> name
-  | Just d -> join d name
+  match parent p with | None -> name | Just d -> join d name
 
 -- Every non-empty component, separators discarded.
 @pub fun components (p : String) : [String] = p |> splitAny |> V.filter (\c -> not (S.isEmpty c))
@@ -99,20 +96,20 @@ fun hasDrive p = if S.byteLength p < 2 then False else byteAt p 1 == 58
   let parts = p |> components |> V.foldl (\acc c -> pushPart abs acc c) [] in
   let body = S.join separator parts in
   if hasDrive p then body
-  else if abs then S.concat separator body else if S.isEmpty body then "." else body
+  else if abs then S.concat separator body
+  else if S.isEmpty body then "."
+  else body
 
 fun pushPart abs acc c =
-  if c == "." then acc else if c != ".." then V.pushBack acc c
-                       -- Nothing is above a drive.
-                       else
-                         if V.len acc == 1
-                         and (match V.last acc with | Just d -> hasDrive d | None -> False)
-                         then acc
-                         else
-                           match V.last acc with
-                           | None if abs -> acc
-                           | Just prev if prev != ".." -> V.popBack acc
-                           | _ -> V.pushBack acc c
+  if c == "." then acc
+  else if c != ".." then V.pushBack acc c
+  -- Nothing is above a drive.
+  else if V.len acc == 1 and (match V.last acc with | Just d -> hasDrive d | None -> False) then acc
+  else
+    match V.last acc with
+    | None if abs -> acc
+    | Just prev if prev != ".." -> V.popBack acc
+    | _ -> V.pushBack acc c
 
 -- --- helpers -----------------------------------------------------------------
 
@@ -124,10 +121,9 @@ fun endsWithSeparator p =
 fun splitAny p = splitLoop p 0 0 []
 
 fun splitLoop p start i acc =
-  if i >= S.byteLength p
-  then V.pushBack acc (S.slice p start i)
-  else if isSeparator (byteAt p i)
-  then splitLoop p (i + 1) (i + 1) (V.pushBack acc (S.slice p start i))
+  if i >= S.byteLength p then V.pushBack acc (S.slice p start i)
+  else if isSeparator (byteAt p i) then
+    splitLoop p (i + 1) (i + 1) (V.pushBack acc (S.slice p start i))
   else splitLoop p start (i + 1) acc
 
 fun lastSeparator p = lastSepFrom p (S.byteLength p - 1)
@@ -142,10 +138,7 @@ fun lastDotFrom name i =
 
 -- Every call here has already checked the index, so the `None` case is dead. `0`
 -- is never a separator or a dot, so even if it were reached nothing would match.
-fun byteAt p i =
-  match S.byteAt p i with
-  | None -> 0
-  | Just b -> b
+fun byteAt p i = match S.byteAt p i with | None -> 0 | Just b -> b
 
 -- --- tests -------------------------------------------------------------------
 

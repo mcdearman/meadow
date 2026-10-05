@@ -12,7 +12,10 @@ use Shape.*
   | Triangle Float Float Float
 
 -- A record with named fields.
-@pub record Point = { @pub x : Float, @pub y : Float }
+@pub record Point = {
+  @pub x : Float,
+  @pub y : Float
+}
 
 @pub fun area s = area' s
 
@@ -40,4 +43,7 @@ fun sqrt x =
   | Rect w h -> if w == h then "a square" else "a rectangle"
   | Triangle a b c -> "a triangle"
 
-@pub fun distance p q = let dx = p.x -. q.x in let dy = p.y -. q.y in sqrt (dx *. dx +. dy *. dy)
+@pub fun distance p q =
+  let dx = p.x -. q.x in
+  let dy = p.y -. q.y in
+  sqrt (dx *. dx +. dy *. dy)

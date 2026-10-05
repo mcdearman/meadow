@@ -1,16 +1,20 @@
 //! The formatter, against real source.
 //!
-//! The standard library is the formatter's specification: it is hand-written in
-//! the style the rules are meant to describe, so anything the formatter would
-//! change there is a bug in one of the two.
+//! The standard library is formatted with it, so it is what the formatter
+//! prints: anything `meadow fmt` would change there is a change to one of the
+//! two that was not carried to the other.
 
 use meadow::stdlib::MODULES;
 use meadow_fmt as fmt;
 
+fn formatted(src: &str) -> String {
+    fmt::format_within(src, fmt::WIDTH)
+}
+
 #[test]
 fn the_standard_library_is_already_formatted() {
     for (name, src) in MODULES {
-        let out = fmt::format(src);
+        let out = formatted(src);
         if out != *src {
             // Show the first line that differs rather than 400 lines of source.
             let (line, want, got) = src
@@ -28,44 +32,53 @@ fn the_standard_library_is_already_formatted() {
 }
 
 #[test]
-fn formatting_the_standard_library_is_idempotent() {
+fn formatting_moves_no_token() {
+    use meadow_compiler::lexer::tokenize;
+    use meadow_compiler::source::{Source, SourceKind};
+    let tokens = |text: &str| {
+        tokenize(Source::new(SourceKind::Interactive, text.into()))
+            .tokens
+            .iter()
+            .map(|t| t.value().clone())
+            .collect::<Vec<_>>()
+    };
     for (name, src) in MODULES {
-        let once = fmt::format(src);
-        assert_eq!(fmt::format(&once), once, "Std.{name} is not a fixed point");
+        // Every line cut where forty columns would have cut it: nothing
+        // like how it is written, and the same tokens.
+        let narrow = fmt::format_within(src, 40);
+        assert!(tokens(src) == tokens(&narrow), "Std.{name} at 40 columns");
     }
 }
 
 #[test]
-fn indentation_is_recovered_from_a_flattened_file() {
-    // Strip every leading space and let the formatter put it back. It cannot
-    // recover hand-aligned continuations — nothing structural could — so this
-    // checks that the *structural* rules do the work rather than the fallback
-    // that preserves whatever the author wrote.
-    let mut total = 0usize;
-    let mut wrong = 0usize;
-    for (_, src) in MODULES {
-        let flat: String = src
-            .lines()
-            .map(|l| format!("{}\n", l.trim_start()))
-            .collect();
-        for (a, b) in src.lines().zip(fmt::format(&flat).lines()) {
-            total += 1;
-            if a != b {
-                wrong += 1;
+fn how_far_in_a_line_was_typed_does_not_decide_where_it_goes() {
+    use meadow_compiler::lexer::tokenize;
+    use meadow_compiler::source::{Source, SourceKind};
+    for (name, src) in MODULES {
+        // The lines a string runs over are the string's, and stay.
+        let lexed = tokenize(Source::new(SourceKind::Interactive, (*src).into()));
+        let mut held = std::collections::HashSet::new();
+        for t in &lexed.tokens {
+            let (start, end) = (t.span.start as usize, t.span.end as usize);
+            let first = src[..start].matches('\n').count();
+            for extra in 1..=src[start..end].matches('\n').count() {
+                held.insert(first + extra);
             }
         }
+        // Every other line three times as far in as it was.
+        let moved: String = src
+            .lines()
+            .enumerate()
+            .map(|(n, line)| {
+                let text = line.trim_start();
+                let indent = line.len() - text.len();
+                if held.contains(&n) {
+                    format!("{line}\n")
+                } else {
+                    format!("{}{text}\n", " ".repeat(indent * 3))
+                }
+            })
+            .collect();
+        assert_eq!(formatted(&moved), *src, "Std.{name}");
     }
-    // The stragglers are continuations: the lines a call or a chain goes on
-    // with, which hang a unit under the line they carry on because that is
-    // where they were put -- by hand, or by the formatter cutting a line
-    // that was too long -- and not because anything structural says so. Kept
-    // within 80 columns, the library is about 6% such lines; before, when a
-    // long line was left long, it was 1.3%. A proportion rather than a count,
-    // so the bound keeps its meaning as the library grows: comfortably above
-    // what continuations account for, far below what a broken rule would
-    // produce.
-    assert!(
-        wrong * 12 <= total,
-        "{wrong} of {total} lines were not recovered from a flattened standard library"
-    );
 }

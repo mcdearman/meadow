@@ -19,10 +19,7 @@ use Tree.*
 
 @pub fun null (t : Tree a) : Bool = match t with | Leaf -> True | Node l x r -> False
 
-@pub fun size (t : Tree a) : n =
-  match t with
-  | Leaf -> 0
-  | Node l x r -> 1 + size l + size r
+@pub fun size (t : Tree a) : n = match t with | Leaf -> 0 | Node l x r -> 1 + size l + size r
 
 @pub fun depth (t : Tree a) : n =
   match t with
@@ -74,7 +71,8 @@ fun removeRoot l r =
   | Leaf -> Leaf
   | Node l y r ->
       if x < y then Node (delete x l) y r
-      else if y < x then Node l y (delete x r) else removeRoot l r
+      else if y < x then Node l y (delete x r)
+      else removeRoot l r
 
 -- Every element, in order.
 @pub fun toVec (t : Tree a) : [a] = pushInOrder V.empty t
@@ -119,8 +117,7 @@ impl PartialEq (Tree a) where PartialEq a {
   fun (==) x y = toList x == toList y
 }
 
-impl Eq (Tree a) where Eq a {
-}
+impl Eq (Tree a) where Eq a {}
 
 impl PartialOrd (Tree a) where PartialOrd a {
   fun partialCmp x y = partialCmp (toList x) (toList y)

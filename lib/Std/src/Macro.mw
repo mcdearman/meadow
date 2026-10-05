@@ -98,9 +98,17 @@ use Wire.*
 -- argument as text starts from.
 @pub fun spaced (ts : [TokenTree]) : String = S.join " " (V.map text ts)
 
-@pub fun opening (d : Delim) : String = match d with | Paren -> "(" | Bracket -> "[" | Brace -> "{"
+@pub fun opening (d : Delim) : String =
+  match d with
+  | Paren -> "("
+  | Bracket -> "["
+  | Brace -> "{"
 
-@pub fun closing (d : Delim) : String = match d with | Paren -> ")" | Bracket -> "]" | Brace -> "}"
+@pub fun closing (d : Delim) : String =
+  match d with
+  | Paren -> ")"
+  | Bracket -> "]"
+  | Brace -> "}"
 
 -- Whether this is the word `w`.
 @pub fun isWord (w : String) (t : TokenTree) : Bool = match t with | Word x _ -> x == w | _ -> False
@@ -131,8 +139,7 @@ fun splitting p ts run acc =
   match ts with
   | Nil -> V.pushBack acc run
   | Cons t rest ->
-      if isPunct p t then
-        splitting p rest V.empty (V.pushBack acc run)
+      if isPunct p t then splitting p rest V.empty (V.pushBack acc run)
       else splitting p rest (V.pushBack run t) acc
 
 -- --- quoting ---------------------------------------------------------------
@@ -222,7 +229,9 @@ impl ToTokens String {
 --
 -- `define` leaves a value for a later macro, under a name in the calling
 -- module, visible as far as the call's own `@pub` says.
-@pub effect Expand { lookup : String -> Maybe Datum, define : (String, Datum) -> (),
+@pub effect Expand {
+  lookup : String -> Maybe Datum,
+  define : (String, Datum) -> (),
 }
 
 -- A type a macro can store and read back: to a `Datum`, and from one, saying
@@ -244,7 +253,10 @@ impl Reflect Datum {
 
 impl Reflect Int {
   fun toDatum n = Datum.Int n
-  fun fromDatum d = match d with | Datum.Int n -> Ok n | other -> Err (expected "an Int" other)
+  fun fromDatum d =
+    match d with
+    | Datum.Int n -> Ok n
+    | other -> Err (expected "an Int" other)
 }
 
 impl Reflect Float {
@@ -257,7 +269,10 @@ impl Reflect Float {
 
 impl Reflect Bool {
   fun toDatum b = Datum.Bool b
-  fun fromDatum d = match d with | Datum.Bool b -> Ok b | other -> Err (expected "a Bool" other)
+  fun fromDatum d =
+    match d with
+    | Datum.Bool b -> Ok b
+    | other -> Err (expected "a Bool" other)
 }
 
 impl Reflect String {
@@ -278,9 +293,10 @@ impl Reflect [a] where Reflect a {
           (\acc x ->
             match acc with
             | Err e -> Err e
-            | Ok got -> match fromDatum x with
-                        | Err e -> Err e
-                        | Ok y -> Ok (V.pushBack got y))
+            | Ok got ->
+                match fromDatum x with
+                | Err e -> Err e
+                | Ok y -> Ok (V.pushBack got y))
           (Ok V.empty)
           ds
     | other -> Err (expected "a list" other)
@@ -314,12 +330,12 @@ impl ToTokens Datum {
     | Datum.List ds -> [Group Bracket (commas (V.map toTokens ds)) Nowhere]
     | Datum.Rec fs ->
         [Group
-          Brace
-          (commas
-            (V.map
-              (\p -> V.append [Word (fst p) Nowhere, Punct "=" Nowhere] (toTokens (snd p)))
-              fs))
-          Nowhere]
+           Brace
+           (commas
+              (V.map
+                 (\p -> V.append [Word (fst p) Nowhere, Punct "=" Nowhere] (toTokens (snd p)))
+                 fs))
+           Nowhere]
     | Datum.Tag name ds ->
         V.pushFront (V.concatMap (\x -> [Group Paren (toTokens x) Nowhere]) ds) (Word name Nowhere)
     | Datum.Code ts -> ts
@@ -328,9 +344,8 @@ impl ToTokens Datum {
 -- Runs of tokens with a comma between each.
 fun commas (parts : [[TokenTree]]) : [TokenTree] =
   V.foldl
-    (\acc part -> if V.isEmpty acc
-      then part
-      else V.append (V.pushBack acc (Punct "," Nowhere)) part)
+    (\acc part ->
+      if V.isEmpty acc then part else V.append (V.pushBack acc (Punct "," Nowhere)) part)
     V.empty
     parts
 
@@ -348,8 +363,7 @@ fun commas (parts : [[TokenTree]]) : [TokenTree] =
 
 -- The field `name` of a `Rec`'s fields: what a derived `fromDatum` reads a
 -- record with.
-@pub fun field (name : String) (fields : [(String, Datum)])
-    : Result String Datum =
+@pub fun field (name : String) (fields : [(String, Datum)]) : Result String Datum =
   match V.find (\p -> fst p == name) fields with
   | Just p -> Ok (snd p)
   | None -> Err "no field `${name}`"
@@ -376,13 +390,13 @@ fun commas (parts : [[TokenTree]]) : [TokenTree] =
     : Wire ! e =
   wireOutcome
     (handle run input with {
-      lookup name k ->
-        match V.find (\p -> fst p == name) scope with
-        | Just p -> reading name (k (Just (snd p)))
-        | None -> if settled then reading name (k None) else Waiting name V.empty,
-      define made k -> defining made (k ()),
-      return ts -> Answered ts V.empty V.empty
-    })
+       lookup name k ->
+         match V.find (\p -> fst p == name) scope with
+         | Just p -> reading name (k (Just (snd p)))
+         | None -> if settled then reading name (k None) else Waiting name V.empty,
+       define made k -> defining made (k ()),
+       return ts -> Answered ts V.empty V.empty
+     })
 
 fun reading name o =
   match o with
@@ -401,16 +415,22 @@ fun defining made o =
 -- written into this before it crosses: a named node and its children, text,
 -- and numbers.
 @derive(Debug, PartialEq)
-@pub data Wire = Node String #[Wire] | Text String | Whole Int | Frac Float
+@pub data Wire
+  = Node String #[Wire]
+  | Text String
+  | Whole Int
+  | Frac Float
 
 fun wireOutcome (o : Outcome) : Wire =
   match o with
   | Answered ts ds rs ->
       Node
         "Answered"
-        #[wireTrees ts,
+        #[
+          wireTrees ts,
           Node "" (V.toArray (V.map (\p -> Node (fst p) #[wireDatum (snd p)]) ds)),
-          Node "" (V.toArray (V.map (\r -> Text r) rs))]
+          Node "" (V.toArray (V.map (\r -> Text r) rs))
+        ]
   | Waiting name rs -> Node "Waiting" #[Text name, Node "" (V.toArray (V.map (\r -> Text r) rs))]
 
 fun wireTrees (ts : [TokenTree]) : Wire = Node "" (V.toArray (V.map wireTree ts))

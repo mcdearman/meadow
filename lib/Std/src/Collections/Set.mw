@@ -57,8 +57,7 @@ impl PartialEq Set {
   fun (==) x y = toList x == toList y
 }
 
-impl Eq Set {
-}
+impl Eq Set {}
 
 impl PartialOrd Set {
   fun partialCmp x y = partialCmp (toList x) (toList y)

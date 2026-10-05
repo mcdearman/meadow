@@ -52,8 +52,7 @@ use Std.Result.Result.*
 use Std.Collections.Vector as V
 use Std.Collections.Vector (Vector)
 
-@pub fun readToStringOr (default : String) (path : String)
-    : String ! { Fs | e } =
+@pub fun readToStringOr (default : String) (path : String) : String ! { Fs | e } =
   path |> readToString |> unwrapOr default
 
 @pub fun tryReadDir (path : String) : [String] ! { Fs | e } = path |> readDir |> unwrapOr V.empty

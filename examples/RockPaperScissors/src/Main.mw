@@ -73,8 +73,8 @@ fun round () =
         | Just you ->
             let me = randomChoice () in
             let o = judge you me in
-            let _ = println (S.concatAll ["I played ", choiceName me, ". ", outcomeLine o])
-            in Just o
+            let _ = println (S.concatAll ["I played ", choiceName me, ". ", outcomeLine o]) in
+            Just o
 
 fun tally wins losses draws =
   match round () with
@@ -86,10 +86,10 @@ fun tally wins losses draws =
 fun game () =
   let _ = println "Rock paper scissors. Ctrl-D or `quit` to stop." in
   let (wins, losses, draws) = tally 0 0 0 in
-  let _ = println (S.concatAll
-    [ "\nYou won ", show wins , ", lost ", show losses , ", drew ", show draws, "."
-    ]) in
-  ()
+  let _ =
+    println
+      (S.concatAll ["\nYou won ", show wins, ", lost ", show losses, ", drew ", show draws, "."])
+  in ()
 
 fun main () = game ()
 
@@ -101,7 +101,7 @@ fun main () = game ()
   assertEq (beats (beats (beats Rock))) Rock "rock -> scissors -> paper -> rock"
 
 @test fun judgingAgreesWithBeating () =
-  let cases = [ (Rock, Scissors, Win) , (Scissors, Rock, Lose) , (Paper, Paper, Draw) ] in
+  let cases = [(Rock, Scissors, Win), (Scissors, Rock, Lose), (Paper, Paper, Draw)] in
   assertEq (map (\(a, b, _) -> judge a b) cases) (map (\(_, _, o) -> o) cases) "judged"
 
 @test fun inputIsForgiving () =

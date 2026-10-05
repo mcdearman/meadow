@@ -34,9 +34,7 @@ use Std.Ordering (isLess, isEqual, isGreater)
 @pub fun isDigit (c : Char) : Bool = code c >= 48 and code c <= 57
 
 @pub fun isHexDigit (c : Char) : Bool =
-  isDigit c
-  or (code c >= 97 and code c <= 102)
-  or (code c >= 65 and code c <= 70)
+  isDigit c or (code c >= 97 and code c <= 102) or (code c >= 65 and code c <= 70)
 
 @pub fun isLower (c : Char) : Bool = code c >= 97 and code c <= 122
 
@@ -62,15 +60,16 @@ use Std.Ordering (isLess, isEqual, isGreater)
 
 -- `0`..`15` to `'0'`..`'f'`; `None` outside that range.
 @pub fun fromHexDigit (n : Int) : Maybe Char =
-  if n < 0 or n > 15
-  then None
-  else if n < 10 then Just (charFromCode (48 + n)) else Just (charFromCode (87 + n))
+  if n < 0 or n > 15 then None
+  else if n < 10 then Just (charFromCode (48 + n))
+  else Just (charFromCode (87 + n))
 
 @pub fun hexDigitToInt (c : Char) : Maybe Int =
   let n = code c in
   if isDigit c then Just (n - 48)
   else if n >= 97 and n <= 102 then Just (n - 87)
-  else if n >= 65 and n <= 70 then Just (n - 55) else None
+  else if n >= 65 and n <= 70 then Just (n - 55)
+  else None
 
 -- --- ordering ----------------------------------------------------------------
 

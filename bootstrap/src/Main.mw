@@ -19,7 +19,7 @@ mod Scopes
 
 use Lingua (cli!)
 use MeadowBoot.Lex (lex, dump)
-use MeadowBoot.Core (program)
+use MeadowBoot.Core (program, erase)
 use MeadowBoot.Cek as Cek
 use MeadowBoot.Parse (parsed, checked)
 use MeadowBoot.Fixity (chainsOf)
@@ -186,7 +186,7 @@ fun runFile (path : String) =
   in match core with
      | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in True)
      | Just p ->
-         (match Cek.run p with
+         (match Cek.run (erase p) with
           | Ok v -> (let u = writeOutput "== ${path}\n${Cek.display v}\n" in True)
           | Err why -> (let u = writeOutput "== ${path}\nerror: ${why}\n" in True))
 

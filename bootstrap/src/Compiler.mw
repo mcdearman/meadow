@@ -90,7 +90,7 @@ database! {
              (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None))
              (queryFiles unit))
     | query core (unit : Int) : Maybe CoreProgram =
-        coreOf
+        erasedOf
           (queryHome unit)
           (queryImported unit)
           (tableOf (queryFixities 0))
@@ -186,7 +186,7 @@ fun inferredOf
 
 -- The unit at `dir` as core, entered at its `result` -- or `None`, for one
 -- with nothing of that name.
-fun coreOf
+fun erasedOf
     (dir : String)
     (imported : [Interface])
     (fx : HashMap String Fixity)

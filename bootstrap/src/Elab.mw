@@ -1,5 +1,6 @@
 -- Elab: a unit's typed modules made core -- `meadow_core`'s lowering, with
--- the types already gone, which is the core the CEK machine runs.
+-- each term and pattern keeping its type; `Core.erase` takes those off for
+-- the CEK machine.
 --
 -- Two passes. `bare` takes off what says nothing at run time: a pattern's
 -- annotation, and a function's written result type. What is left reaches no
@@ -82,64 +83,81 @@ pass! {
     | Lit.Float { text } -> ("float", text)
     | Lit.String { text } -> ("string", text)
     | Lit.Char { text } -> ("char", text)
-    | Expr.Unit {} -> newCoreTermConst out here (newCoreLitLUnit out here)
-    | Expr.Hole {} -> newCoreTermIll out here
-    | Expr.MacCall { call } -> newCoreTermIll out here
-    | Expr.Lit { lit, typ } -> newCoreTermConst out here (literal out here lit typ)
-    | Expr.Var { ref } -> mention out cx here ref
+    | Expr.Unit { typ } -> newCoreTermConst out here (newCoreLitLUnit out here) typ
+    | Expr.Hole { typ } -> newCoreTermIll out here typ
+    | Expr.MacCall { call, typ } -> newCoreTermIll out here typ
+    | Expr.Lit { lit, typ } -> newCoreTermConst out here (literal out here lit typ) typ
+    | Expr.Var { ref, typ } -> mention out cx here ref typ
     | Lam { params, body } -> lambdas out cx here params body
-    | App { raw func, args } -> applied src out cx here func args
+    | App { raw func, args, typ } -> applied src out cx here func args typ
     | Let { binds, body } -> V.foldr (\b acc -> bound out cx here b acc) body binds
-    | If { cond, yes, no } -> newCoreTermIf out here cond yes no
-    | Match { scrutinee, arms } -> newCoreTermCase out here scrutinee arms
+    | If { cond, yes, no, typ } -> newCoreTermIf out here cond yes no typ
+    | Match { scrutinee, arms, typ } -> newCoreTermCase out here scrutinee arms typ
     | Arm { pat, guard, body } -> newCoreArm out here pat guard body
-    | Expr.Tuple { items } -> newCoreTermTuple out here items
-    | Expr.Array { items } -> newCoreTermArray out here items
-    | Expr.List { items } ->
+    | Expr.Tuple { items, typ } -> newCoreTermTuple out here items typ
+    | Expr.Array { items, typ } -> newCoreTermArray out here items typ
+    | Expr.List { items, typ } ->
         V.foldr
-          (\x acc -> newCoreTermCtor out here "List.Cons" [x, acc])
-          (newCoreTermCtor out here "List.Nil" [])
+          (\x acc -> newCoreTermCtor out here "List.Cons" [x, acc] typ)
+          (newCoreTermCtor out here "List.Nil" [] typ)
           items
-    | Expr.Cons { ref, raw args } -> constructed out cx here ref (consArgs src out cx ref args)
-    | Expr.Record { fields, base } ->
+    | Expr.Cons { ref, raw args, typ } ->
+        constructed out cx here ref (consArgs src out cx ref args) typ
+    | Expr.Record { fields, base, typ } ->
         (match base with
          | None ->
-             newCoreTermRecord out here (V.map (\f -> newCoreField out here (fst f) (snd f)) fields)
-         | Just b -> V.foldl (\t f -> newCoreTermExtend out here t (fst f) (snd f)) b fields)
+             newCoreTermRecord
+               out
+               here
+               (V.map (\f -> newCoreField out here (fst f) (snd f)) fields)
+               typ
+         | Just b -> V.foldl (\t f -> newCoreTermExtend out here t (fst f) (snd f) typ) b fields)
     | ExprField { name, value } -> (name, value)
-    | Update { base, fields } ->
-        V.foldl (\t f -> newCoreTermExtend out here t (fst f) (snd f)) base fields
-    | Proj { target, label } -> newCoreTermSel out here target label
-    | Handle { body, arms, ret } ->
-        newCoreTermHandle out here body arms (M.map fst ret) (M.map snd ret)
+    | Update { base, fields, typ } ->
+        V.foldl (\t f -> newCoreTermExtend out here t (fst f) (snd f) typ) base fields
+    | Proj { target, label, typ } -> newCoreTermSel out here target label typ
+    | Handle { body, arms, ret, typ } ->
+        newCoreTermHandle out here body arms (M.map fst ret) (M.map snd ret) typ
     | HArm { op, opRef, param, resume, body } ->
         (let binder = binderOf out cx here param body in
          let named = M.unwrapOr ("", op) (H.lookup opRef cx.ops) in
          newCoreClause out here (fst named) (snd named) (fst binder) resume (snd binder))
     | Ret { pat, body } -> binderOf out cx here pat body
-    | Pat.Wild {} -> newCorePatPWild out here
-    | Pat.Unit {} -> newCorePatPLit out here (newCoreLitLUnit out here)
-    | Pat.MacCall { call } -> newCorePatPWild out here
-    | Pat.Lit { lit, typ } -> newCorePatPLit out here (literal out here lit typ)
-    | Pat.Var { id } -> newCorePatPVar out here id
-    | Pat.As { id, pat } -> newCorePatPAs out here id pat
-    | Pat.Cons { ref, raw args } ->
-        constructedPat out cx here ref (consPats src out cx here ref args)
-    | Pat.Tuple { items } -> newCorePatPTuple out here items
-    | Pat.Array { items } -> newCorePatPArray out here items
-    | Pat.Vector { items } -> newCorePatPWild out here
-    | Pat.List { items } ->
+    | Pat.Wild { typ } -> newCorePatPWild out here typ
+    | Pat.Unit { typ } -> newCorePatPLit out here (newCoreLitLUnit out here) typ
+    | Pat.MacCall { call, typ } -> newCorePatPWild out here typ
+    | Pat.Lit { lit, typ } -> newCorePatPLit out here (literal out here lit typ) typ
+    | Pat.Var { id, typ } -> newCorePatPVar out here id typ
+    | Pat.As { id, pat, typ } -> newCorePatPAs out here id pat typ
+    | Pat.Cons { ref, raw args, typ } ->
+        constructedPat out cx here ref (consPats src out cx here ref args) typ
+    | Pat.Tuple { items, typ } -> newCorePatPTuple out here items typ
+    | Pat.Array { items, typ } -> newCorePatPArray out here items typ
+    | Pat.Vector { items, typ } -> newCorePatPWild out here typ
+    | Pat.List { items, typ } ->
         V.foldr
-          (\x acc -> newCorePatPCtor out here "List.Cons" [x, acc])
-          (newCorePatPCtor out here "List.Nil" [])
+          (\x acc -> newCorePatPCtor out here "List.Cons" [x, acc] typ)
+          (newCorePatPCtor out here "List.Nil" [] typ)
           items
-    | Pat.Record { fields } -> newCorePatPRecord out here fields
+    | Pat.Record { fields, typ } -> newCorePatPRecord out here fields typ
     | PatField { name, pat } -> newCorePField out here name pat
-    | Pat.View { fn, pat } -> newCorePatPWild out here
+    | Pat.View { fn, pat, typ } -> newCorePatPWild out here typ
     | Bind.Pat { pat, value } -> (pat, value, False)
     | Bind.Fun { id, params, body } ->
-        (newCorePatPVar out here id, lambdas out cx here params body, True)
+        (let f = lambdas out cx here params body in
+         (newCorePatPVar out here id (tyCoreTermIn out f), f, True))
 }
+
+-- The type of a function from `param` to `result`.
+fun arrow (param : Type) (result : Type) : Type = Fun [param] result RowEmpty
+
+-- What a function of type `t` takes first, and what it is once it has it.
+fun applying (t : Type) : (Type, Type) =
+  match t with
+  | Fun params result eff ->
+      if V.len params <= 1 then (V.getOr Error params 0, result)
+      else (V.getOr Error params 0, Fun (V.drop params 1) result eff)
+  | _ -> (Error, Error)
 
 -- A literal as its type has it: a whole number a word of its width, a big
 -- one, or an `Int`; a fraction a `Float32` or a `Float`.
@@ -187,34 +205,61 @@ fun widthOf (name : String) : Maybe String =
   | "UInt64" -> Just "U64"
   | _ -> None
 
--- A name mentioned: a primitive a function of as many arguments as it takes,
--- an effect's operation a function that performs it, and anything else
--- itself.
-fun mention out (cx : Low s) (m : Meta) (id : Int) =
+-- A name mentioned at type `t`: a primitive a function of as many arguments
+-- as it takes, an effect's operation a function that performs it, and
+-- anything else itself.
+fun mention out (cx : Low s) (m : Meta) (id : Int) (t : Type) =
   match H.lookup id cx.prims with
   | Just (op, arity) ->
       if op == "RunSt" then
         (let f = fresh cx in
-         newCoreTermLam out m f (newCoreTermApp out m (newCoreTermVar out m f) (unit out m)))
-      else
-        (let vars = V.map (\k -> fresh cx) (V.range 0 arity) in
-         V.foldr
-           (\v acc -> newCoreTermLam out m v acc)
-           (newCoreTermPrim out m op (V.map (\v -> newCoreTermVar out m v) vars))
-           vars)
+         match applying t with
+         | (fty, result) ->
+             newCoreTermLam
+               out
+               m
+               f
+               fty
+               (newCoreTermApp out m (newCoreTermVar out m f fty) (unit out m) result)
+               t)
+      else etaPrim out cx m op arity [] t
   | None ->
       (match H.lookup id cx.ops with
        | Just (eff, op) ->
            (let x = fresh cx in
-            newCoreTermLam out m x (newCoreTermPerform out m eff op (newCoreTermVar out m x)))
-       | None -> newCoreTermVar out m id)
+            match applying t with
+            | (arg, result) ->
+                newCoreTermLam
+                  out
+                  m
+                  x
+                  arg
+                  (newCoreTermPerform out m eff op (newCoreTermVar out m x arg) result)
+                  t)
+       | None -> newCoreTermVar out m id t)
 
-fun unit out (m : Meta) = newCoreTermConst out m (newCoreLitLUnit out m)
+-- `\a b -> op(a, b)`, at type `t`: a function of each argument the
+-- primitive still wants, around the operation.
+fun etaPrim out (cx : Low s) (m : Meta) (op : String) (wants : Int) have (t : Type) =
+  if wants <= 0 then newCoreTermPrim out m op have t
+  else
+    (let v = fresh cx in
+     match applying t with
+     | (arg, rest) ->
+         newCoreTermLam
+           out
+           m
+           v
+           arg
+           (etaPrim out cx m op (wants - 1) (V.pushBack have (newCoreTermVar out m v arg)) rest)
+           t)
 
--- `func` applied to `args`: a primitive given all it takes at once is the
--- operation, `runSt f` is `f ()`, and the rest are applications one at a
--- time.
-fun applied src out (cx : Low s) (m : Meta) func args =
+fun unit out (m : Meta) = newCoreTermConst out m (newCoreLitLUnit out m) (unitT ())
+
+-- `func` applied to `args`, the whole of type `t`: a primitive given all it
+-- takes at once is the operation, `runSt f` is `f ()`, and the rest are
+-- applications one at a time.
+fun applied src out (cx : Low s) (m : Meta) func args (t : Type) =
   let prim =
     if kindBareExpr src func == BareExprKind.Var then
       H.lookup (bareRefId src (bareExprVarRef src func)) cx.prims
@@ -222,17 +267,30 @@ fun applied src out (cx : Low s) (m : Meta) func args =
   in match prim with
      | Just (op, arity) ->
          if op == "RunSt" and V.len args == 1 then
-           newCoreTermApp out m (V.getOr (unit out m) args 0) (unit out m)
-         else if arity == V.len args then newCoreTermPrim out m op args
-         else V.foldl (\f a -> newCoreTermApp out m f a) (emitExpr src out cx func) args
-     | None -> V.foldl (\f a -> newCoreTermApp out m f a) (emitExpr src out cx func) args
+           newCoreTermApp out m (V.getOr (unit out m) args 0) (unit out m) t
+         else if arity == V.len args then newCoreTermPrim out m op args t
+         else applications out m (emitExpr src out cx func) args
+     | None -> applications out m (emitExpr src out cx func) args
+
+-- `f` applied to each of `args` in turn, each application of the type the
+-- function's says it is.
+fun applications out (m : Meta) f args =
+  V.foldl (\g a -> newCoreTermApp out m g a (snd (applying (tyCoreTermIn out g)))) f args
 
 -- A function of `params`: each a variable, or a fresh one taken apart at the
 -- top of the body.
 fun lambdas out (cx : Low s) (m : Meta) params body =
   V.foldr
     (\p acc ->
-      (let binder = binderOf out cx m p acc in newCoreTermLam out m (fst binder) (snd binder)))
+      (let binder = binderOf out cx m p acc in
+       let pty = tyCorePatIn out p in
+       newCoreTermLam
+         out
+         m
+         (fst binder)
+         pty
+         (snd binder)
+         (arrow pty (tyCoreTermIn out (snd binder)))))
     body
     params
 
@@ -243,35 +301,53 @@ fun binderOf out (cx : Low s) (m : Meta) p body =
   else
     (let v = fresh cx in
      if kindCorePatIn out p == CorePatKind.PWild then (v, body)
-     else (v, newCoreTermCase out m (newCoreTermVar out m v) [newCoreArm out m p None body]))
+     else
+       (
+         v,
+         newCoreTermCase
+           out
+           m
+           (newCoreTermVar out m v (tyCorePatIn out p))
+           [newCoreArm out m p None body]
+           (tyCoreTermIn out body)
+       ))
 
 -- A `let`'s binding around what it is in scope for.
 fun bound out (cx : Low s) (m : Meta) b body =
+  let t = tyCoreTermIn out body in
   match b with
   | (p, value, isFun) ->
-      if isFun then newCoreTermLetRec out m [newCoreBind out m (corePatPVarIdIn out p) value] body
+      if isFun then newCoreTermLetRec out m [newCoreBind out m (corePatPVarIdIn out p) value] body t
       else if kindCorePatIn out p == CorePatKind.PVar then
-        newCoreTermLet out m (corePatPVarIdIn out p) value body
+        newCoreTermLet out m (corePatPVarIdIn out p) value body t
       else if kindCorePatIn out p == CorePatKind.PWild then
-        newCoreTermLet out m (fresh cx) value body
-      else newCoreTermCase out m value [newCoreArm out m p None body]
+        newCoreTermLet out m (fresh cx) value body t
+      else newCoreTermCase out m value [newCoreArm out m p None body] t
 
--- A constructor applied: `True` and `False` the truths they are, one given
--- fewer arguments than it takes a function of the rest.
-fun constructed out (cx : Low s) (m : Meta) (id : Int) args =
+-- A constructor applied, at type `t`: `True` and `False` the truths they
+-- are, one given fewer arguments than it takes a function of the rest.
+fun constructed out (cx : Low s) (m : Meta) (id : Int) args (t : Type) =
   match M.unwrapOr ("?", V.len args) (H.lookup id cx.ctors) with
   | (name, arity) ->
       if name == "Bool.True" and V.isEmpty args then
-        newCoreTermConst out m (newCoreLitLBool out m True)
+        newCoreTermConst out m (newCoreLitLBool out m True) t
       else if name == "Bool.False" and V.isEmpty args then
-        newCoreTermConst out m (newCoreLitLBool out m False)
-      else if V.len args >= arity then newCoreTermCtor out m name args
-      else
-        (let extra = V.map (\k -> fresh cx) (V.range (V.len args) arity) in
-         V.foldr
-           (\v acc -> newCoreTermLam out m v acc)
-           (newCoreTermCtor out m name (V.append args (V.map (\v -> newCoreTermVar out m v) extra)))
-           extra)
+        newCoreTermConst out m (newCoreLitLBool out m False) t
+      else etaCtor out cx m name (arity - V.len args) args t
+
+fun etaCtor out (cx : Low s) (m : Meta) (name : String) (wants : Int) have (t : Type) =
+  if wants <= 0 then newCoreTermCtor out m name have t
+  else
+    (let v = fresh cx in
+     match applying t with
+     | (arg, rest) ->
+         newCoreTermLam
+           out
+           m
+           v
+           arg
+           (etaCtor out cx m name (wants - 1) (V.pushBack have (newCoreTermVar out m v arg)) rest)
+           t)
 
 -- What a constructor is given, in the order it holds them: one with named
 -- fields given a record has each field's value, by its name.
@@ -305,19 +381,19 @@ fun consPats src out (cx : Low s) (m : Meta) (id : Int) args =
               (\l ->
                 match V.find (\g -> fst g == l) given with
                 | Just g -> emitPat src out cx (snd g)
-                | None -> newCorePatPWild out m)
+                | None -> newCorePatPWild out m Error)
               labels)
       else V.map (\a -> emitPat src out cx a) args
   | _ -> V.map (\a -> emitPat src out cx a) args
 
-fun constructedPat out (cx : Low s) (m : Meta) (id : Int) args =
+fun constructedPat out (cx : Low s) (m : Meta) (id : Int) args (t : Type) =
   match M.unwrapOr ("?", 0) (H.lookup id cx.ctors) with
   | (name, _) ->
       if name == "Bool.True" and V.isEmpty args then
-        newCorePatPLit out m (newCoreLitLBool out m True)
+        newCorePatPLit out m (newCoreLitLBool out m True) t
       else if name == "Bool.False" and V.isEmpty args then
-        newCorePatPLit out m (newCoreLitLBool out m False)
-      else newCorePatPCtor out m name args
+        newCorePatPLit out m (newCoreLitLBool out m False) t
+      else newCorePatPCtor out m name args t
 
 -- --- a unit ------------------------------------------------------------------
 
@@ -470,28 +546,35 @@ fun moduleDefs out (cx : Low s) (p : BareProgram) =
                    [newCoreDef out nowhere (corePatPVarIdIn out pat) value]
                  else
                    (let v = fresh cx in
+                    let whole = tyCorePatIn out pat in
                     V.pushFront
                       (V.map
                          (\x ->
                            newCoreDef
                              out
                              nowhere
-                             x
+                             (fst x)
                              (newCoreTermCase
                                 out
                                 nowhere
-                                (newCoreTermVar out nowhere v)
-                                [newCoreArm out nowhere pat None (newCoreTermVar out nowhere x)]))
+                                (newCoreTermVar out nowhere v whole)
+                                [newCoreArm
+                                   out
+                                   nowhere
+                                   pat
+                                   None
+                                   (newCoreTermVar out nowhere (fst x) (snd x))]
+                                (snd x)))
                          (patVars out pat))
                       (newCoreDef out nowhere v value))))
         (bareModuleDecls a root)
 
--- The variables a pattern of core binds.
+-- The variables a pattern of core binds, each with its type.
 fun patVars out p =
   let k = kindCorePatIn out p in
-  if k == CorePatKind.PVar then [corePatPVarIdIn out p]
+  if k == CorePatKind.PVar then [(corePatPVarIdIn out p, tyCorePatIn out p)]
   else if k == CorePatKind.PAs then
-    V.pushFront (patVars out (corePatPAsPatIn out p)) (corePatPAsIdIn out p)
+    V.pushFront (patVars out (corePatPAsPatIn out p)) (corePatPAsIdIn out p, tyCorePatIn out p)
   else if k == CorePatKind.PTuple then V.concatMap (patVars out) (corePatPTupleItemsIn out p)
   else if k == CorePatKind.PArray then V.concatMap (patVars out) (corePatPArrayItemsIn out p)
   else if k == CorePatKind.PCtor then V.concatMap (patVars out) (corePatPCtorArgsIn out p)

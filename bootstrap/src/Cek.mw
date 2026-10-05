@@ -15,7 +15,7 @@
 -- that was already captured.
 --
 -- A term is a row of the program's tables (`Core`), read with the patterns
--- `lang!` made: `CoreTermApp f x` matches the row's production and reads its
+-- `lang!` made: `ErasedTermApp f x` matches the row's production and reads its
 -- fields, and builds nothing. So the machine makes no terms either. Where the
 -- Rust machine rewrites a join point as a `letrec` of nested lambdas, and a
 -- jump as the applications of it, this one has a closure take its parameters
@@ -64,7 +64,7 @@ use Control.*
   | Ctor String [Value]
   -- A function: the parameters it has still to take -- a lambda's one, or a
   -- join point's several -- its body, and its scope.
-  | Closure [Int] CoreTerm (Map (Ref Value))
+  | Closure [Int] ErasedTerm (Map (Ref Value))
   -- A captured continuation: the frames a `perform` took, until it is resumed.
   | Cont (Ref (Maybe (List Frame)))
   | Ref (Ref Value)
@@ -73,72 +73,72 @@ use Control.*
   -- A value in a compact region.
   | Compact Value
   -- A top-level value not evaluated yet: its definition.
-  | Lazy CoreTerm
+  | Lazy ErasedTerm
 
 -- --- the machine -------------------------------------------------------------
 
 -- One frame of the continuation: `meadow_eval`'s `K`.
 @pub data Frame
-  = EvalArg CoreTerm (Map (Ref Value))
+  = EvalArg ErasedTerm (Map (Ref Value))
   | ApplyTo Value
-  | If CoreTerm CoreTerm (Map (Ref Value))
-  | Bind Int CoreTerm (Map (Ref Value))
+  | If ErasedTerm ErasedTerm (Map (Ref Value))
+  | Bind Int ErasedTerm (Map (Ref Value))
   -- The scope, the bindings still to evaluate -- the first is under way -- and
   -- the body.
-  | LetRec (Map (Ref Value)) [(Int, CoreTerm)] CoreTerm
+  | LetRec (Map (Ref Value)) [(Int, ErasedTerm)] ErasedTerm
   -- What is being built, what is done, what is still to evaluate after the
   -- one under way.
-  | Build Shape [Value] [CoreTerm] (Map (Ref Value))
-  | BuildRecord [(String, Value)] [CoreField] (Map (Ref Value))
+  | Build Shape [Value] [ErasedTerm] (Map (Ref Value))
+  | BuildRecord [(String, Value)] [ErasedField] (Map (Ref Value))
   | Proj Int
   | Sel String
-  | ExtendVal String CoreTerm (Map (Ref Value))
+  | ExtendVal String ErasedTerm (Map (Ref Value))
   | ExtendWith String Value
-  | Match [CoreArm] (Map (Ref Value))
+  | Match [ErasedArm] (Map (Ref Value))
   -- An arm matched and its guard is under way: the arms, where they were
   -- written, the arm after it, the scrutinee, and the scope the arm bound.
-  | Guard [CoreArm] (Map (Ref Value)) Int Value (Map (Ref Value))
+  | Guard [ErasedArm] (Map (Ref Value)) Int Value (Map (Ref Value))
   | PerformWith String String
-  | HandleMark [CoreClause] (Maybe (Int, CoreTerm)) (Map (Ref Value))
+  | HandleMark [ErasedClause] (Maybe (Int, ErasedTerm)) (Map (Ref Value))
   | Cache Int
 
 @pub data Shape = Tuple | Array | Ctor String | Prim String
 
-data Control = Eval CoreTerm (Map (Ref Value)) | Ret Value
+data Control = Eval ErasedTerm (Map (Ref Value)) | Ret Value
 
 -- What does not change as the machine runs: the program's tables, the
 -- definitions, each a cell, and each constructor's named fields.
 record Machine = {
-  arena : CoreArena,
+  arena : ErasedArena,
   root : Map (Ref Value),
   fields : [(String, [String])]
 }
 
 -- `p`'s entry point evaluated, or what went wrong: `meadow_eval::run`.
-@pub fun run (p : CoreProgram) =
-  let a = coreArena p in
-  let file = coreRoot p in
+@pub fun run (p : ErasedProgram) =
+  let a = erasedArena p in
+  let file = erasedRoot p in
   let root =
     V.foldl
-      (\env d -> Map.insert (coreDefId a d) (newRef (loaded a (coreDefBody a d))) env)
+      (\env d -> Map.insert (erasedDefId a d) (newRef (loaded a (erasedDefBody a d))) env)
       Map.empty
-      (coreFileDefs a file)
+      (erasedFileDefs a file)
   in
   let m =
     Machine {
       arena = a,
       root = root,
-      fields = V.map (\n -> (coreNamedName a n, coreNamedLabels a n)) (coreFileNamed a file)
+      fields = V.map (\n -> (erasedNamedName a n, erasedNamedLabels a n)) (erasedFileNamed a file)
     }
   in
-  let entry = coreFileEntry a file in
+  let entry = erasedFileEntry a file in
   if entry < 0 then Ok Unit else variable m entry Map.empty [;]
 
 -- A definition as the machine keeps it: a function made, anything else left
 -- to be evaluated where it is first used.
-fun loaded (a : CoreArena) (t : CoreTerm) : Value =
+fun loaded (a : ErasedArena) (t : ErasedTerm) : Value =
   match (a, t) with
-  | CoreTermLam p body -> Closure [p] body Map.empty
+  | ErasedTermLam p body -> Closure [p] body Map.empty
   | _ -> Lazy t
 
 fun go (m : Machine) (c : Control) (k : List Frame) =
@@ -164,53 +164,53 @@ fun variable (m : Machine) (v : Int) (env : Map (Ref Value)) (k : List Frame) =
        | val -> go m (Ret val) k)
   | None -> Err "unbound variable VarId(${show v})"
 
-fun eval (m : Machine) (t : CoreTerm) (env : Map (Ref Value)) (k : List Frame) =
+fun eval (m : Machine) (t : ErasedTerm) (env : Map (Ref Value)) (k : List Frame) =
   let a = m.arena in
   match (a, t) with
-  | CoreTermVar v -> variable m v env k
-  | CoreTermConst l -> go m (Ret (literal a l)) k
-  | CoreTermLam p body -> go m (Ret (Closure [p] body env)) k
-  | CoreTermApp f x -> go m (Eval f env) (EvalArg x env :: k)
-  | CoreTermLet v rhs body -> go m (Eval rhs env) (Bind v body env :: k)
+  | ErasedTermVar v -> variable m v env k
+  | ErasedTermConst l -> go m (Ret (literal a l)) k
+  | ErasedTermLam p body -> go m (Ret (Closure [p] body env)) k
+  | ErasedTermApp f x -> go m (Eval f env) (EvalArg x env :: k)
+  | ErasedTermLet v rhs body -> go m (Eval rhs env) (Bind v body env :: k)
   -- A `letrec` of the join point's lambdas: with parameters, the lambda is a
   -- closure at once; with none, it is the body, evaluated now.
-  | CoreTermJoin j params rhs body ->
+  | ErasedTermJoin j params rhs body ->
       let scope = define env j Unit in
       if V.isEmpty params then go m (Eval rhs scope) (LetRec scope [(j, rhs)] body :: k)
       else (let u = fill scope j (Closure params rhs scope) in go m (Eval body scope) k)
   -- The join point applied to each argument in turn: the frames of
   -- `((j a) b)`, under `j`.
-  | CoreTermJump j args -> variable m j env (V.foldr (\x acc -> EvalArg x env :: acc) k args)
-  | CoreTermLetRec binds body ->
-      let pairs = V.map (\b -> (coreBindId a b, coreBindValue a b)) binds in
+  | ErasedTermJump j args -> variable m j env (V.foldr (\x acc -> EvalArg x env :: acc) k args)
+  | ErasedTermLetRec binds body ->
+      let pairs = V.map (\b -> (erasedBindId a b, erasedBindValue a b)) binds in
       let scope = V.foldl (\e b -> define e (fst b) Unit) env pairs in
       (match V.get pairs 0 with
        | Just (_, rhs) -> go m (Eval rhs scope) (LetRec scope pairs body :: k)
        | None -> go m (Eval body scope) k)
-  | CoreTermIf c y n -> go m (Eval c env) (If y n env :: k)
-  | CoreTermTuple xs -> start m Shape.Tuple xs env k
-  | CoreTermArray xs -> start m Shape.Array xs env k
-  | CoreTermCtor n xs -> start m (Shape.Ctor n) xs env k
-  | CoreTermPrim op xs -> start m (Shape.Prim op) xs env k
-  | CoreTermRecord fs ->
+  | ErasedTermIf c y n -> go m (Eval c env) (If y n env :: k)
+  | ErasedTermTuple xs -> start m Shape.Tuple xs env k
+  | ErasedTermArray xs -> start m Shape.Array xs env k
+  | ErasedTermCtor n xs -> start m (Shape.Ctor n) xs env k
+  | ErasedTermPrim op xs -> start m (Shape.Prim op) xs env k
+  | ErasedTermRecord fs ->
       (match V.get fs 0 with
-       | Just first -> go m (Eval (coreFieldValue a first) env) (BuildRecord [] fs env :: k)
+       | Just first -> go m (Eval (erasedFieldValue a first) env) (BuildRecord [] fs env :: k)
        | None -> go m (Ret (Record [])) k)
-  | CoreTermProj x i -> go m (Eval x env) (Proj i :: k)
-  | CoreTermSel x l -> go m (Eval x env) (Sel l :: k)
-  | CoreTermExtend r l val -> go m (Eval r env) (ExtendVal l val env :: k)
-  | CoreTermCase s arms -> go m (Eval s env) (Match arms env :: k)
-  | CoreTermPerform e o x -> go m (Eval x env) (PerformWith e o :: k)
-  | CoreTermHandle body clauses retId r ->
+  | ErasedTermProj x i -> go m (Eval x env) (Proj i :: k)
+  | ErasedTermSel x l -> go m (Eval x env) (Sel l :: k)
+  | ErasedTermExtend r l val -> go m (Eval r env) (ExtendVal l val env :: k)
+  | ErasedTermCase s arms -> go m (Eval s env) (Match arms env :: k)
+  | ErasedTermPerform e o x -> go m (Eval x env) (PerformWith e o :: k)
+  | ErasedTermHandle body clauses retId r ->
       let returned =
         (match (retId, r) with
          | (Just v, Just b) -> Just (v, b)
          | _ -> None)
       in go m (Eval body env) (HandleMark clauses returned env :: k)
-  | CoreTermIll -> Err "evaluating an ill-formed expression"
+  | ErasedTermIll -> Err "evaluating an ill-formed expression"
 
 -- A sequence of sub-expressions, left to right, then what they make.
-fun start (m : Machine) (s : Shape) (xs : [CoreTerm]) (env : Map (Ref Value)) (k : List Frame) =
+fun start (m : Machine) (s : Shape) (xs : [ErasedTerm]) (env : Map (Ref Value)) (k : List Frame) =
   match V.get xs 0 with
   | Just first -> go m (Eval first env) (Build s [] (V.drop xs 1) env :: k)
   | None ->
@@ -260,13 +260,14 @@ fun ret (m : Machine) (v : Value) (f : Frame) (k : List Frame) =
   | BuildRecord done pending env ->
       let label =
         (match V.get pending 0 with
-         | Just f -> coreFieldLabel m.arena f
+         | Just f -> erasedFieldLabel m.arena f
          | None -> "")
       in
       let all = withField label v done in
       let later = V.drop pending 1 in
       (match V.get later 0 with
-       | Just next -> go m (Eval (coreFieldValue m.arena next) env) (BuildRecord all later env :: k)
+       | Just next ->
+           go m (Eval (erasedFieldValue m.arena next) env) (BuildRecord all later env :: k)
        | None -> go m (Ret (Record all)) k)
   | Proj i ->
       (match v with
@@ -286,7 +287,7 @@ fun ret (m : Machine) (v : Value) (f : Frame) (k : List Frame) =
       (match v with
        | Bool True ->
            (match V.get arms (next - 1) with
-            | Just arm -> go m (Eval (coreArmBody m.arena arm) scope) k
+            | Just arm -> go m (Eval (erasedArmBody m.arena arm) scope) k
             | None -> Err "non-exhaustive pattern match")
        | Bool False -> arms_ m arms env next scrutinee k
        | other -> Err "a `match` guard is not a Bool: ${display other}")
@@ -339,7 +340,7 @@ fun indexOf (x : String) (xs : [String]) (i : Int) : Int =
 -- whose guard -- evaluated next, if it has one -- holds.
 fun arms_
     (m : Machine)
-    (arms : [CoreArm])
+    (arms : [ErasedArm])
     (env : Map (Ref Value))
     (from : Int)
     (v : Value)
@@ -348,46 +349,46 @@ fun arms_
   match V.get arms from with
   | None -> Err "non-exhaustive pattern match"
   | Just arm ->
-      (match matched a (coreArmPat a arm) v env with
+      (match matched a (erasedArmPat a arm) v env with
        | None -> arms_ m arms env (from + 1) v k
        | Just scope ->
-           (match coreArmGuard a arm with
-            | None -> go m (Eval (coreArmBody a arm) scope) k
+           (match erasedArmGuard a arm with
+            | None -> go m (Eval (erasedArmBody a arm) scope) k
             | Just g -> go m (Eval g scope) (Guard arms env (from + 1) v scope :: k)))
 
 -- The scope `p` matching `v` makes of `env`, or `None`.
-fun matched (a : CoreArena) (p : CorePat) (v : Value) (env : Map (Ref Value))
+fun matched (a : ErasedArena) (p : ErasedPat) (v : Value) (env : Map (Ref Value))
     : Maybe (Map (Ref Value)) ! { Mut | e } =
   match (a, p) with
-  | CorePatPWild -> Just env
-  | CorePatPVar x -> Just (define env x v)
-  | CorePatPAs x sub -> matched a sub v (define env x v)
-  | CorePatPLit l -> if litMatches a l v then Just env else None
-  | CorePatPTuple ps ->
+  | ErasedPatPWild -> Just env
+  | ErasedPatPVar x -> Just (define env x v)
+  | ErasedPatPAs x sub -> matched a sub v (define env x v)
+  | ErasedPatPLit l -> if litMatches a l v then Just env else None
+  | ErasedPatPTuple ps ->
       (match v with
        | Tuple vs -> (if V.len ps == V.len vs then all a ps vs env else None)
        | _ -> None)
-  | CorePatPArray ps ->
+  | ErasedPatPArray ps ->
       (match v with
        | Array vs -> (if V.len ps == V.len vs then all a ps vs env else None)
        | _ -> None)
-  | CorePatPCtor name ps ->
+  | ErasedPatPCtor name ps ->
       (match v with
        | Ctor vname vs -> if name == vname and V.len ps == V.len vs then all a ps vs env else None
        | _ -> None)
-  | CorePatPRecord fs ->
+  | ErasedPatPRecord fs ->
       (match v with
        | Record vfs ->
            V.foldl
              (\acc f ->
-               match (acc, V.find (\g -> fst g == corePFieldLabel a f) vfs) with
-               | (Just e, Just (_, x)) -> matched a (corePFieldPat a f) x e
+               match (acc, V.find (\g -> fst g == erasedPFieldLabel a f) vfs) with
+               | (Just e, Just (_, x)) -> matched a (erasedPFieldPat a f) x e
                | _ -> None)
              (Just env)
              fs
        | _ -> None)
 
-fun all (a : CoreArena) (ps : [CorePat]) (vs : [Value]) (env : Map (Ref Value))
+fun all (a : ErasedArena) (ps : [ErasedPat]) (vs : [Value]) (env : Map (Ref Value))
     : Maybe (Map (Ref Value)) ! { Mut | e } =
   V.foldl
     (\acc i ->
@@ -397,29 +398,29 @@ fun all (a : CoreArena) (ps : [CorePat]) (vs : [Value]) (env : Map (Ref Value))
     (Just env)
     (V.range 0 (V.len ps))
 
-fun litMatches (a : CoreArena) (l : CoreLit) (v : Value) : Bool =
+fun litMatches (a : ErasedArena) (l : ErasedLit) (v : Value) : Bool =
   match (a, l) with
-  | CoreLitLInt n -> (match v with | Int b -> n == b | _ -> equal (literal a l) v)
-  | CoreLitLBig _ -> equal (literal a l) v
-  | CoreLitLWord _ _ -> equal (literal a l) v
-  | CoreLitLF64 x -> (match v with | Float y -> x == y | _ -> False)
-  | CoreLitLF32 _ -> equal (literal a l) v
-  | CoreLitLStr s -> (match v with | Str t -> s == t | _ -> False)
-  | CoreLitLChar c -> (match v with | Char ch -> c == C.code ch | _ -> False)
-  | CoreLitLBool b -> (match v with | Bool w -> b == w | _ -> False)
-  | CoreLitLUnit -> (match v with | Unit -> True | _ -> False)
+  | ErasedLitLInt n -> (match v with | Int b -> n == b | _ -> equal (literal a l) v)
+  | ErasedLitLBig _ -> equal (literal a l) v
+  | ErasedLitLWord _ _ -> equal (literal a l) v
+  | ErasedLitLF64 x -> (match v with | Float y -> x == y | _ -> False)
+  | ErasedLitLF32 _ -> equal (literal a l) v
+  | ErasedLitLStr s -> (match v with | Str t -> s == t | _ -> False)
+  | ErasedLitLChar c -> (match v with | Char ch -> c == C.code ch | _ -> False)
+  | ErasedLitLBool b -> (match v with | Bool w -> b == w | _ -> False)
+  | ErasedLitLUnit -> (match v with | Unit -> True | _ -> False)
 
-fun literal (a : CoreArena) (l : CoreLit) : Value =
+fun literal (a : ErasedArena) (l : ErasedLit) : Value =
   match (a, l) with
-  | CoreLitLInt n -> Int n
-  | CoreLitLBig n -> Big (toBigInt n)
-  | CoreLitLWord w n -> sized w (Int n)
-  | CoreLitLF64 x -> Float x
-  | CoreLitLF32 x -> F32 (toFloat32 x)
-  | CoreLitLStr s -> Str s
-  | CoreLitLChar c -> Char (C.fromCode c)
-  | CoreLitLBool b -> Bool b
-  | CoreLitLUnit -> Unit
+  | ErasedLitLInt n -> Int n
+  | ErasedLitLBig n -> Big (toBigInt n)
+  | ErasedLitLWord w n -> sized w (Int n)
+  | ErasedLitLF64 x -> Float x
+  | ErasedLitLF32 x -> F32 (toFloat32 x)
+  | ErasedLitLStr s -> Str s
+  | ErasedLitLChar c -> Char (C.fromCode c)
+  | ErasedLitLBool b -> Bool b
+  | ErasedLitLUnit -> Unit
 
 -- `f` applied to `arg`. A closure with parameters still to take after this
 -- one is a closure again, as the lambda inside a lambda would have made.
@@ -450,18 +451,18 @@ fun perform (m : Machine) (e : String) (o : String) (arg : Value) (k : List Fram
   | Just (taken, outer, clause, henv) ->
       let cont = Cont (newRef (Just taken)) in
       let scope =
-        define (define henv (coreClauseParam a clause) arg) (coreClauseResume a clause) cont
-      in go m (Eval (coreClauseBody a clause) scope) outer
+        define (define henv (erasedClauseParam a clause) arg) (erasedClauseResume a clause) cont
+      in go m (Eval (erasedClauseBody a clause) scope) outer
 
 -- The frames down to the first handler for `e.o`, that handler's frame last;
 -- what is under it; its clause; and its scope.
-fun handlerIn (a : CoreArena) (e : String) (o : String) (k : List Frame) (above : List Frame) =
+fun handlerIn (a : ErasedArena) (e : String) (o : String) (k : List Frame) (above : List Frame) =
   match k with
   | [;] -> None
   | f :: rest ->
       (match f with
        | HandleMark clauses _ henv ->
-           (match V.find (\c -> coreClauseEff a c == e and coreClauseOp a c == o) clauses with
+           (match V.find (\c -> erasedClauseEff a c == e and erasedClauseOp a c == o) clauses with
             | Just c -> Just (L.reverse (f :: above), rest, c, henv)
             | None -> handlerIn a e o rest (f :: above))
        | _ -> handlerIn a e o rest (f :: above))

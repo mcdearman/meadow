@@ -1,16 +1,22 @@
--- Core: what a program compiles to before any back end sees it, and what the
--- CEK machine runs -- `meadow_core`'s `Term`, with the types erased and the
--- positions gone. It is a Lingua language (`lang!`), a program of it tables
--- and a node a row of them.
+-- Core: what a program compiles to before any back end sees it --
+-- `meadow_core`'s `Term`, as Lingua languages (`lang!`), a program of one
+-- tables and a node a row of them. There are two:
 --
--- For now it is read from the core the Rust compiler writes of its own, in
+-- `Core` is typed, as `meadow_core` is: every term and pattern holds its
+-- type, and a function its parameter's. `Elab` makes it of a typed program,
+-- and it is what is lowered to Cut.
+--
+-- `Erased` is `Core` with its types gone, which is what the CEK machine runs
+-- and what the Rust compiler writes of its own for that machine, in
 -- `CoreText`: a grammar Lingua makes the parser of (`syntax!`), the language
--- that grammar implies, `Printed` (`lang!`), and a pass from it to `Core`,
+-- that grammar implies, `Printed` (`lang!`), and a pass from it to `Erased`,
 -- `read` (`pass!`), which makes numbers of the numerals and text of the
--- quoted strings. The passes that make it of a program come later.
+-- quoted strings. `erase` takes `Core` to it.
 
 use Scythe (lexer!)
 use Lingua (syntax!, lang!, pass!)
+use MeadowBoot.Types
+use MeadowBoot.Types.Type.*
 use Std.Collections.Vector as V
 use Std.String as S
 use Std.Char as C
@@ -156,10 +162,10 @@ lang! { Printed from CoreText }
 
 -- --- the language ------------------------------------------------------------
 
--- Core: a binder is a number, a name or a text is itself, and a literal is
--- its value.
+-- Erased core: a binder is a number, a name or a text is itself, and a
+-- literal is its value.
 @pub(pkg) lang! {
-  pub Core extends Printed with In
+  pub Erased extends Printed with In
   File + File { entry : Int, defs : [Def], named : [Named] }
   Def + Def { id : Int, body : Term }
   Named + Named { name : String, labels : [String] }
@@ -193,10 +199,60 @@ lang! { Printed from CoreText }
   Arm + Arm { pat : Pat, guard : Maybe Term, body : Term }
 }
 
+-- A type of inference's, as a node's field.
+type Ty = Type
+
+-- Core as `meadow_core` has it, before its types are erased: every term and
+-- pattern with its type, and a function with its parameter's. What `Elab`
+-- makes of a program, and what is lowered to Cut, which needs to know how
+-- each value is represented.
+@pub(pkg) lang! {
+  pub Core extends Erased with In
+  Term - Lam
+  Term + Lam { param : Int, paramTy : Ty, body : Term }
+  Term * { ty : Ty }
+  Pat * { ty : Ty }
+}
+
+-- The types taken off: what the CEK machine runs.
+pass! {
+  pub erase : Core -> Erased
+    | Var { id } -> Var { id = id }
+    | Lam { param, body } -> Lam { param = param, body = body }
+    | App { func, arg } -> App { func = func, arg = arg }
+    | Let { id, value, body } -> Let { id = id, value = value, body = body }
+    | LetRec { binds, body } -> LetRec { binds = binds, body = body }
+    | If { cond, yes, no } -> If { cond = cond, yes = yes, no = no }
+    | Tuple { items } -> Tuple { items = items }
+    | Array { items } -> Array { items = items }
+    | Proj { tuple, index } -> Proj { tuple = tuple, index = index }
+    | Record { fields } -> Record { fields = fields }
+    | Sel { target, label } -> Sel { target = target, label = label }
+    | Extend { target, label, value } -> Extend { target = target, label = label, value = value }
+    | Ctor { name, args } -> Ctor { name = name, args = args }
+    | Prim { op, args } -> Prim { op = op, args = args }
+    | Case { scrutinee, arms } -> Case { scrutinee = scrutinee, arms = arms }
+    | Perform { eff, op, arg } -> Perform { eff = eff, op = op, arg = arg }
+    | Handle { body, clauses, retId, ret } ->
+        Handle { body = body, clauses = clauses, retId = retId, ret = ret }
+    | Join { id, params, rhs, body } -> Join { id = id, params = params, rhs = rhs, body = body }
+    | Jump { id, args } -> Jump { id = id, args = args }
+    | Ill {} -> Ill {}
+    | Const { lit } -> Const { lit = lit }
+    | PWild {} -> PWild {}
+    | PVar { id } -> PVar { id = id }
+    | PAs { id, pat } -> PAs { id = id, pat = pat }
+    | PLit { lit } -> PLit { lit = lit }
+    | PTuple { items } -> PTuple { items = items }
+    | PArray { items } -> PArray { items = items }
+    | PCtor { name, args } -> PCtor { name = name, args = args }
+    | PRecord { fields } -> PRecord { fields = fields }
+}
+
 -- Each numeral a number, each quoted string its text, each float's bits the
 -- float; everything else is as it was.
 pass! {
-  read : Printed -> Core
+  read : Printed -> Erased
     | File { entry, defs, named } -> File { entry = number entry, defs = defs, named = named }
     | Def { id, body } -> Def { id = number id, body = body }
     | Named { name, labels } -> Named { name = unquoted name, labels = V.map unquoted labels }
@@ -238,11 +294,11 @@ pass! {
     | PCtor { name, args } -> PCtor { name = unquoted name, args = args }
     | PField { label, pat } -> PField { label = unquoted label, pat = pat }
     | Arm { pat, guard, body } ->
-        Arm { pat = pat, guard = M.map (\g -> coreGuardCondIn out g) guard, body = body }
+        Arm { pat = pat, guard = M.map (\g -> erasedGuardCondIn out g) guard, body = body }
 }
 
 -- The program `input` writes, or what is wrong with it.
-@pub fun program (input : String) : Result String CoreProgram =
+@pub fun program (input : String) : Result String ErasedProgram =
   match parseCoreText input with
   | (g, []) ->
       (match printedFromCoreText g with

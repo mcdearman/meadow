@@ -487,7 +487,15 @@ impl ConditionalEventHandler for AutoIndent {
         // Indent for where the cursor is, not for the whole buffer: Enter in the
         // middle of an entry breaks the line at that point.
         let before = &ctx.line()[..ctx.pos()];
-        Some(Cmd::Insert(1, format!("\n{}", auto_indent(before))))
+        let mut indent = auto_indent(before);
+        // A line break asked for by name carries the entry on, whatever the
+        // line above looks like: after a whole `fun f x = e` it is for the
+        // next clause, `| f y = …`, which stands a unit in. Never the margin,
+        // where a line would read as the start of something else.
+        if self.always && indent == PAD && !before.trim().is_empty() {
+            indent = format!("{PAD}{}", " ".repeat(fmt::UNIT));
+        }
+        Some(Cmd::Insert(1, format!("\n{indent}")))
     }
 }
 
@@ -889,7 +897,9 @@ fn print_banner() {
             "Alt+Enter".cyan()
         );
         println!("  sends Option as Meta: Terminal > Settings > Profiles > Keyboard >");
-        println!("  \"Use Option as Meta key\"; in iTerm2, Profiles > Keys > Left Option: Esc+.");
+        println!("  \"Use Option as Meta key\"; in iTerm2, Profiles > Keys > Left Option: Esc+;");
+        println!("  in VS Code's terminal, the setting `terminal.integrated.macOptionIsMeta`.");
+        println!("  Until then Option+Return is an ordinary Return, and enters what is typed.");
     }
     println!();
 }

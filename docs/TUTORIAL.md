@@ -163,8 +163,10 @@ multi-line entry with a blank line.**
 On macOS, `Ctrl+J` always forces a newline. `Alt+Enter` is Option+Return, and
 works once the terminal sends Option as Meta: in Terminal, Settings > Profiles >
 Keyboard > "Use Option as Meta key"; in iTerm2, Profiles > Keys > Left Option:
-Esc+. Without that setting Option+Return is an ordinary Return and submits the
-entry.
+Esc+; in VS Code's terminal, the setting `terminal.integrated.macOptionIsMeta`.
+Without that setting Option+Return is an ordinary Return and submits the entry.
+A line break forced this way is indented for what comes next: after a whole
+`fun f x = e`, a unit in, for the next clause.
 
 `Ctrl+F` finds a declaration. Type part of a name -- `len` finds `length`, and
 `Vector.len` only the one in `Std.Collections.Vector` -- or a type, and it

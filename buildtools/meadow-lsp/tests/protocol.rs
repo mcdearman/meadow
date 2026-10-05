@@ -207,7 +207,7 @@ fn formatting_text_that_is_not_ascii_answers() {
 #[test]
 fn formatting_answers_with_what_meadow_fmt_would_do() {
     let mut c = Client::start();
-    let messy = "fun f x =\n        x + 1\n\n\n\ndef demo =   \n   f 1\n";
+    let messy = "def one = 1\n\nfun f x =\n        x + 1\n\n\n\ndef demo =   \n   f 1\n";
     c.set(messy);
     let edits = c.request(
         "textDocument/formatting",
@@ -243,8 +243,8 @@ fn formatting_answers_with_what_meadow_fmt_would_do() {
     assert_eq!(applied, meadow_lsp::format::formatted(messy));
     assert_eq!(
         e["range"]["start"]["line"],
-        json!(1),
-        "the first line was already right"
+        json!(2),
+        "the first two lines were already right"
     );
 
     // Once formatted, saving again asks for nothing -- and a client sending a

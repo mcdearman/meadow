@@ -55,6 +55,10 @@ beyond the last release is under _Unreleased_.
   after. A bracketed `let` is now laid out with its value four in, its `in`
   two in, and its body on the `in`'s line when they fit; and a line that
   carries another on moves with it when that line is moved.
+- The finder reads a signature still being typed as the start of one, so
+  `(a -> b) -> [a;]` finds `map` first. It took the last type typed for the
+  result, and put `drop` first: a list comes back from it, and its first
+  argument is a type variable, which a function fits.
 - The finder reads `[a;]` in a type as a list. It dropped the `;` and looked
   for a vector, so `(a -> b) -> [a;] -> [b;]` did not find a `map` over lists.
 - Two builds that fetch the same git dependency at once take turns in its

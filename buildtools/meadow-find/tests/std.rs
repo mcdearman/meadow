@@ -167,3 +167,24 @@ fn types_traits_and_effects_are_found_by_name() {
 fn a_method_is_a_method() {
     assert_eq!(decl("Std.Debug.debug").kind, Kind::Method);
 }
+
+/// A signature is typed from the left, so what has been typed so far ends in
+/// what may be the next argument and not the result: `(a -> b) -> [a;]` is
+/// most of `map`'s, and finds it before what happens to answer a list.
+#[test]
+fn a_signature_still_being_typed_finds_what_it_is_the_start_of() {
+    let found = top("(a -> b) -> [a;]", 3);
+    assert_eq!(
+        found.first().map(String::as_str),
+        Some("Std.Collections.List.map"),
+        "{found:?}"
+    );
+    // Finished, it is still first; and a query that is a whole signature
+    // still finds what has exactly that one.
+    let found = top("(a -> b) -> [a;] -> [b;]", 3);
+    assert_eq!(
+        found.first().map(String::as_str),
+        Some("Std.Collections.List.map"),
+        "{found:?}"
+    );
+}

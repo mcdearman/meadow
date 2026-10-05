@@ -418,6 +418,32 @@ const DECL: u32 = 1 << 24;
 /// one, and the cheaper the better otherwise. See the module docs for the
 /// prices.
 pub fn cost(query: &Sig, decl: &Sig) -> Option<u32> {
+    let whole = cost_as_written(query, decl);
+    // A signature is typed from the left, and until it is finished its last
+    // type is as likely the next argument as the result: `(a -> b) -> [a;]`
+    // is on its way to `map`'s. So it is also read that way -- every type an
+    // argument, the result not said yet -- at a small price, so that what
+    // has exactly the signature typed still comes first.
+    let unfinished = (!query.args.is_empty() && !matches!(query.result, Ty::Any)).then(|| {
+        let mut args = query.args.clone();
+        args.push(query.result.clone());
+        Sig {
+            context: query.context.clone(),
+            args,
+            result: Ty::Any,
+        }
+    });
+    let started = unfinished
+        .and_then(|q| cost_as_written(&q, decl))
+        .map(|c| c + 1);
+    match (whole, started) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// [`cost`], of the query as it is written: its last type the result.
+fn cost_as_written(query: &Sig, decl: &Sig) -> Option<u32> {
     let m = query.args.len();
     let n = decl.args.len();
     // More arguments than the declaration takes, it cannot be given.

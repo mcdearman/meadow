@@ -202,44 +202,46 @@ fun invoke (f : Function) (answer : Int) (args : [Arg]) : Result String
 
 use Std.Test (assertEq, assertTrue)
 
--- The tests that call C are for where there is a C library to call: `unix`.
--- These two are for everywhere: what is not there is an error, and never a
--- crash.
+-- The tests that call C are for where there is a C library to call, which
+-- `hasC` finds out as it runs: where there is none -- Windows, so far --
+-- each has nothing to check. The last two are for everywhere: what is not
+-- there is an error, and never a crash.
 
-@cfg(unix)
 fun libc () =
   match open "libSystem.dylib" with
   | Ok l -> Ok l
   | Err _ -> open "libc.so.6"
 
-@cfg(unix)
+-- Whether there is C to call at all: a null answer from `alloc` says not.
+fun hasC () = withBuffer 1 (\p -> address p != 0)
+
+-- What a test says of a library or a function it could not get: nothing,
+-- where there is no C; and what went wrong, where there is.
+fun noC (why : String) (what : String) = if hasC () then assertEq why "" what else ()
+
 fun cFunction (name : String) =
   match libc () with
   | Err why -> Err why
   | Ok l -> function l name
 
-@cfg(unix)
 @test fun aStringGoesInAndAnIntegerComesBack () =
   match cFunction "strlen" with
-  | Err why -> assertEq why "" "the C library has strlen"
+  | Err why -> noC why "the C library has strlen"
   | Ok strlen -> assertEq (callInt strlen [Arg.String "héllo"]) (Ok 6) "its bytes, counted by C"
 
-@cfg(unix)
 @test fun anIntegerGoesIn () =
   match cFunction "labs" with
-  | Err why -> assertEq why "" "the C library has labs"
+  | Err why -> noC why "the C library has labs"
   | Ok labs -> assertEq (callInt labs [Arg.Int (0 - 7)]) (Ok 7) "its absolute value"
 
-@cfg(unix)
 @test fun aFloatComesBack () =
   match cFunction "atof" with
-  | Err why -> assertEq why "" "the C library has atof"
+  | Err why -> noC why "the C library has atof"
   | Ok atof -> assertEq (callFloat atof [Arg.String "2.5"]) (Ok 2.5) "the number it reads"
 
-@cfg(unix)
 @test fun aStringComesBackAndANullOneIsEmpty () =
   match cFunction "getenv" with
-  | Err why -> assertEq why "" "the C library has getenv"
+  | Err why -> noC why "the C library has getenv"
   | Ok getenv ->
       let _ =
         assertEq
@@ -248,39 +250,40 @@ fun cFunction (name : String) =
           "null is the empty string"
       in assertTrue (callString getenv [Arg.String "PATH"] != Ok "") "and PATH is set"
 
-@cfg(unix)
 @test fun cFillsMemoryThatIsReadBack () =
   match cFunction "memset" with
-  | Err why -> assertEq why "" "the C library has memset"
+  | Err why -> noC why "the C library has memset"
   | Ok memset ->
       let got = withBuffer 16 (\p ->
         let _ = callPtr memset [Arg.Ptr p, Arg.Int 104, Arg.Int 3] in
         (readText p 3, readUnsigned p 1 4)) in
       assertEq got ("hhh", Ok [104, 104, 104, 0]) "three bytes set, the fourth as it was"
 
-@cfg(unix)
 @test fun numbersAreWrittenAndReadAtTheirWidth () =
-  let got = withBuffer 32 (\p ->
-    let _ = writeFloats p 4 [1.5, 2.25] in
-    let floats = readFloats p 4 2 in
-    let _ = writeInts (offset p 16) 2 [0 - 1, 513] in
-    (floats, readInts (offset p 16) 2 2, readUnsigned (offset p 16) 1 4)) in
-  assertEq got (Ok [1.5, 2.25], Ok [0 - 1, 513], Ok [255, 255, 1, 2]) "as C floats and shorts"
+  if hasC () then
+    let got = withBuffer 32 (\p ->
+      let _ = writeFloats p 4 [1.5, 2.25] in
+      let floats = readFloats p 4 2 in
+      let _ = writeInts (offset p 16) 2 [0 - 1, 513] in
+      (floats, readInts (offset p 16) 2 2, readUnsigned (offset p 16) 1 4)) in
+    assertEq got (Ok [1.5, 2.25], Ok [0 - 1, 513], Ok [255, 255, 1, 2]) "as C floats and shorts"
+  else ()
 
-@cfg(unix)
 @test fun whatIsNotThereIsSaid () =
-  let _ =
-    assertTrue
-      (match open "/no/such/library.dylib" with | Err _ -> True | Ok _ -> False)
-      "no such library"
-  in match libc () with
-  | Err why -> assertEq why "" "the C library opens"
-  | Ok l ->
+  if hasC () then
+    let _ =
       assertTrue
-        (match function l "meadow_no_such_function" with
-         | Err _ -> True
-         | Ok _ -> False)
-        "no such function"
+        (match open "/no/such/library.dylib" with | Err _ -> True | Ok _ -> False)
+        "no such library"
+    in match libc () with
+    | Err why -> noC why "the C library opens"
+    | Ok l ->
+        assertTrue
+          (match function l "meadow_no_such_function" with
+           | Err _ -> True
+           | Ok _ -> False)
+          "no such function"
+  else ()
 
 @test fun aLibraryThatIsNotThereIsAnError () =
   assertTrue

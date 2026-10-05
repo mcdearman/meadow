@@ -146,6 +146,9 @@ fun holds (a : AstArena) (m : AstAttrMeta) : Bool =
       else if n == "not" then not (V.all (holds a) args) else False)
   else False
 
+-- Whether declaration `d` is there at all: every `@cfg` on it holds here.
+@pub fun declHolds (a : AstArena) (d : AstDecl) : Bool = enabled a (fst (peel a d))
+
 -- The declarations of a module that hold here, each with its attributes.
 @pub fun declsOf (src : Source) : [([AstAttr], AstDecl)] =
   match src.ast with

@@ -1,0 +1,25 @@
+-- What a `@cfg` switches off is not there: it is not resolved, and nothing
+-- can name what it declares. The differentials read this for the platform
+-- MeadowBoot decides a `@cfg` for, Windows on x86-64 in a debug build, so
+-- `separator` is the first of these two and `home` is the second.
+
+@cfg(windows)
+@pub def separator = "\\"
+
+@cfg(unix)
+@pub def separator = "/"
+
+@cfg(unix)
+fun onlyOnUnix (path : String) : String = nothingOfThatNameAnywhere path
+
+@cfg(not(os = "windows"))
+@pub def home = onlyOnUnix "~"
+
+@cfg(os = "windows")
+@pub def home = "C:" ++ separator
+
+@cfg(all(debug, arch = "x86_64"))
+@pub fun joined (a : String) (b : String) : String = a ++ separator ++ b
+
+@cfg(any(release, arch = "aarch64"))
+@pub fun joined (a : String) (b : String) : String = missingToo a b

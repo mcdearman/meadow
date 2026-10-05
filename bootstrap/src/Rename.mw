@@ -19,6 +19,7 @@ use Lingua.Lang (Meta, spanMeta, metaStart, metaEnd)
 use Lingua.Table (Table, enter, entry, amend, tabled)
 use MeadowBoot.Ast
 use MeadowBoot.Ast (Ast!)
+use MeadowBoot.Scopes (declHolds)
 use Std.Collections.Vector as V
 use Std.Collections.List as L
 use Std.Collections.HashMap as H
@@ -243,6 +244,11 @@ fun typeCtor (env : Env) (ty : String) (name : String) : Maybe (Int, Int) =
 
 pass! {
   pub rename : Ast -> Hir with env
+    -- What a `@cfg` switches off is gone before anything is resolved, as
+    -- `meadow_compiler::cfg::strip` takes it out: its body names what may not
+    -- be there either.
+    | Module { raw decls } ->
+        Module { decls = V.map (\d -> renameDecl src out env d) (V.filter (declHolds src) decls) }
     | Expr.Var { name } ->
         Var
           { ref = refAlts out env (known env (textOf out name) (varOf env (textOf out name))) (valueAlts env (textOf out name)) (nameMeta out name) }

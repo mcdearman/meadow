@@ -864,8 +864,12 @@ fn print_banner() {
     println!("{}", LOGO.green().bold());
     println!();
     println!(
-        "  {}  {} commands and keys   {} a tour   {} quit",
-        "Meadow REPL.".bold(),
+        "  {}",
+        "Welcome to the Meadow interactive environment!".bold()
+    );
+    println!();
+    println!(
+        "  {} commands and keys   {} a tour   {} quit",
         ":help".cyan().bold(),
         ":tour".cyan().bold(),
         ":q".cyan().bold()

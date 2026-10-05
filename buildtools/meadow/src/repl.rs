@@ -121,7 +121,14 @@ impl TermValidator {
         let module = AstModule {
             path: vec![],
             name,
-            ast: Located::new(ast::Module { name, decls }, Span::default()),
+            ast: Located::new(
+                ast::Module {
+                    name,
+                    decls,
+                    attrs: Vec::new(),
+                },
+                Span::default(),
+            ),
             source: src,
         };
         let deps: Vec<meadow_compiler::Dep<'_>> =
@@ -1481,6 +1488,7 @@ impl Session {
             ast::Module {
                 name: InternedString::from("repl"),
                 decls,
+                attrs: Vec::new(),
             },
             Span::default(),
         );

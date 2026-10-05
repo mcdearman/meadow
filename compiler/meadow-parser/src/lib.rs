@@ -110,12 +110,21 @@ fn module<'tokens, I>(
 where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
-    decl()
+    // `@!name(…)` is on the module, and so comes before anything in it.
+    // The two characters lex as one operator.
+    let inner = select! { Token::OpIdent(s) if &*s == "@!" => () }
+        .ignore_then(attr_body())
         .repeated()
-        .at_least(1)
-        .collect::<Vec<_>>()
-        .validate(|groups, _, emitter| joined(groups, emitter))
-        .map_with(move |decls, e| Located::new(Module { name, decls }, e.span()))
+        .collect::<Vec<_>>();
+    inner
+        .then(
+            decl()
+                .repeated()
+                .at_least(1)
+                .collect::<Vec<_>>()
+                .validate(|groups, _, emitter| joined(groups, emitter)),
+        )
+        .map_with(move |(attrs, decls), e| Located::new(Module { name, decls, attrs }, e.span()))
 }
 
 /// `@pub`, `@attr(A, B, C)`, `@cfg(all(unix, os = "linux"))` — a `@`, a name,
@@ -125,13 +134,20 @@ fn attr<'tokens, I>()
 where
     I: ValueInput<'tokens, Token = Token, Span = Span>,
 {
-    just(Token::At)
-        // `@macro` names an attribute, and `macro` is a keyword: they are
-        // different namespaces and nothing else is written after an `@`, so the
-        // word is taken as it is spelled.
-        .ignore_then(path_seg().or(
-            just(Token::Macro).map_with(|_, e| Ident::new(InternedString::from("macro"), e.span())),
-        ))
+    just(Token::At).ignore_then(attr_body())
+}
+
+/// What follows the `@` of an attribute, or the `@!` of one on a module.
+fn attr_body<'tokens, I>()
+-> impl Parser<'tokens, I, Attr, extra::Err<Rich<'tokens, Token, Span>>> + Clone
+where
+    I: ValueInput<'tokens, Token = Token, Span = Span>,
+{
+    // `@macro` names an attribute, and `macro` is a keyword: they are
+    // different namespaces and nothing else is written after an `@`, so the
+    // word is taken as it is spelled.
+    path_seg()
+        .or(just(Token::Macro).map_with(|_, e| Ident::new(InternedString::from("macro"), e.span())))
         .then(
             meta()
                 .separated_by(just(Token::Comma))

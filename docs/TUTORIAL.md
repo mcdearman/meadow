@@ -2730,6 +2730,12 @@ for. So a feature should add and never take away. A name that the package's
 `[features]` does not have is an error that lists the ones it has; `--cfg
 feature=gpu` still turns a flag on everywhere without declaring it.
 
+These are a package's own. What Meadow itself has not settled yet is asked for
+another way, as in Rust: `@!feature(ffi)` at the top of a package's root module
+(`src/Main.mw` or `src/Lib.mw`), which only a nightly `meadow` accepts. `@!` is
+an attribute of the module it is written in, where `@` is one of the
+declaration after it.
+
 `@cfg` works on any top-level declaration (`fun`, `def`, `data`, `record`,
 `effect`, `use`, and `@test` functions), and on the fields of a record, the named
 fields of a constructor, and the operations of an effect:

@@ -623,14 +623,17 @@ version may break source and a patch may not; the promise covers the language,
 **Nightly** is `master`, built once a day when it has moved and published
 under the tag `nightly` by `.github/workflows/nightly.yml`. It says so —
 `meadow 0.3.0-nightly (2026-10-05 892808f)` — and it is the only channel that
-accepts unstable features, each named by the package that uses it:
+accepts unstable features, each named at the top of the root module of the
+package that uses it, as `#![feature(…)]` is in Rust:
 
-```toml
-[package]
-name = "torch"
-version = "0.4.0"
-features = ["ffi"]      # calling C through Std.Ffi
+```meadow
+@!feature(ffi)      -- calling C through Std.Ffi
+
+use Std.Ffi as Ffi
 ```
+
+These are not the features a package offers the ones that build it, which are
+`[features]` in its `Meadow.toml` and work on every channel.
 
 A build from a checkout (`scripts/install.sh`) is `-dev`, and takes what a
 nightly takes. A project can say which toolchain it is built with in a

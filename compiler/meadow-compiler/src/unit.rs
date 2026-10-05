@@ -1077,6 +1077,7 @@ pub(crate) fn lift_inline_modules(modules: &mut Vec<AstModule>) -> Vec<usize> {
                     ast::Module {
                         name: *name.value(),
                         decls,
+                        attrs: Vec::new(),
                     },
                     span,
                 ),

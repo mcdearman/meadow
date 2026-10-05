@@ -602,13 +602,52 @@ fn compile_package(
         }
     }
 
+    // What the package asks of a `meadow` that is not stable: `@!feature(…)`
+    // at the top of its root module, as `#![feature(…)]` is a crate's to say.
+    let mut asked: Vec<String> = Vec::new();
+    for m in &modules {
+        for attr in &m.ast.value().attrs {
+            let name = &**attr.name.value();
+            let mut problem = |msg: String, span: Span| {
+                diags.push(Diagnostic {
+                    msg,
+                    filename: m.source.name().to_string(),
+                    label: ("written here".to_string(), span),
+                    extra_labels: vec![],
+                })
+            };
+            if name != "feature" {
+                problem(
+                    format!(
+                        "`@!{name}` is not an attribute a module has: \
+                         `@!feature(…)` is the one there is"
+                    ),
+                    attr.name.span,
+                );
+            } else if !m.path.is_empty() {
+                problem(
+                    "`@!feature(…)` is the package's to say: it goes at the top of \
+                     the root module"
+                        .to_string(),
+                    attr.name.span,
+                );
+            } else {
+                for meta in &attr.meta {
+                    let feature = meta.name();
+                    match crate::channel::feature_problem(feature.value(), crate::channel::CHANNEL)
+                    {
+                        Some(msg) => problem(msg, feature.span),
+                        None => asked.push(feature.value().to_string()),
+                    }
+                }
+            }
+        }
+    }
+
     // `Std.Ffi` is unstable: the package that names it has to have asked.
     for m in &modules {
         if let Some(span) = uses_ffi(&m.ast.value().decls)
-            && let Some(msg) = crate::channel::ffi_problem(
-                pkg.version.as_ref().map(|_| &pkg.features[..]),
-                crate::channel::CHANNEL,
-            )
+            && let Some(msg) = crate::channel::ffi_problem(&asked)
         {
             diags.push(Diagnostic {
                 msg,

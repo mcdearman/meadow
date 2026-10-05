@@ -15,11 +15,18 @@ beyond the last release is under _Unreleased_.
 
 ### Breaking
 
+- An unstable feature is asked for in the source, not in `Meadow.toml`:
+  `@!feature(ffi)` at the top of the package's root module, as Rust's
+  `#![feature(…)]` is at the top of a crate's. `features = ["ffi"]` under
+  `[package]` is an error that says so. A lone file that uses `Std.Ffi` asks
+  the same way; a nightly let it through unasked before.
 - `meadow fmt` cuts lines longer than 100 columns by default, as rustfmt does.
   It was 80. `--width 80` asks for the old width.
 
 ### Added
 
+- `@!name(…)` before a module's first declaration is an attribute of the
+  module. `@!feature(…)` is the one there is.
 - A package has features, as a Cargo crate does: `[features]` in `Meadow.toml`
   names them, each with the features it turns on with it, and `default` is the
   ones on unless a build says not. `--features a,b`, `--no-default-features`

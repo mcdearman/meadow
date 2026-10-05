@@ -103,6 +103,9 @@ impl MacCall {
 pub struct Module {
     pub name: InternedString,
     pub decls: Vec<LDecl>,
+    /// The attributes written on the module itself, before its first
+    /// declaration: `@!feature(ffi)`. As Rust's `#![…]` is to its `#[…]`.
+    pub attrs: Vec<Attr>,
 }
 
 pub type LDecl = Located<Decl>;

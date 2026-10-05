@@ -1,7 +1,9 @@
 -- Std.Ffi: calling C.
 --
--- Unstable: a package that uses it says `features = ["ffi"]` under
--- `[package]` in its Meadow.toml, and a stable `meadow` does not accept it.
+-- Unstable: a package that uses it says `@!feature(ffi)` at the top of its
+-- root module, and a stable `meadow` does not accept it.
+--
+--   @!feature(ffi)
 --
 --   use Std.Ffi as Ffi
 --   use Std.Ffi (Arg)

@@ -4,16 +4,18 @@
 //! The split is Rust's. A **stable** build is a release with a version that
 //! does not move, and it accepts only what the language promises to keep. A
 //! **nightly** build is `master` on some day, and accepts features that are
-//! still unsettled, each named in the manifest of the package that uses it:
+//! still unsettled, each named at the top of the root module of the package
+//! that uses it, as `#![feature(…)]` is at the top of a crate's:
 //!
-//! ```toml
-//! [package]
-//! name = "torch"
-//! version = "0.4.0"
-//! features = ["ffi"]
+//! ```text
+//! @!feature(ffi)
+//!
+//! use Std.Ffi as Ffi
 //! ```
 //!
-//! A build from a checkout is **dev**, and takes what nightly takes.
+//! A build from a checkout is **dev**, and takes what nightly takes. These
+//! are not the features a package offers the ones that build it, which are
+//! `[features]` in its `Meadow.toml` and work on every channel.
 //!
 //! The channel is decided when `meadow` is built -- `MEADOW_CHANNEL`, which
 //! the release workflows set; see `build.rs` -- so a binary cannot be talked
@@ -31,7 +33,7 @@ pub const VERSION: &str = env!("MEADOW_VERSION");
 /// The version alone, as the manifests have it.
 pub const NUMBER: &str = env!("CARGO_PKG_VERSION");
 
-/// The features that are not settled: each one's name in `features = […]`,
+/// The features that are not settled: each one's name in `@!feature(…)`,
 /// and what it is, for the error that asks for it.
 pub const UNSTABLE: &[(&str, &str)] = &[("ffi", "calling C through `Std.Ffi`")];
 
@@ -109,23 +111,13 @@ pub fn check_toolchain(root: &Path) -> Option<String> {
 }
 
 /// What is wrong with a package that reaches `Std.Ffi` without having asked
-/// for the feature: `features` is its manifest's, and `None` a lone file,
-/// which has no manifest to ask in.
-pub fn ffi_problem(features: Option<&[String]>, channel: &str) -> Option<String> {
-    match features {
-        Some(fs) if fs.iter().any(|f| f == "ffi") => None,
-        Some(_) => Some(
-            "`Std.Ffi` is unstable: a package that uses it says so, with \
-             `features = [\"ffi\"]` under `[package]` in its Meadow.toml"
-                .to_string(),
-        ),
-        None if channel == "stable" => Some(
-            "`Std.Ffi` is unstable, and this is a stable `meadow`: a nightly one \
-             accepts it (`meadowup default nightly`, then `meadowup update`)"
-                .to_string(),
-        ),
-        None => None,
-    }
+/// for the feature: `asked` is what its root module's `@!feature(…)`s name.
+pub fn ffi_problem(asked: &[String]) -> Option<String> {
+    (!asked.iter().any(|f| f == "ffi")).then(|| {
+        "`Std.Ffi` is unstable: a package that uses it says so, with `@!feature(ffi)` \
+         at the top of its root module"
+            .to_string()
+    })
 }
 
 #[cfg(test)]
@@ -152,14 +144,9 @@ mod tests {
     #[test]
     fn calling_c_is_asked_for_by_name() {
         let with = vec!["ffi".to_string()];
-        assert_eq!(ffi_problem(Some(&with), "nightly"), None);
-        let said = ffi_problem(Some(&[]), "nightly").expect("a problem");
-        assert!(said.contains("features = [\"ffi\"]"), "{said}");
-        // A lone file has nowhere to ask, and is let through where the
-        // feature can be had at all.
-        assert_eq!(ffi_problem(None, "nightly"), None);
-        assert_eq!(ffi_problem(None, "dev"), None);
-        assert!(ffi_problem(None, "stable").is_some());
+        assert_eq!(ffi_problem(&with), None);
+        let said = ffi_problem(&[]).expect("a problem");
+        assert!(said.contains("@!feature(ffi)"), "{said}");
     }
 
     #[test]

@@ -10,7 +10,6 @@
 //! [package]
 //! name = "demo"
 //! version = "0.1.0"
-//! features = ["ffi"]               # unstable features: see `crate::channel`
 //!
 //! [dependencies]
 //! util = "../util"                 # bare string = path
@@ -189,9 +188,6 @@ pub fn feature_flags(have: Option<InternedString>, features: &[String]) -> Optio
 pub struct Manifest {
     pub name: String,
     pub version: String,
-    /// `features = ["ffi"]`: the unstable features the package uses, which
-    /// only a nightly `meadow` accepts. See [`crate::channel`].
-    pub features: Vec<String>,
     /// `[features]`: the features the package offers, each with the others
     /// it turns on with it. `default` is the ones on unless a build says not.
     pub feature_table: Vec<(String, Vec<String>)>,
@@ -293,8 +289,6 @@ pub struct Package {
     /// The manifest's `version`. A lone file has no manifest, and so no
     /// version to report.
     pub version: Option<String>,
-    /// The manifest's `features`: the unstable features it may use.
-    pub features: Vec<String>,
     /// The manifest's `[features]`: see [`Manifest::feature_table`].
     pub feature_table: Vec<(String, Vec<String>)>,
     /// What this package asks of each dependency's features, parallel to
@@ -841,10 +835,6 @@ impl Builder<'_> {
         let modules = discover_modules(&canon, name)?;
         let id = self.packages.len();
         let version = manifest.as_ref().map(|m| m.version.clone());
-        let features = manifest
-            .as_ref()
-            .map(|m| m.features.clone())
-            .unwrap_or_default();
         let feature_table = manifest
             .as_ref()
             .map(|m| m.feature_table.clone())
@@ -859,7 +849,6 @@ impl Builder<'_> {
             id,
             name,
             version,
-            features,
             feature_table,
             dep_features,
             origin,
@@ -1105,7 +1094,7 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
     let mut version = "0.0.0".to_string();
     let mut deps: Vec<Dependency> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
-    let mut features: Vec<String> = Vec::new();
+    let mut problems: Vec<String> = Vec::new();
     let mut feature_table: Vec<(String, Vec<String>)> = Vec::new();
     let mut profiles: HashMap<String, ProfileConfig> = HashMap::new();
     let mut section = String::new();
@@ -1164,7 +1153,15 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
                     "name" => name = unquote(value).to_string(),
                     "version" if inline_flag(value, "workspace") => inherits.version = true,
                     "version" => version = unquote(value).to_string(),
-                    "features" => features = string_array(value),
+                    // Where an unstable feature was asked for until 0.3:
+                    // said, since what is written there now does nothing.
+                    "features" => problems.push(
+                        "`features` under `[package]` is not read any more: an unstable \
+                         feature is asked for in the source, `@!feature(ffi)` at the top of \
+                         the package's root module, and the features a package offers go \
+                         under `[features]`"
+                            .to_string(),
+                    ),
                     _ if from_workspace(key).as_deref() == Some("version") => {
                         inherits.version = true
                     }
@@ -1252,16 +1249,10 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
         }
     }
 
-    // A feature this `meadow` does not have, or one it has and may not give.
-    let problems: Vec<String> = features
-        .iter()
-        .filter_map(|f| crate::channel::feature_problem(f, crate::channel::CHANNEL))
-        .collect();
     let manifest = Manifest {
         warnings,
         name,
         version,
-        features,
         feature_table,
         deps,
         profiles,

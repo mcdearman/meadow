@@ -4255,6 +4255,18 @@ call such as `lang! { … }`, which lines start a new entry, since what a macro
 reads is a language of its own with a rule to a line. Two tokens that touch are
 left touching, so `a+b` and `f -1` stay as they are.
 
+`@fmt(skip)` on a declaration, or on a line of its own before one, leaves that
+declaration exactly as it is written, as `#[rustfmt::skip]` does in Rust: for a
+table set out by hand, a row to a line.
+
+```meadow
+@fmt(skip)
+def weights =
+  [ ("small",   1),
+    ("medium", 10),
+    ("large", 100) ]
+```
+
 A file whose brackets do not match is only indented.
 
 ---

@@ -326,7 +326,11 @@ fn tier(op: &str) -> (u8, Style) {
 }
 
 struct Printer<'a> {
+    src: &'a str,
     toks: Vec<Tok<'a>>,
+    /// The declaration read next is left as it is written: `@fmt(skip)` was
+    /// on a line of its own before it.
+    skip: bool,
     /// The token being read, and where what is being read ends.
     i: usize,
     end: usize,
@@ -351,7 +355,9 @@ pub fn pretty(src: &str, width: usize) -> Option<String> {
     let mut p = Printer {
         led: vec![false; toks.len()],
         end: toks.len(),
+        src,
         toks,
+        skip: false,
         i: 0,
         ids: 0,
         macros: 0,
@@ -501,7 +507,7 @@ impl<'a> Printer<'a> {
                 out.push(self.line_before(lo));
             }
             out.push(self.leads(lo));
-            out.push(self.within(lo, hi, |p| p.decl()));
+            out.push(self.item(lo, hi));
         }
         for (k, (blank, comment)) in after.iter().enumerate() {
             if k > 0 || n > 0 {
@@ -510,6 +516,56 @@ impl<'a> Printer<'a> {
             out.push(text(*comment));
         }
         cat(out)
+    }
+
+    /// The declaration `lo..hi`, laid out -- or as it is written, where
+    /// `@fmt(skip)` is on it or on a line of its own before it, as
+    /// `#[rustfmt::skip]` is on an item: for a table that reads as one, a
+    /// row to a line, whatever the width.
+    fn item(&mut self, lo: usize, hi: usize) -> Doc {
+        let (asks, alone) = self.skips(lo, hi);
+        let skip = std::mem::take(&mut self.skip) || asks;
+        if alone {
+            // Attributes and nothing else: the declaration is what follows.
+            self.skip = skip;
+        } else if skip {
+            return self.written(lo, hi);
+        }
+        self.within(lo, hi, |p| p.decl())
+    }
+
+    /// Whether `lo..hi` starts with an `@fmt(skip)` among its attributes, and
+    /// whether attributes are all it is.
+    fn skips(&self, lo: usize, hi: usize) -> (bool, bool) {
+        let (mut j, mut asks) = (lo, false);
+        while j < hi && self.attr_at(j) {
+            let named = |k: usize, what: &str| k < hi && self.toks[k].text == what;
+            let args = j + 2 < hi && self.toks[j + 2].kind == Kind::Open && self.toks[j + 2].tight;
+            if named(j, "@") && named(j + 1, "fmt") && args && named(j + 3, "skip") {
+                asks = true;
+            }
+            j = if args {
+                self.toks[j + 2].mate + 1
+            } else {
+                j + 2
+            };
+        }
+        (asks, j >= hi)
+    }
+
+    /// Tokens `lo..hi` exactly as the source has them, comments and all.
+    fn written(&mut self, lo: usize, hi: usize) -> Doc {
+        let at = |t: &str| t.as_ptr() as usize - self.src.as_ptr() as usize;
+        let last = &self.toks[hi - 1];
+        let end = match last.trail {
+            Some(comment) => at(comment) + comment.len(),
+            None => at(last.text) + last.text.len(),
+        };
+        let start = at(self.toks[lo].text);
+        for led in &mut self.led[lo..hi] {
+            *led = true;
+        }
+        text(&self.src[start..end])
     }
 
     /// Whether token `j` is the `@` of an attribute.
@@ -649,7 +705,7 @@ impl<'a> Printer<'a> {
                     self.line_before(lo)
                 });
                 inside.push(self.leads(lo));
-                inside.push(self.within(lo, hi, |p| p.decl()));
+                inside.push(self.item(lo, hi));
             }
         }
         let tail = self.closing_comments(close);
@@ -1904,6 +1960,18 @@ use Maybe.*
 }
 "#,
         );
+    }
+
+    // As `#[rustfmt::skip]` leaves an item: a table set out by hand stays so.
+    #[test]
+    fn a_declaration_marked_to_be_skipped_is_left_as_it_is_written() {
+        let table = "@fmt(skip)\ndef table =\n  [ (\"a\",   1),   -- one\n    (\"bcd\", 22) ]\n";
+        let src = format!(
+            "fun  f  x =\n  x\n\n{table}\n@fmt(skip) def  g  =  [ 1,\n  2 ]\n\nfun  h  y =\n  y\n"
+        );
+        let want =
+            format!("fun f x = x\n\n{table}\n@fmt(skip) def  g  =  [ 1,\n  2 ]\n\nfun h y = y\n");
+        check(&src, &want);
     }
 
     const SAMPLES: &[&str] = &[

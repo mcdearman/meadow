@@ -32,6 +32,8 @@ beyond the last release is under _Unreleased_.
 
 ### Added
 
+- `@fmt(skip)` on a declaration, or on a line of its own before one, has
+  `meadow fmt` leave it exactly as it is written, as `#[rustfmt::skip]` does.
 - A record update takes a field by its name alone, as construction does:
   `{ r | x, y = 2 }` is `{ r | x = x, y = 2 }`. An update of one field still
   writes its `=`, since `{ r | x }` is the extension of `x` with a field `r`.

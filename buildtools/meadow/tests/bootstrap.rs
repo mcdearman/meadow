@@ -1610,7 +1610,9 @@ fn write_prims() {
          use MeadowBoot.Types.VarKind.*\n\
          use Std.Collections.Vector as V\n\
          use Std.Maybe.Maybe.*\n\n\
-         -- Each primitive, its scheme -- if it has one -- and that written out.\n\
+         -- Each primitive, its scheme -- if it has one -- and that written out: a\n\
+         -- primitive to a line, which is what the formatter is told to leave.\n\
+         @fmt(skip)\n\
          @pub def prims : [(String, Maybe Scheme, String)] =\n  [ ",
     );
     let entries: Vec<String> = meadow_compiler::hir::PRIMS
@@ -1635,6 +1637,7 @@ fn write_prims() {
     out.push_str(
         "-- Each primitive that is an operation of core: its name there, and how many\n\
          -- arguments it takes at once.\n\
+         @fmt(skip)\n\
          @pub def primOps : [(String, String, Int)] =\n  [ ",
     );
     let ops: Vec<String> = meadow_compiler::hir::PRIMS

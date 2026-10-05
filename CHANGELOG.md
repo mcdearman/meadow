@@ -20,6 +20,13 @@ beyond the last release is under _Unreleased_.
 
 ### Added
 
+- A package has features, as a Cargo crate does: `[features]` in `Meadow.toml`
+  names them, each with the features it turns on with it, and `default` is the
+  ones on unless a build says not. `--features a,b`, `--no-default-features`
+  and `--all-features` choose among the features of the package being built,
+  a dependency is written `{ …, features = ["a"], default-features = false }`
+  to choose among its own, and the source asks with `@cfg(feature = "a")`. A
+  feature the package does not declare is an error that lists the ones it has.
 - `meadow fmt` sets a record out as rustfmt sets out a struct: its brace on the
   line of what it belongs to, a field to a line, and the closing brace back
   under the start of that line.

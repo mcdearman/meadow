@@ -271,6 +271,8 @@ fn a_manifest_can_name_every_way_of_choosing_a_commit() {
             url: format!("https://e.com/{name}"),
             reference: r,
         },
+        features: Vec::new(),
+        default_features: true,
     };
     assert_eq!(m.deps.len(), 4, "{:?}", m.deps);
     assert_eq!(m.deps[0], want("a", GitRef::Default));
@@ -682,6 +684,8 @@ fn a_version_dependency_reads_back_as_one() {
                 url: "https://e.com/a".to_string(),
                 reference: GitRef::Version(meadow::semver::Req::parse("1.2.0").unwrap()),
             },
+            features: Vec::new(),
+            default_features: true,
         }
     );
 }

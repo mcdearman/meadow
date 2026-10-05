@@ -26,6 +26,7 @@
 //! | `opt_level = "0"` / `"1"` / `"2"` | the optimisation level |
 //! | bare `test` | `meadow test` is building it |
 //! | any other name, or `name = "value"` | the build turned that flag on -- `--cfg fast`, `--cfg feature=gpu` |
+//! | `feature = "name"` | …or the package is built with that one of its `[features]` |
 //!
 //! and `all(…)`, `any(…)` and `not(…)` combine them, as in Rust. A value a
 //! built-in name cannot have -- `os = "linx"` -- is an error rather than a

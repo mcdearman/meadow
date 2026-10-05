@@ -449,6 +449,21 @@ pub(crate) fn compile_graph(
 
     let idents = identities(graph);
 
+    // What each package is built with of its `[features]`, which its
+    // `@cfg(feature = "…")`s ask after.
+    let features = match graph.enabled_features() {
+        Ok(f) => f,
+        Err(msg) => {
+            diagnostics.push(Diagnostic {
+                msg,
+                filename: "Meadow.toml".to_string(),
+                label: (String::new(), Span::from(0..0)),
+                extra_labels: vec![],
+            });
+            vec![Vec::new(); n]
+        }
+    };
+
     // The bar counts every package in the graph. One found up to date moves it
     // on without a line of its own, as cargo does with a crate that is fresh.
     let mut bar = status::Building::new(graph.order().len());
@@ -462,6 +477,7 @@ pub(crate) fn compile_graph(
         if !graph.roots().contains(&pid) {
             opts.cfg.test = false;
         }
+        opts.cfg.flags = crate::package::feature_flags(opts.cfg.flags, &features[pid]);
         let dep_prints: Vec<u64> = pkg.deps.iter().map(|&d| fingerprints[d]).collect();
         let fingerprint = incremental::fingerprint(pkg, &dep_prints, opts, floor);
         // A build that writes out what macros produced has to run them: the

@@ -405,12 +405,30 @@ struct TargetArgs {
     /// profile turns it on for a package.
     #[arg(long)]
     leaks: bool,
+    /// Features of the package to build with, by the names its `[features]`
+    /// gives them: `--features gpu,simd`. What a feature turns on is what
+    /// `@cfg(feature = "gpu")` is written on.
+    #[arg(long, value_name = "FEATURES", value_delimiter = ',')]
+    features: Vec<String>,
+    /// Build without the package's `default` features.
+    #[arg(long)]
+    no_default_features: bool,
+    /// Build with every feature the package has.
+    #[arg(long)]
+    all_features: bool,
 }
 
 impl TargetArgs {
     /// These, with what the resolved profile says for whatever the command
     /// line left out -- the runtime above all, which only the profile knows.
     fn with(&self, profile: &Resolved) -> TargetArgs {
+        // Said here, where what is to be built is settled and nothing has
+        // been built: which of the package's features the build is with.
+        meadow::package::ask_features(meadow::package::AskedFeatures {
+            named: self.features.clone(),
+            no_default: self.no_default_features,
+            all: self.all_features,
+        });
         TargetArgs {
             target: self
                 .target
@@ -420,6 +438,9 @@ impl TargetArgs {
             threads: self.threads.or(profile.threads),
             nursery: self.nursery.or(profile.nursery),
             leaks: self.leaks || profile.leaks,
+            features: self.features.clone(),
+            no_default_features: self.no_default_features,
+            all_features: self.all_features,
         }
     }
 

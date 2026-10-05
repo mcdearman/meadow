@@ -2697,6 +2697,39 @@ A flag nobody turned on is simply off. A built-in name given a value it can neve
 have, like `os = "linx"`, is an error, so a typo there cannot silently turn code
 off.
 
+**Features** are the flags a package offers the ones that build it, as Cargo's
+are. `Meadow.toml` names them under `[features]`; each lists the other features
+of the package it turns on with it, and `default` is the ones on unless a build
+says not:
+
+```toml
+[features]
+default = ["round"]
+round = []
+fancy = ["round"]     # `fancy` turns `round` on too
+```
+
+In the package's source a feature is asked after as `@cfg(feature = "fancy")`.
+The command line turns on features of the package it builds, and a package says
+which of a dependency's it wants:
+
+```sh
+meadow run --features fancy,loud     # these, and the defaults
+meadow run --no-default-features     # nothing but what is named
+meadow run --all-features            # every one the package has
+```
+
+```toml
+[dependencies]
+Shapes = { path = "../shapes", features = ["fancy"], default-features = false }
+```
+
+A feature is on for a package when anything in the build asks for it: two
+packages that depend on `Shapes` get one `Shapes`, built with what both asked
+for. So a feature should add and never take away. A name that the package's
+`[features]` does not have is an error that lists the ones it has; `--cfg
+feature=gpu` still turns a flag on everywhere without declaring it.
+
 `@cfg` works on any top-level declaration (`fun`, `def`, `data`, `record`,
 `effect`, `use`, and `@test` functions), and on the fields of a record, the named
 fields of a constructor, and the operations of an effect:
@@ -4038,33 +4071,34 @@ as it comes.
 
 ### Commands
 
-|                                                                  |                                                                                                                          |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `meadow`                                                         | REPL                                                                                                                     |
-| `meadow run <path>`                                              | build and run `main`, on the VM and its JIT                                                                              |
-| `meadow run --release <path>`                                    | …optimized, as an executable compiled ahead of time                                                                      |
-| `meadow run --backend vm\|jit\|aot <path>`                       | …on the Glade backend named (`--jit` and `--aot` for short)                                                              |
-| `meadow run --runtime silo <path>`                               | …on Silo: compiled by LLVM, counting references                                                                          |
-| `meadow run --gc-stats <path>`                                   | …and report what the garbage collector did                                                                               |
-| `meadow run --gc copying <path>`                                 | …with the copying collector instead of the generational one                                                              |
-| `meadow run <path> -- <args>`                                    | …passing `<args>` to the program, which `Process.argv` reads                                                             |
-| `meadow exec <image.mbc> [--backend vm\|jit] [-- <args>]`        | run a bytecode image, like the one `meadow build` writes                                                                 |
-| `meadow link <image.mbc> [-o <exe>] [--target <arch>]`           | compile a bytecode image into a native executable                                                                        |
-| `meadow link --emit asm <image.mbc>`                             | …or into the text of its native code, `<image>.s`                                                                        |
-| `meadow build <path>`                                            | type-check, link, and write the bytecode image to `target/`                                                              |
-| `meadow build --release [--target x86_64] <path>`                | …and an executable, under `target/release/native/`                                                                       |
-| `meadow build --annotations <path>`                              | …and dump every node's type                                                                                              |
-| `meadow build --emit bytecode,asm <path>`                        | write text in place of the binaries: `bytecode/<name>.mbc.txt`, `native/<name>.s`; `image` and `exe` are the binaries    |
-| `meadow dis [--asm [--target <arch>]] <path>`                    | print the bytecode the VM runs, or the native code it compiles to                                                        |
-| `meadow run --cfg fast --cfg feature=gpu <path>`                 | …with flags on for `@cfg` ([conditional compilation](#conditional-compilation-cfg)); `run`, `build` and `test` take them |
-| `meadow test [<path>] [<filter>]`                                | run `@test` functions                                                                                                    |
-| `meadow test --test-threads N`, `--no-capture`                   | …`N` at a time instead of one per core; and writing what they print instead of keeping it for the failures               |
-| `meadow build -p app`, `meadow test --workspace [--exclude app]` | in a [workspace](#workspaces): the members named, or all of them; `run`, `build`, `test` and `dis` take these            |
-| `meadow init [--workspace] <path>`                               | create a package, or a workspace; a package made inside a workspace joins it                                             |
-| `meadow fmt <path>`                                              | re-indent in place                                                                                                       |
-| `meadow fmt --check <path>`                                      | report, exit 1 if anything differs                                                                                       |
-| `meadow lsp`                                                     | run the language server (editors start this)                                                                             |
-| `meadow update`                                                  | replace the binary with the latest release                                                                               |
+|                                                                             |                                                                                                                          |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `meadow`                                                                    | REPL                                                                                                                     |
+| `meadow run <path>`                                                         | build and run `main`, on the VM and its JIT                                                                              |
+| `meadow run --release <path>`                                               | …optimized, as an executable compiled ahead of time                                                                      |
+| `meadow run --backend vm\|jit\|aot <path>`                                  | …on the Glade backend named (`--jit` and `--aot` for short)                                                              |
+| `meadow run --runtime silo <path>`                                          | …on Silo: compiled by LLVM, counting references                                                                          |
+| `meadow run --gc-stats <path>`                                              | …and report what the garbage collector did                                                                               |
+| `meadow run --gc copying <path>`                                            | …with the copying collector instead of the generational one                                                              |
+| `meadow run <path> -- <args>`                                               | …passing `<args>` to the program, which `Process.argv` reads                                                             |
+| `meadow exec <image.mbc> [--backend vm\|jit] [-- <args>]`                   | run a bytecode image, like the one `meadow build` writes                                                                 |
+| `meadow link <image.mbc> [-o <exe>] [--target <arch>]`                      | compile a bytecode image into a native executable                                                                        |
+| `meadow link --emit asm <image.mbc>`                                        | …or into the text of its native code, `<image>.s`                                                                        |
+| `meadow build <path>`                                                       | type-check, link, and write the bytecode image to `target/`                                                              |
+| `meadow build --release [--target x86_64] <path>`                           | …and an executable, under `target/release/native/`                                                                       |
+| `meadow build --annotations <path>`                                         | …and dump every node's type                                                                                              |
+| `meadow build --emit bytecode,asm <path>`                                   | write text in place of the binaries: `bytecode/<name>.mbc.txt`, `native/<name>.s`; `image` and `exe` are the binaries    |
+| `meadow dis [--asm [--target <arch>]] <path>`                               | print the bytecode the VM runs, or the native code it compiles to                                                        |
+| `meadow run --cfg fast --cfg feature=gpu <path>`                            | …with flags on for `@cfg` ([conditional compilation](#conditional-compilation-cfg)); `run`, `build` and `test` take them |
+| `meadow run --features gpu,simd`, `--no-default-features`, `--all-features` | …with those of the package's `[features]` on; `run`, `build`, `test` and `dis` take them                                 |
+| `meadow test [<path>] [<filter>]`                                           | run `@test` functions                                                                                                    |
+| `meadow test --test-threads N`, `--no-capture`                              | …`N` at a time instead of one per core; and writing what they print instead of keeping it for the failures               |
+| `meadow build -p app`, `meadow test --workspace [--exclude app]`            | in a [workspace](#workspaces): the members named, or all of them; `run`, `build`, `test` and `dis` take these            |
+| `meadow init [--workspace] <path>`                                          | create a package, or a workspace; a package made inside a workspace joins it                                             |
+| `meadow fmt <path>`                                                         | re-indent in place                                                                                                       |
+| `meadow fmt --check <path>`                                                 | report, exit 1 if anything differs                                                                                       |
+| `meadow lsp`                                                                | run the language server (editors start this)                                                                             |
+| `meadow update`                                                             | replace the binary with the latest release                                                                               |
 
 `--release` and `--debug` select a profile. Release requires every `match` to
 be exhaustive, compiles a `match` to a decision tree, and copies generic code

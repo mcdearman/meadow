@@ -142,6 +142,47 @@ pub enum DepSource {
 pub struct Dependency {
     pub name: String,
     pub source: DepSource,
+    /// `features = ["gpu"]`: the features of it this package turns on.
+    pub features: Vec<String>,
+    /// `default-features = false` turns its `default` ones off.
+    pub default_features: bool,
+}
+
+/// The features a build was asked for, of the packages it was pointed at:
+/// `--features a,b`, `--no-default-features`, `--all-features`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AskedFeatures {
+    pub named: Vec<String>,
+    pub no_default: bool,
+    pub all: bool,
+}
+
+static ASKED: std::sync::RwLock<Option<AskedFeatures>> = std::sync::RwLock::new(None);
+
+/// Say what the command line asked for, before anything is built.
+pub fn ask_features(asked: AskedFeatures) {
+    if let Ok(mut slot) = ASKED.write() {
+        *slot = Some(asked);
+    }
+}
+
+fn asked_features() -> AskedFeatures {
+    ASKED
+        .read()
+        .ok()
+        .and_then(|a| a.clone())
+        .unwrap_or_default()
+}
+
+/// `have` with the flags that say `features` are on, as `--cfg` writes
+/// them: `feature=gpu`, which is what `@cfg(feature = "gpu")` asks.
+pub fn feature_flags(have: Option<InternedString>, features: &[String]) -> Option<InternedString> {
+    if features.is_empty() {
+        return have;
+    }
+    let mut all: Vec<String> = have.map(|h| h.to_string()).into_iter().collect();
+    all.extend(features.iter().map(|f| format!("feature={f}")));
+    Some(InternedString::from(all.join(", ")))
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +192,9 @@ pub struct Manifest {
     /// `features = ["ffi"]`: the unstable features the package uses, which
     /// only a nightly `meadow` accepts. See [`crate::channel`].
     pub features: Vec<String>,
+    /// `[features]`: the features the package offers, each with the others
+    /// it turns on with it. `default` is the ones on unless a build says not.
+    pub feature_table: Vec<(String, Vec<String>)>,
     /// Each dependency, in the order it was written.
     pub deps: Vec<Dependency>,
     /// What is wrong with the manifest but not wrong enough to stop the build:
@@ -251,6 +295,11 @@ pub struct Package {
     pub version: Option<String>,
     /// The manifest's `features`: the unstable features it may use.
     pub features: Vec<String>,
+    /// The manifest's `[features]`: see [`Manifest::feature_table`].
+    pub feature_table: Vec<(String, Vec<String>)>,
+    /// What this package asks of each dependency's features, parallel to
+    /// `deps`: the ones it names, and whether it takes the defaults.
+    pub dep_features: Vec<(Vec<String>, bool)>,
     /// Where the package came from, as a build reports it: its directory, or
     /// for a git dependency the repository and commit.
     pub origin: String,
@@ -290,6 +339,82 @@ pub struct PackageGraph {
 }
 
 impl PackageGraph {
+    /// The features each package is built with, by its place in `packages`.
+    ///
+    /// A package asked for by the build has what the command line names, and
+    /// its `default` ones unless it says not; a dependency has what each
+    /// package that depends on it names, and its defaults unless every one of
+    /// them declines them. A feature turns on the ones its entry in
+    /// `[features]` lists. One no manifest declares is an error that says
+    /// which there are.
+    pub fn enabled_features(&self) -> Result<Vec<Vec<String>>, String> {
+        let asked = asked_features();
+        let n = self.packages.len();
+        let mut named: Vec<Vec<String>> = vec![Vec::new(); n];
+        let mut defaults = vec![false; n];
+        let mut wanted_by: Vec<Vec<String>> = vec![Vec::new(); n];
+        for &r in &self.roots {
+            let pkg = &self.packages[r];
+            if asked.all {
+                named[r].extend(pkg.feature_table.iter().map(|(f, _)| f.clone()));
+            }
+            named[r].extend(asked.named.iter().cloned());
+            defaults[r] = !asked.no_default;
+            wanted_by[r].push("the command line".to_string());
+        }
+        // Dependents before what they depend on, so that all that is asked
+        // of a package is known before it is closed.
+        let mut enabled: Vec<Vec<String>> = vec![Vec::new(); n];
+        for &pid in self.order.iter().rev() {
+            let pkg = &self.packages[pid];
+            let known = |f: &str| pkg.feature_table.iter().any(|(k, _)| k == f);
+            let mut on: Vec<String> = Vec::new();
+            let mut todo: Vec<String> = named[pid].clone();
+            if defaults[pid] && known("default") {
+                todo.push("default".to_string());
+            }
+            while let Some(f) = todo.pop() {
+                if on.contains(&f) {
+                    continue;
+                }
+                let Some((_, more)) = pkg.feature_table.iter().find(|(k, _)| *k == f) else {
+                    let have: Vec<String> = pkg
+                        .feature_table
+                        .iter()
+                        .filter(|(k, _)| k != "default")
+                        .map(|(k, _)| format!("`{k}`"))
+                        .collect();
+                    return Err(format!(
+                        "`{}` has no feature `{f}`, which {} asks for: {}",
+                        pkg.name,
+                        wanted_by[pid].join(" and "),
+                        if have.is_empty() {
+                            "its Meadow.toml has no `[features]`".to_string()
+                        } else {
+                            format!("it has {}", have.join(", "))
+                        }
+                    ));
+                };
+                todo.extend(more.iter().cloned());
+                on.push(f);
+            }
+            on.retain(|f| f != "default");
+            on.sort();
+            for ((dep, (features, takes_defaults)), alias) in
+                pkg.deps.iter().zip(&pkg.dep_features).zip(&pkg.dep_names)
+            {
+                let _ = alias;
+                named[*dep].extend(features.iter().cloned());
+                defaults[*dep] |= *takes_defaults;
+                if !features.is_empty() {
+                    wanted_by[*dep].push(format!("`{}`", pkg.name));
+                }
+            }
+            enabled[pid] = on;
+        }
+        Ok(enabled)
+    }
+
     pub fn order(&self) -> &[PackageId] {
         &self.order
     }
@@ -677,6 +802,7 @@ impl Builder<'_> {
         // resolve dependencies first so `order` ends up topologically sorted
         let mut dep_ids = Vec::new();
         let mut dep_names: Vec<InternedString> = Vec::new();
+        let mut dep_features: Vec<(Vec<String>, bool)> = Vec::new();
         if let Some(m) = &manifest {
             for dep in &m.deps {
                 let dep_path = match self.resolver.resolve(dep, &canon) {
@@ -706,6 +832,7 @@ impl Builder<'_> {
                 }
                 dep_ids.push(self.visit(&dep_path)?);
                 dep_names.push(InternedString::from(dep.name.as_str()));
+                dep_features.push((dep.features.clone(), dep.default_features));
             }
         }
 
@@ -718,6 +845,10 @@ impl Builder<'_> {
             .as_ref()
             .map(|m| m.features.clone())
             .unwrap_or_default();
+        let feature_table = manifest
+            .as_ref()
+            .map(|m| m.feature_table.clone())
+            .unwrap_or_default();
         let origin = self
             .resolver
             .origins
@@ -729,6 +860,8 @@ impl Builder<'_> {
             name,
             version,
             features,
+            feature_table,
+            dep_features,
             origin,
             root: canon.clone(),
             modules,
@@ -888,6 +1021,8 @@ impl Manifest {
                         DepSource::Path(p) => DepSource::Path(root.join(p)),
                         git => git.clone(),
                     },
+                    features: dep.features.clone(),
+                    default_features: dep.default_features,
                 }),
                 None => self.problems.push(format!(
                     "`{}` depends on `{name}` from the workspace, but {} has no \
@@ -971,6 +1106,7 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
     let mut deps: Vec<Dependency> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut features: Vec<String> = Vec::new();
+    let mut feature_table: Vec<(String, Vec<String>)> = Vec::new();
     let mut profiles: HashMap<String, ProfileConfig> = HashMap::new();
     let mut section = String::new();
     let mut says_package = false;
@@ -1011,9 +1147,12 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
                 } else if inline_flag(value, "workspace") {
                     inherits.deps.push(key.to_string());
                 } else if let Some(source) = dep_source(value, key, &mut |w| warnings.push(w)) {
+                    let (features, default_features) = dep_features(value);
                     deps.push(Dependency {
                         name: key.to_string(),
                         source,
+                        features,
+                        default_features,
                     });
                 }
             }
@@ -1047,11 +1186,17 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
                     workspace.get_or_insert_default().version = Some(unquote(value).to_string());
                 }
             }
+            // `[features]`: `gpu = ["simd"]` -- a feature, and the others of
+            // this package it turns on with it.
+            "features" => feature_table.push((key.to_string(), string_array(value))),
             "workspace.dependencies" => {
                 if let Some(source) = dep_source(value, key, &mut |w| warnings.push(w)) {
+                    let (features, default_features) = dep_features(value);
                     workspace.get_or_insert_default().deps.push(Dependency {
                         name: key.to_string(),
                         source,
+                        features,
+                        default_features,
                     });
                 }
             }
@@ -1117,6 +1262,7 @@ fn parse_manifest(text: &str, dir: &Path) -> (Manifest, Inherits) {
         name,
         version,
         features,
+        feature_table,
         deps,
         profiles,
         // A manifest with no `[workspace]` is a package's whatever it says,
@@ -1223,12 +1369,51 @@ fn inline_fields(value: &str) -> Option<Vec<(&str, &str)>> {
     let v = value.trim();
     let inner = v.strip_prefix('{').and_then(|s| s.strip_suffix('}'))?;
     Some(
-        inner
-            .split(',')
+        split_fields(inner)
+            .into_iter()
             .filter_map(|kv| kv.split_once('='))
             .map(|(k, v)| (k.trim(), unquote(v)))
             .collect(),
     )
+}
+
+/// An inline table's fields: cut at its commas, but not at one inside a
+/// string or an array -- `features = ["a", "b"]` is one field.
+fn split_fields(inner: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut quoted, mut from) = (0usize, false, 0usize);
+    for (i, c) in inner.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '[' if !quoted => depth += 1,
+            ']' if !quoted => depth = depth.saturating_sub(1),
+            ',' if !quoted && depth == 0 => {
+                out.push(&inner[from..i]);
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&inner[from..]);
+    out
+}
+
+/// What a dependency's inline table says of its features: the ones named,
+/// and whether its defaults are taken -- they are unless
+/// `default-features = false`.
+fn dep_features(value: &str) -> (Vec<String>, bool) {
+    let Some(fields) = inline_fields(value) else {
+        return (Vec::new(), true);
+    };
+    let field = |want: &[&str]| {
+        fields
+            .iter()
+            .find(|(k, _)| want.contains(k))
+            .map(|(_, v)| *v)
+    };
+    let features = field(&["features"]).map(string_array).unwrap_or_default();
+    let defaults = field(&["default-features", "default_features"]) != Some("false");
+    (features, defaults)
 }
 
 /// Read one `[dependencies]` value.

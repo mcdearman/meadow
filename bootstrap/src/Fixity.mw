@@ -180,7 +180,10 @@ pass! {
 }
 
 -- The chain `first`, then each operator and operand in `rest`, grouped.
-fun chain (out : Origin Surface Grouped) (table : HashMap String Fixity) (first : Part Grouped)
+fun chain
+    (out : Origin Surface Grouped)
+    (table : HashMap String Fixity)
+    (first : Part Grouped)
     (rest : [Part Grouped])
     : Part Grouped ! { Report | e } =
   let leaf = \p -> W.node out Grouped.NodeLeaf [p] in
@@ -213,8 +216,13 @@ fun chain (out : Origin Surface Grouped) (table : HashMap String Fixity) (first 
 
 -- Apply every operator on the stack that goes before operator `name`, which
 -- binds as `here`.
-fun reduce (out : Origin Surface Grouped) (outs : [Part Grouped])
-    (ops : [(Part Grouped, Fixity, String)]) (name : String) (here : Fixity) (at : Part Grouped)
+fun reduce
+    (out : Origin Surface Grouped)
+    (outs : [Part Grouped])
+    (ops : [(Part Grouped, Fixity, String)])
+    (name : String)
+    (here : Fixity)
+    (at : Part Grouped)
     : ([Part Grouped], [(Part Grouped, Fixity, String)]) ! { Report | e } =
   match V.get ops (V.len ops - 1) with
   | None -> (outs, ops)
@@ -244,7 +252,9 @@ fun reduce (out : Origin Surface Grouped) (outs : [Part Grouped])
          else (outs, ops)
 
 -- The top two operands, the operator applied to them.
-fun apply (out : Origin Surface Grouped) (outs : [Part Grouped])
+fun apply
+    (out : Origin Surface Grouped)
+    (outs : [Part Grouped])
     (o : (Part Grouped, Fixity, String))
     : [Part Grouped] =
   match (o, V.get outs (V.len outs - 2), V.get outs (V.len outs - 1)) with

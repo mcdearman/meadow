@@ -321,22 +321,25 @@ fun assocProblems (a : Syn) (owner : Maybe Surface) : [(Int, String)] =
 -- with clauses, or a synonym -- each under the attributes written on it.
 fun decl (c : Cx) (d : Int) (s : Syn) : [String] =
   let attrs = childrenOf NodeAttr s in
-  let bare = (match firstNode (must NodeItem s) with | Just item -> item_ c item | None -> []) in
-  if V.isEmpty attrs then V.concatMap (\b -> snd b d) bare
-  else
-    V.concatMap
-      (\b ->
-        let kept =
-          (if fst b then V.filter (\a -> (firstName (must NodeAttrName a)).text == "cfg") attrs
-           else attrs)
-        in if V.isEmpty kept then snd b d
-           else
-             node
-               d
-               "Attributed"
-               (spanOf s)
-               (V.append (many (d + 1) "attrs" (each (attr c) kept)) (snd b (d + 1))))
-      bare
+  let bare =
+    (match firstNode (must NodeItem s) with
+     | Just item -> item_ c item
+     | None -> [])
+  in if V.isEmpty attrs then V.concatMap (\b -> snd b d) bare
+     else
+       V.concatMap
+         (\b ->
+           let kept =
+             (if fst b then V.filter (\a -> (firstName (must NodeAttrName a)).text == "cfg") attrs
+              else attrs)
+           in if V.isEmpty kept then snd b d
+              else
+                node
+                  d
+                  "Attributed"
+                  (spanOf s)
+                  (V.append (many (d + 1) "attrs" (each (attr c) kept)) (snd b (d + 1))))
+         bare
 
 -- A bare declaration's nodes: each, whether it is a signature, and how it is
 -- written.
@@ -350,9 +353,12 @@ fun item_ (c : Cx) (s : Syn) : [(Bool, Out)] =
          else if R.kindOf assoc == TokenInfixr then "Right"
          else "None")
       in
-      let level = (match tokenOf c prec with | Just (Int n) -> max 0 (min 255 n) | _ -> 0) in
-      one "Fixity ${a} ${show level}" (\e ->
-        idents e "ops" (V.map (\f -> firstName (must NodeOpName f)) ops))
+      let level =
+        (match tokenOf c prec with
+         | Just (Int n) -> max 0 (min 255 n)
+         | _ -> 0)
+      in one "Fixity ${a} ${show level}" (\e ->
+           idents e "ops" (V.map (\f -> firstName (must NodeOpName f)) ops))
   | SurfaceModDecl name -> one "Mod" (\e -> ident e (firstName name))
   | SurfaceUseDecl path glob alias names -> one "Use" (\e -> useDecl e path glob alias names)
   | SurfaceDataDecl name params variants ->
@@ -412,7 +418,11 @@ fun macroRule (c : Cx) (k : Int) (r : Syn) : [String] =
   | _ -> []
 
 fun attr (c : Cx) (d : Int) (s : Syn) : [String] =
-  let metas = (match childOf NodeAttrArgs s with | Just a -> childrenOf NodeMeta a | None -> []) in
+  let metas =
+    (match childOf NodeAttrArgs s with
+     | Just a -> childrenOf NodeMeta a
+     | None -> [])
+  in
   let words =
     V.concatMap (\m -> if has NodeMetaRest m or has TokenStr m then [] else [firstName m]) metas
   in under d "Attr" [
@@ -449,7 +459,11 @@ fun stringName (c : Cx) (t : Syn) : Name =
 
 fun useDecl (e : Int) (path : Syn) (glob : Maybe Syn) (alias : Maybe Syn) (names : Maybe Syn)
     : [String] =
-  let items = (match names with | Just ns -> childrenOf NodeUseItem ns | None -> []) in
+  let items =
+    (match names with
+     | Just ns -> childrenOf NodeUseItem ns
+     | None -> [])
+  in
   let bang = \i -> tokenIs TokenBang i or tokenIs TokenDeclBang i in
   V.concat [
     idents e "path" (V.map firstName (childrenOf NodeSeg path)),
@@ -523,7 +537,11 @@ fun traitDecl (c : Cx) (e : Int) (name : Syn) (params : [Syn]) (supers : Maybe S
        many
          e
          "supers"
-         (each (bound c) (match supers with | Just sp -> childrenOf NodeBound sp | None -> [])),
+         (each
+            (bound c)
+            (match supers with
+             | Just sp -> childrenOf NodeBound sp
+             | None -> [])),
        many
          e
          "assocs"
@@ -569,7 +587,11 @@ fun implDecl (c : Cx) (e : Int) (tr : Syn) (tys : [Syn]) (context : Maybe Syn) (
     many
       e
       "context"
-      (each (bound c) (match context with | Just w -> childrenOf NodeBound w | None -> [])),
+      (each
+         (bound c)
+         (match context with
+          | Just w -> childrenOf NodeBound w
+          | None -> [])),
     many
       e
       "assocs"
@@ -610,8 +632,11 @@ fun macCall (c : Cx) (d : Int) (s : Syn) : [String] =
       firstName
       (V.filter (\x -> R.kindOf x == NodeAnySeg or R.kindOf x == NodeArgSeg) (nodeKids pathNode))
   in
-  let g = (match V.find isGroup (nodeKids s) with | Just x -> x | None -> s) in
-  V.append (idents d "path" path) (group c d g)
+  let g =
+    (match V.find isGroup (nodeKids s) with
+     | Just x -> x
+     | None -> s)
+  in V.append (idents d "path" path) (group c d g)
 
 -- Where a macro call is: its path to its argument's close.
 fun macSpan (s : Syn) : Meta =
@@ -627,21 +652,31 @@ fun group (c : Cx) (d : Int) (s : Syn) : [String] =
      else "Brace")
   in
   let toks = tokenKids s in
-  let open = (match V.get toks 0 with | Just t -> spanOf t | None -> spanOf s) in
-  let close = (match V.get toks (V.len toks - 1) with | Just t -> spanOf t | None -> spanOf s) in
-  line
-    d
-    "Group ${delim} ${at open} ${at close}"
-    (V.concatMap
-       (tree c (d + 1))
-       (V.filter (\x -> R.kindOf x == NodeTtToken or isGroup x) (nodeKids s)))
+  let open =
+    (match V.get toks 0 with
+     | Just t -> spanOf t
+     | None -> spanOf s)
+  in
+  let close =
+    (match V.get toks (V.len toks - 1) with
+     | Just t -> spanOf t
+     | None -> spanOf s)
+  in line
+       d
+       "Group ${delim} ${at open} ${at close}"
+       (V.concatMap
+          (tree c (d + 1))
+          (V.filter (\x -> R.kindOf x == NodeTtToken or isGroup x) (nodeKids s)))
 
 fun tree (c : Cx) (d : Int) (s : Syn) : [String] =
   if isGroup s then group c d s
   else
     let t = (match V.get (tokenKids s) 0 with | Just x -> x | None -> s) in
-    let said = (match tokenOf c t with | Just tok -> described tok | None -> R.text t) in
-    leaf d "tok ${said} ${at (spanOf t)}"
+    let said =
+      (match tokenOf c t with
+       | Just tok -> described tok
+       | None -> R.text t)
+    in leaf d "tok ${said} ${at (spanOf t)}"
 
 -- --- bindings ----------------------------------------------------------------
 
@@ -651,7 +686,11 @@ fun sigDecl (c : Cx) (s : Syn) (isFun : Bool) (n : Name) (annot : Syn) (clauses 
     : [(Bool, Out)] =
   let first = must NodeType annot in
   let implied = childOf NodeImplies annot in
-  let t = (match implied with | Just i -> must NodeType i | None -> first) in
+  let t =
+    (match implied with
+     | Just i -> must NodeType i
+     | None -> first)
+  in
   let bounds = (match implied with | Just _ -> boundsOf first | None -> []) in
   let sig =
     (
@@ -693,7 +732,10 @@ fun boundsOf (t : Syn) : [(Name, [Syn])] =
 -- The name a `def` signature's pattern is.
 fun patName (p : Syn) : Name =
   match M.andThen (childOf NodeArg) (childOf NodePAtom p) with
-  | Just a -> (match childOf NodeVid a with | Just v -> vid v | None -> firstName p)
+  | Just a ->
+      (match childOf NodeVid a with
+       | Just v -> vid v
+       | None -> firstName p)
   | None -> firstName p
 
 fun vid (s : Syn) : Name =
@@ -749,8 +791,15 @@ fun resultTy (c : Cx) (d : Int) (annot : Syn) : [String] =
 -- Several equations as one: a `match` on the arguments, `_arg0` …, each
 -- named where the function is, an arm an equation, its patterns spanning its
 -- body.
-fun equations (c : Cx) (d : Int) (n : Name) (args : [Out]) (ret : Maybe Out) (body : Syn)
-    (clauses : [Syn]) (m : Meta)
+fun equations
+    (c : Cx)
+    (d : Int)
+    (n : Name)
+    (args : [Out])
+    (ret : Maybe Out)
+    (body : Syn)
+    (clauses : [Syn])
+    (m : Meta)
     : [String] =
   if V.isEmpty clauses or V.isEmpty args then bindOfName d n args ret (\k -> expr c k body)
   else
@@ -1063,8 +1112,12 @@ fun patAt (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
 
 -- A pattern's parts, each written at a depth and a span it may be told to
 -- take, and the span it has of its own: joined by `::`, then by `as`.
-fun asesAt (d : Int) (parts : [(Int -> Maybe Meta -> [String], Meta)]) (names : [Syn])
-    (whole : Meta) (over : Maybe Meta)
+fun asesAt
+    (d : Int)
+    (parts : [(Int -> Maybe Meta -> [String], Meta)])
+    (names : [Syn])
+    (whole : Meta)
+    (over : Maybe Meta)
     : [String] =
   let n = V.len names in
   if n == 0 then consedAt d parts over
@@ -1088,11 +1141,17 @@ fun consedAt (d : Int) (parts : [(Int -> Maybe Meta -> [String], Meta)]) (over :
 
 -- `a :: b :: c` as `tag`s, a pattern's or an expression's: `Cons(a, Cons(b,
 -- c))`.
-fun consTagged (tag : String) (d : Int) (parts : [(Int -> Maybe Meta -> [String], Meta)])
+fun consTagged
+    (tag : String)
+    (d : Int)
+    (parts : [(Int -> Maybe Meta -> [String], Meta)])
     (over : Maybe Meta)
     : [String] =
   match V.len parts with
-  | 1 -> (match V.get parts 0 with | Just (f, _) -> f d over | None -> [])
+  | 1 ->
+      (match V.get parts 0 with
+       | Just (f, _) -> f d over
+       | None -> [])
   | _ ->
       (match V.get parts 0 with
        | Just (f, hm) ->
@@ -1734,7 +1793,9 @@ fun argExpr (c : Cx) (d : Int) (s : Syn) : [String] =
       else if k == NodePatParen then parenExpr c d n (Just m)
       else []
   | None ->
-      (match V.get (tokenKids s) 0 with | Just t -> node d "Lit" m (lit c (d + 1) t) | None -> [])
+      (match V.get (tokenKids s) 0 with
+       | Just t -> node d "Lit" m (lit c (d + 1) t)
+       | None -> [])
 
 -- The same, for parentheses in a pattern, whose elements are read as
 -- expressions and then as patterns: `(x :: xs)` builds `Cons x xs`, not the
@@ -1791,7 +1852,9 @@ fun baseExpr (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
 
 fun lowExpr (c : Cx) (d : Int) (s : Syn) (over : Maybe Meta) : [String] =
   let prim =
-    (match childOf NodeClosedAtom s with | Just ca -> M.unwrapOr ca (firstNode ca) | None -> s)
+    (match childOf NodeClosedAtom s with
+     | Just ca -> M.unwrapOr ca (firstNode ca)
+     | None -> s)
   in
   let m = M.unwrapOr (spanOf prim) over in
   let k = R.kindOf prim in
@@ -1931,8 +1994,15 @@ fun andE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (over : Maybe Meta) : [String
 
 -- `a or b or c` is `(a or b) or c`: each spanning what it joins, and so is
 -- its operator.
-fun binFold (c : Cx) (hs : [Int]) (d : Int) (op : String) (xs : [Syn])
-    (write : Int -> Syn -> Maybe Meta -> [String]) (spanFn : Syn -> Meta) (over : Maybe Meta)
+fun binFold
+    (c : Cx)
+    (hs : [Int])
+    (d : Int)
+    (op : String)
+    (xs : [Syn])
+    (write : Int -> Syn -> Maybe Meta -> [String])
+    (spanFn : Syn -> Meta)
+    (over : Maybe Meta)
     : [String] =
   let n = V.len xs in
   match V.get xs (n - 1) with
@@ -2077,10 +2147,17 @@ fun atomE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) : [String] =
         fields d n (\j -> node j "MacCallE" (macSpan n) (macCall c (j + 1) n))
       else if k == NodeQualAtom then
         let toks = V.filter (\t -> R.kindOf t != TokenPeriod) (tokenKids n) in
-        let q = (match V.get toks 0 with | Just t -> nameOf t | None -> named "" m) in
-        let nm = (match V.get toks 1 with | Just t -> nameOf t | None -> named "" m) in
-        fields d n (\j ->
-          node j "Qual" (from q.at nm.at) (V.append (ident (j + 1) q) (ident (j + 1) nm)))
+        let q =
+          (match V.get toks 0 with
+           | Just t -> nameOf t
+           | None -> named "" m)
+        in
+        let nm =
+          (match V.get toks 1 with
+           | Just t -> nameOf t
+           | None -> named "" m)
+        in fields d n (\j ->
+             node j "Qual" (from q.at nm.at) (V.append (ident (j + 1) q) (ident (j + 1) nm)))
       else lowAtom c hs d n None
   | None -> node d "Cons" m (V.append (ident (d + 1) (firstName s)) (many (d + 1) "args" []))
 
@@ -2550,7 +2627,9 @@ fun holesIn (s : Syn) : [Int] =
     V.concat [
       holesIn (must NodeExpr s),
       V.concatMap (\a -> holesIn (must NodeExpr a)) (V.filter (\a -> not (isReturn a)) arms),
-      (match V.get rets (V.len rets - 1) with | Just r -> holesIn (must NodeExpr r) | None -> [])
+      (match V.get rets (V.len rets - 1) with
+       | Just r -> holesIn (must NodeExpr r)
+       | None -> [])
     ]
   else
     V.concatMap

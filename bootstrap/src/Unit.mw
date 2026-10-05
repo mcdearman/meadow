@@ -108,7 +108,9 @@ fun under (dir : String) : [String] ! { Fs | e } =
         match acc with
         | Err why -> Err why
         | Ok ds ->
-            (match locate root dir e with | Ok d -> Ok (V.pushBack ds d) | Err why -> Err why))
+            (match locate root dir e with
+             | Ok d -> Ok (V.pushBack ds d)
+             | Err why -> Err why))
       (Ok [])
       named
   in match (found, std) with

@@ -59,7 +59,9 @@ impl Stream Tokens {
   fun takeN ts n off =
     match ts with
     | Tokens v ->
-        (match takeN v n off with | Just got -> Just (Tokens (fst got), snd got) | None -> None)
+        (match takeN v n off with
+         | Just got -> Just (Tokens (fst got), snd got)
+         | None -> None)
 
   fun takeWhile ts f off =
     match ts with
@@ -90,7 +92,10 @@ impl TraversableStream Tokens {
         else
           (match V.get v from with
            | Just t -> startOf t
-           | None -> (match V.get v (V.len v - 1) with | Just t -> endOf t | None -> nowhere))
+           | None ->
+               (match V.get v (V.len v - 1) with
+                | Just t -> endOf t
+                | None -> nowhere))
 }
 
 def nowhere : (Int, Int) = (0 - 1, 0 - 1)
@@ -98,7 +103,9 @@ def nowhere : (Int, Int) = (0 - 1, 0 - 1)
 fun spanned (a : Maybe TokenTree) (b : Maybe TokenTree) : (Int, Int) =
   match (a, b) with
   | (Just x, Just y) ->
-      (match (spanOf x, spanOf y) with | (At s _, At _ e) -> (s, e) | _ -> nowhere)
+      (match (spanOf x, spanOf y) with
+       | (At s _, At _ e) -> (s, e)
+       | _ -> nowhere)
   | _ -> nowhere
 
 fun startOf (t : TokenTree) : (Int, Int) =

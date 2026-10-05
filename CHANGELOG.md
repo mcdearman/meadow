@@ -48,6 +48,8 @@ beyond the last release is under _Unreleased_.
   line of what it belongs to, a field to a line, and the closing brace back
   under the start of that line. A function given last to a call starts on the
   call's line, as a closure does there.
+- `meadow fmt` gives a declaration's head that does not fit a line to each
+  thing it takes and one to its type, as rustfmt does a signature.
 - `meadow fmt` puts what is written over several lines back on one when it fits
   the width: a definition and its body, a call and its arguments, an arm and
   what it answers, a record and its fields, an `if` and its branches. The

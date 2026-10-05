@@ -43,7 +43,10 @@ fun newTv counter level =
 -- can afford the walk -- but the same idea.
 fun force t =
   match t with
-  | Ty.Var r -> (match getRef r with | Tv.Link inner -> force inner | Tv.Unbound n l -> t)
+  | Ty.Var r ->
+      (match getRef r with
+       | Tv.Link inner -> force inner
+       | Tv.Unbound n l -> t)
   | other -> other
 
 -- --- unification ----------------------------------------------------------
@@ -121,7 +124,9 @@ fun substitute pairs t =
   | Ty.Var r ->
       (match getRef r with
        | Tv.Unbound n l ->
-           (match V.find (\p -> fst p == n) pairs with | Just (id, fresh) -> fresh | None -> t)
+           (match V.find (\p -> fst p == n) pairs with
+            | Just (id, fresh) -> fresh
+            | None -> t)
        | Tv.Link inner -> substitute pairs inner)
   | Ty.Fun a b -> Ty.Fun (substitute pairs a) (substitute pairs b)
   | other -> other

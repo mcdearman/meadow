@@ -447,8 +447,15 @@ fun withType (items : [Item]) (t : Item) : [Item] =
 -- `use Ty`, `use Ty (C, D)`, `use Ty.*` for a type among `items`: the type
 -- alone, the constructors named, or all of them. A dependency's type comes
 -- with its constructors named (`dep`) as naming it would.
-fun useType (acc : Layers) (vis : Vis) (items : [Item]) (t : Item) (at : Meta)
-    (names : [(String, Meta)]) (glob : Bool) (dep : Bool)
+fun useType
+    (acc : Layers)
+    (vis : Vis)
+    (items : [Item])
+    (t : Item)
+    (at : Meta)
+    (names : [(String, Meta)])
+    (glob : Bool)
+    (dep : Bool)
     : Layers =
   let ctors = ctorsOfType items t.name in
   let named =

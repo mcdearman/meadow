@@ -39,7 +39,11 @@ use MeadowBoot.Hygiene as Hy
 -- the expansion `exps` has for it, by position and where it starts
 -- (`expr@120`), and each `@derive` what it wrote -- an operator chain in one
 -- grouped by the unit's fixities `fx`.
-@pub fun lowered (pkg : String) (input : String) (tree : Green Grouped) (exps : HashMap String Json)
+@pub fun lowered
+    (pkg : String)
+    (input : String)
+    (tree : Green Grouped)
+    (exps : HashMap String Json)
     (fx : HashMap String Fixity)
     : AstProgram =
   runSt (\() ->
@@ -180,17 +184,20 @@ fun decl (c : Lc) b (s : GTree) =
 -- A declaration as it was written, each of its nodes under its attributes.
 fun written (c : Lc) b (s : GTree) =
   let attrs = childrenOf NodeAttr s in
-  let bare = (match firstNode (must NodeItem s) with | Just item -> item_ c b item | None -> []) in
-  if V.isEmpty attrs then V.map snd bare
-  else
-    V.map
-      (\x ->
-        let kept =
-          (if fst x then V.filter (\a -> (firstName (must NodeAttrName a)).text == "cfg") attrs
-           else attrs)
-        in if V.isEmpty kept then snd x
-           else newAstDeclAttributed b (spanOf s) (V.map (attr c b) kept) (snd x))
-      bare
+  let bare =
+    (match firstNode (must NodeItem s) with
+     | Just item -> item_ c b item
+     | None -> [])
+  in if V.isEmpty attrs then V.map snd bare
+     else
+       V.map
+         (\x ->
+           let kept =
+             (if fst x then V.filter (\a -> (firstName (must NodeAttrName a)).text == "cfg") attrs
+              else attrs)
+           in if V.isEmpty kept then snd x
+              else newAstDeclAttributed b (spanOf s) (V.map (attr c b) kept) (snd x))
+         bare
 
 -- A bare declaration's nodes, each with whether it is a signature.
 fun item_ (c : Lc) b (s : GTree) =
@@ -263,7 +270,11 @@ fun item_ (c : Lc) b (s : GTree) =
   | _ -> []
 
 fun attr (c : Lc) b (s : GTree) =
-  let metas = (match childOf NodeAttrArgs s with | Just a -> childrenOf NodeMeta a | None -> []) in
+  let metas =
+    (match childOf NodeAttrArgs s with
+     | Just a -> childrenOf NodeMeta a
+     | None -> [])
+  in
   let words =
     V.concatMap
       (\m -> if has NodeMetaRest m or has TokenStr m then [] else [nm b (firstName m)])
@@ -303,9 +314,18 @@ fun stringName (c : Lc) (t : GTree) : Nm =
   | Just (Str s) -> named s (spanOf t)
   | _ -> nameOf t
 
-fun useDecl b (m : Meta) (path : GTree) (glob : Maybe GTree) (alias : Maybe GTree)
+fun useDecl
+    b
+    (m : Meta)
+    (path : GTree)
+    (glob : Maybe GTree)
+    (alias : Maybe GTree)
     (names : Maybe GTree) =
-  let items = (match names with | Just ns -> childrenOf NodeUseItem ns | None -> []) in
+  let items =
+    (match names with
+     | Just ns -> childrenOf NodeUseItem ns
+     | None -> [])
+  in
   let bang = \i -> tokenIs TokenBang i or tokenIs TokenDeclBang i in
   newAstDeclUse
     b
@@ -351,7 +371,13 @@ fun field (c : Lc) b (s : GTree) =
     (nm b (nameOf (must TokenLowerIdent s)))
     (ty c b (must NodeType s))
 
-fun traitDecl (c : Lc) b (m : Meta) (name : GTree) (params : [GTree]) (supers : Maybe GTree)
+fun traitDecl
+    (c : Lc)
+    b
+    (m : Meta)
+    (name : GTree)
+    (params : [GTree])
+    (supers : Maybe GTree)
     (items : [GTree]) =
   let members = V.concatMap (\x -> match firstNode x with | Just y -> [y] | None -> []) items in
   let assocs = V.filter (\x -> R.kindOf x == NodeAssocDecl) members in
@@ -379,7 +405,11 @@ fun traitDecl (c : Lc) b (m : Meta) (name : GTree) (params : [GTree]) (supers : 
        m
        (nm b (nameOf name))
        (V.map (\p -> nm b (nameOf p)) params)
-       (V.map (bound c b) (match supers with | Just sp -> childrenOf NodeBound sp | None -> []))
+       (V.map
+          (bound c b)
+          (match supers with
+           | Just sp -> childrenOf NodeBound sp
+           | None -> []))
        (V.map
           (\a ->
             newAstAssoc
@@ -407,7 +437,13 @@ fun traitDecl (c : Lc) b (m : Meta) (name : GTree) (params : [GTree]) (supers : 
 fun sigName (s : GTree) : Nm =
   if R.kindOf s == NodeFunItem then vid (must NodeVid s) else patName (must NodePat s)
 
-fun implDecl (c : Lc) b (m : Meta) (tr : GTree) (tys : [GTree]) (context : Maybe GTree)
+fun implDecl
+    (c : Lc)
+    b
+    (m : Meta)
+    (tr : GTree)
+    (tys : [GTree])
+    (context : Maybe GTree)
     (items : [GTree]) =
   let members = V.concatMap (\x -> match firstNode x with | Just y -> [y] | None -> []) items in
   let assocs = V.filter (\x -> R.kindOf x == NodeAssocDecl) members in
@@ -416,7 +452,11 @@ fun implDecl (c : Lc) b (m : Meta) (tr : GTree) (tys : [GTree]) (context : Maybe
     m
     (nm b (nameOf tr))
     (V.map (tatom c b) tys)
-    (V.map (bound c b) (match context with | Just w -> childrenOf NodeBound w | None -> []))
+    (V.map
+       (bound c b)
+       (match context with
+        | Just w -> childrenOf NodeBound w
+        | None -> []))
     (V.map
        (\a ->
          newAstAssocDef
@@ -464,7 +504,11 @@ fun macSpan (s : GTree) : Meta =
 fun sigDecl (c : Lc) b (s : GTree) (isFun : Bool) (n : Nm) (annot : GTree) (clauses : [GTree]) =
   let first = must NodeType annot in
   let implied = childOf NodeImplies annot in
-  let t = (match implied with | Just i -> must NodeType i | None -> first) in
+  let t =
+    (match implied with
+     | Just i -> must NodeType i
+     | None -> first)
+  in
   let bounds = (match implied with | Just _ -> boundsOf first | None -> []) in
   let sig =
     (
@@ -494,7 +538,10 @@ fun boundsOf (t : GTree) : [(Nm, [GTree])] =
 -- The name a `def` signature's pattern is.
 fun patName (p : GTree) : Nm =
   match M.andThen (childOf NodeArg) (childOf NodePAtom p) with
-  | Just a -> (match childOf NodeVid a with | Just v -> vid v | None -> firstName p)
+  | Just a ->
+      (match childOf NodeVid a with
+       | Just v -> vid v
+       | None -> firstName p)
   | None -> firstName p
 
 fun vid (s : GTree) : Nm =
@@ -531,7 +578,14 @@ fun resultTy (c : Lc) b (annot : GTree) =
 -- Several equations as one: a `match` on the arguments, `_arg0` …, each
 -- named where the function is, an arm an equation, its patterns spanning its
 -- body.
-fun equations (c : Lc) b (n : Nm) (params : [GTree]) ret (body : GTree) (clauses : [GTree])
+fun equations
+    (c : Lc)
+    b
+    (n : Nm)
+    (params : [GTree])
+    ret
+    (body : GTree)
+    (clauses : [GTree])
     (m : Meta) =
   if V.isEmpty clauses or V.isEmpty params then
     bindOfName c b n (V.map (param c b) params) ret (expr c b body) m
@@ -778,7 +832,9 @@ fun consTagged (isPat : Bool) b parts (over : Maybe Meta) =
       if V.isEmpty rest then f over
       else
         let tailEnd =
-          (match V.get rest (V.len rest - 1) with | Just (_, tm) -> metaEnd tm | None -> metaEnd hm)
+          (match V.get rest (V.len rest - 1) with
+           | Just (_, tm) -> metaEnd tm
+           | None -> metaEnd hm)
         in
         let whole = spanMeta (metaStart hm) tailEnd in
         let m = M.unwrapOr whole over in
@@ -1272,7 +1328,9 @@ fun baseExpr (c : Lc) b (s : GTree) (over : Maybe Meta) =
 
 fun lowExpr (c : Lc) b (s : GTree) (over : Maybe Meta) =
   let prim =
-    (match childOf NodeClosedAtom s with | Just ca -> M.unwrapOr ca (firstNode ca) | None -> s)
+    (match childOf NodeClosedAtom s with
+     | Just ca -> M.unwrapOr ca (firstNode ca)
+     | None -> s)
   in
   let m = M.unwrapOr (spanOf prim) over in
   let k = R.kindOf prim in
@@ -1492,9 +1550,16 @@ fun atomE (c : Lc) b (hs : [Int]) (s : GTree) =
       if k == NodeMacAtom then fields b n (exprCall c b (macSpan n) n)
       else if k == NodeQualAtom then
         let toks = V.filter (\t -> R.kindOf t != TokenPeriod) (tokenKids n) in
-        let q = (match V.get toks 0 with | Just t -> nameOf t | None -> named "" m) in
-        let x = (match V.get toks 1 with | Just t -> nameOf t | None -> named "" m) in
-        fields b n (newAstExprQual b (from q.at x.at) (nm b q) (nm b x))
+        let q =
+          (match V.get toks 0 with
+           | Just t -> nameOf t
+           | None -> named "" m)
+        in
+        let x =
+          (match V.get toks 1 with
+           | Just t -> nameOf t
+           | None -> named "" m)
+        in fields b n (newAstExprQual b (from q.at x.at) (nm b q) (nm b x))
       else lowAtom c b hs n None
   | None -> newAstExprCons b m (nm b (firstName s)) []
 
@@ -1876,7 +1941,9 @@ fun holesIn (s : GTree) : [Int] =
     V.concat [
       holesIn (must NodeExpr s),
       V.concatMap (\a -> holesIn (must NodeExpr a)) (V.filter (\a -> not (isReturn a)) arms),
-      (match V.get rets (V.len rets - 1) with | Just r -> holesIn (must NodeExpr r) | None -> [])
+      (match V.get rets (V.len rets - 1) with
+       | Just r -> holesIn (must NodeExpr r)
+       | None -> [])
     ]
   else
     V.concatMap
@@ -1923,7 +1990,9 @@ fun macrosOf (c : Lc) (pkg : String) (top : GTree) : HashMap String Macro =
     (\h d ->
       match M.andThen firstNode (childOf NodeItem d) with
       | Just (GroupedMacroDecl name rules) ->
-          (match macroOf c pkg rules with | Just m -> H.insert (nameOf name).text m h | None -> h)
+          (match macroOf c pkg rules with
+           | Just m -> H.insert (nameOf name).text m h
+           | None -> h)
       | _ -> h)
     H.empty
     (childrenOf NodeDecl top)
@@ -1966,7 +2035,9 @@ fun expandCall (c : Lc) (m : Macro) (call : GTree) =
   let n = nextExpansion () in
   match V.find isGroup (nodeKids call) with
   | Just g ->
-      (match Ru.expand m (Ru.treeOf (tokenOf c) g) n with | Ok toks -> Just toks | Err _ -> None)
+      (match Ru.expand m (Ru.treeOf (tokenOf c) g) n with
+       | Ok toks -> Just toks
+       | Err _ -> None)
   | None -> None
 
 -- `toks`, after `before` and before `after` -- tokens that stand nowhere --
@@ -2006,7 +2077,8 @@ fun reparsed (c : Lc) (before : [(Token, String)]) (toks : [Tok]) (after : [(Tok
          (V.range 0 (V.len given)))
   in match parseSurfaceTokens given with
      | (g, _) ->
-         (match grouped c.fx (R.root g) with | (gg, _) -> ({ c | tokens = tokens }, R.root gg))
+         (match grouped c.fx (R.root g) with
+          | (gg, _) -> ({ c | tokens = tokens }, R.root gg))
 
 fun expandedDecls (c : Lc) b (m : Macro) (call : GTree) =
   M.map

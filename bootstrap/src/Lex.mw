@@ -278,13 +278,22 @@ fun stuck (input : String) (at : Int) (hole : Bool) (depth : Int) (l : Lexing)
   let l2 = problem (push l Token.Error at to) at to "Invalid token: ${stringSlice input at to}" in
   code input to hole depth l2
 
-fun read (input : String) (t : Code) (from : Int) (to : Int) (hole : Bool) (depth : Int)
+fun read
+    (input : String)
+    (t : Code)
+    (from : Int)
+    (to : Int)
+    (hole : Bool)
+    (depth : Int)
     (l : Lexing)
     : (Lexing, Int, Bool) =
   match t with
-  | Code.Quote -> (match string input from l with | (l2, after) -> code input after hole depth l2)
+  | Code.Quote ->
+      (match string input from l with
+       | (l2, after) -> code input after hole depth l2)
   | Code.LowerIdent "r" if rawHashes input to >= 0 ->
-      (match raw input from l with | (l2, after) -> code input after hole depth l2)
+      (match raw input from l with
+       | (l2, after) -> code input after hole depth l2)
   | Code.LBrace -> code input to hole (depth + 1) (push l Token.LBrace from to)
   | Code.RBrace ->
       if hole and depth == 0 then (l, from, True)
@@ -300,9 +309,15 @@ fun read (input : String) (t : Code) (from : Int) (to : Int) (hole : Bool) (dept
 fun converted (input : String) (t : Code) (from : Int) (to : Int) : Result String Token =
   let invalid = Err "Invalid token: ${stringSlice input from to}" in
   match t with
-  | Code.Int text -> (match parseInt text with | Just n -> Ok (Token.Int n) | None -> invalid)
+  | Code.Int text ->
+      (match parseInt text with
+       | Just n -> Ok (Token.Int n)
+       | None -> invalid)
   | Code.Real text -> Ok (Token.Real text)
-  | Code.Char text -> (match unescapeChar text with | Just c -> Ok (Token.Char c) | None -> invalid)
+  | Code.Char text ->
+      (match unescapeChar text with
+       | Just c -> Ok (Token.Char c)
+       | None -> invalid)
   | Code.LowerIdent s -> Ok (Token.LowerIdent s)
   | Code.UpperIdent s -> Ok (Token.UpperIdent s)
   | Code.OpIdent s -> Ok (Token.OpIdent s)
@@ -394,7 +409,13 @@ fun string (input : String) (from : Int) (l : Lexing) : (Lexing, Int) =
 -- the text ends: appending each to the text so far copied all of it every
 -- time, and a literal of many escapes -- Nettle's generated cases are some
 -- hundred kilobytes of them -- took minutes.
-fun text (input : String) (from : Int) (at : Int) (piece : Int) (sofar : [String]) (holes : Int)
+fun text
+    (input : String)
+    (from : Int)
+    (at : Int)
+    (piece : Int)
+    (sofar : [String])
+    (holes : Int)
     (l : Lexing)
     : (Lexing, Int) =
   match nextPiece input at with
@@ -403,8 +424,16 @@ fun text (input : String) (from : Int) (at : Int) (piece : Int) (sofar : [String
       let n = stringByteLength input in
       (problem (push l Token.Error from n) from n "this string is never closed", n)
 
-fun piece_ (input : String) (from : Int) (p : Piece) (at : Int) (to : Int) (piece : Int)
-    (sofar : [String]) (holes : Int) (l : Lexing)
+fun piece_
+    (input : String)
+    (from : Int)
+    (p : Piece)
+    (at : Int)
+    (to : Int)
+    (piece : Int)
+    (sofar : [String])
+    (holes : Int)
+    (l : Lexing)
     : (Lexing, Int) =
   let more = \s -> text input from to piece (V.pushBack sofar s) holes l in
   let bad = \message -> text input from to piece sofar holes (problem l at to message) in

@@ -102,7 +102,10 @@ fun lookupField key fields =
 @pub fun parse (text : String) : Result String Json =
   match quick text with
   | Just v -> Ok v
-  | None -> (match P.runParser document text with | Ok v -> Ok v | Err e -> Err (P.showError e))
+  | None ->
+      (match P.runParser document text with
+       | Ok v -> Ok v
+       | Err e -> Err (P.showError e))
 
 -- `Ok` of the value, or `Err` of the span of the text the error is about and
 -- what went wrong there, for whoever shows it to point at.

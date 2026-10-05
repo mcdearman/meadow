@@ -219,6 +219,9 @@ use Link.*
   let total =
     atomically (\() ->
       match readTVar first with
-      | Just (Link a next) -> (match readTVar next with | Just (Link b _) -> a + b | None -> a)
+      | Just (Link a next) ->
+          (match readTVar next with
+           | Just (Link b _) -> a + b
+           | None -> a)
       | None -> 0)
   in assertEq total 3 "followed from one TVar to the next"

@@ -328,8 +328,13 @@ fun knownAssoc (i : Inf s) (owner : String) (assoc : String) (over : [Type])
 
 -- One wanted of the group's: through a given if one answers it, into the
 -- group's `where` if its variables are the group's, or left.
-fun closeOne (i : Inf s) (level : Int) (signed : Bool) (signatureVars : [Int])
-    (acc : ([Pred], [(Int, Int)])) (k : Int)
+fun closeOne
+    (i : Inf s)
+    (level : Int)
+    (signed : Bool)
+    (signatureVars : [Int])
+    (acc : ([Pred], [(Int, Int)]))
+    (k : Int)
     : ([Pred], [(Int, Int)]) ! { St s | e } =
   match acc with
   | (all, pending) ->
@@ -484,23 +489,31 @@ fun assocVar (assoc : String) (over : [Type]) (st : AssocVars) : (Int, AssocVars
            (if M.isSome (H.lookup name (stGetRef i.assocOf)) then
               (match assocVar name xs st2 with | (k, st3) -> (Bound k, st3))
             else (Con name xs, st2)))
-  | Tuple items -> (match liftEach i items st with | (xs, st2) -> (Tuple xs, st2))
+  | Tuple items ->
+      (match liftEach i items st with
+       | (xs, st2) -> (Tuple xs, st2))
   | Fun ps ret eff ->
       (match liftEach i ps st with
        | (xs, st2) ->
            (match liftAssocs i ret st2 with
-            | (r, st3) -> (match liftAssocs i eff st3 with | (e2, st4) -> (Fun xs r e2, st4))))
+            | (r, st3) ->
+                (match liftAssocs i eff st3 with
+                 | (e2, st4) -> (Fun xs r e2, st4))))
   | Record row -> (match liftAssocs i row st with | (r, st2) -> (Record r, st2))
   | RowExtend l f rest ->
       (match liftAssocs i f st with
-       | (f2, st2) -> (match liftAssocs i rest st2 with | (r2, st3) -> (RowExtend l f2 r2, st3)))
+       | (f2, st2) ->
+           (match liftAssocs i rest st2 with
+            | (r2, st3) -> (RowExtend l f2 r2, st3)))
   | other -> (other, st)
 
 fun liftEach (i : Inf s) (ts : [Type]) (st : AssocVars) : ([Type], AssocVars) ! { St s | e } =
   V.foldl
     (\acc t ->
       match acc with
-      | (xs, s1) -> (match liftAssocs i t s1 with | (x, s2) -> (V.pushBack xs x, s2)))
+      | (xs, s1) ->
+          (match liftAssocs i t s1 with
+           | (x, s2) -> (V.pushBack xs x, s2)))
     ([], st)
     ts
 
@@ -661,8 +674,14 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int)
 -- `supers` the traits it requires, each with the parameters it is of,
 -- `assocs` its associated types' canonical names, and `methods` each method's
 -- name, binder, written type, and default's binder.
-@pub fun registerTrait (i : Inf s) (a : HirArena) (name : String) (params : [String])
-    (supers : [Super]) (assocs : [String]) (methods : [(String, Int, HirType, Maybe Int)])
+@pub fun registerTrait
+    (i : Inf s)
+    (a : HirArena)
+    (name : String)
+    (params : [String])
+    (supers : [Super])
+    (assocs : [String])
+    (methods : [(String, Int, HirType, Maybe Int)])
     (dict : String)
     : () ! { St s | e } =
   let np = V.len params in
@@ -740,8 +759,15 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int)
 
 -- One method: its scheme over the trait's parameters and associated types,
 -- and its field in the dictionary.
-fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String]) (assocs : [String])
-    (assocParams : [[Int]]) (headArgs : [Type]) (m : (String, Int, HirType, Maybe Int))
+fun registerMethod
+    (i : Inf s)
+    (a : HirArena)
+    (tr : String)
+    (params : [String])
+    (assocs : [String])
+    (assocParams : [[Int]])
+    (headArgs : [Type])
+    (m : (String, Int, HirType, Maybe Int))
     : (Maybe String, Type) ! { St s | e } =
   match m with
   | (mname, var, mty, dflt) ->
@@ -790,8 +816,13 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String]) 
 
 -- A constructor `ctor` of type `tyname`, with the scheme `quant => head`
 -- over its fields -- named or not -- and its fields' accessors.
-@pub fun recordCtorIn (i : Inf s) (tyname : String) (ctor : String) (quant : [VarKind])
-    (head : Type) (fields : [(Maybe String, Type)])
+@pub fun recordCtorIn
+    (i : Inf s)
+    (tyname : String)
+    (ctor : String)
+    (quant : [VarKind])
+    (head : Type)
+    (fields : [(Maybe String, Type)])
     : () ! { St s | e } =
   let fieldTys = V.map snd fields in
   let cty = if V.isEmpty fieldTys then head else func fieldTys head in
@@ -834,8 +865,14 @@ fun registerMethod (i : Inf s) (a : HirArena) (tr : String) (params : [String]) 
 -- An `impl`: the scheme of its dictionary, found from here on by its trait
 -- and its types' constructors. `tr` the trait, `tys` the types it is for,
 -- `context` its `where`, `assocs` its associated types, `dict` its binder.
-@pub fun registerImpl (i : Inf s) (a : HirArena) (tr : String) (tys : [HirType])
-    (context : [HirBound]) (assocs : [(String, HirType)]) (dict : Int)
+@pub fun registerImpl
+    (i : Inf s)
+    (a : HirArena)
+    (tr : String)
+    (tys : [HirType])
+    (context : [HirBound])
+    (assocs : [(String, HirType)])
+    (dict : Int)
     : () ! { St s | e } =
   match H.lookup tr (stGetRef i.shapes) with
   | None -> ()
@@ -934,8 +971,12 @@ fun addImpl (i : Inf s) (tr : String) (k : String) (dict : Int) (sc : Scheme) : 
     i.impls
     (H.insert (implKey tr k) (ImplDef { dict = dict, scheme = sc }) (stGetRef i.impls))
 
-fun inheritedAssoc (i : Inf s) (sh : TraitShape) (heads : [Type])
-    (acc : ([Type], AssocVars, [Pred])) (j : Int)
+fun inheritedAssoc
+    (i : Inf s)
+    (sh : TraitShape)
+    (heads : [Type])
+    (acc : ([Type], AssocVars, [Pred]))
+    (j : Int)
     : ([Type], AssocVars, [Pred]) ! { St s | e } =
   match acc with
   | (args, st, preds) ->

@@ -47,7 +47,9 @@ fun openArrows (i : Inf s) (t : Type) : Type ! { St s | e } =
   match zonk i.ar t with
   | Fun ps ret eff ->
       let eff2 =
-        (match zonk i.ar eff with | RowEmpty -> freshEffect i.ar | closed -> openRowEnd i closed)
+        (match zonk i.ar eff with
+         | RowEmpty -> freshEffect i.ar
+         | closed -> openRowEnd i closed)
       in
       let ret2 = openArrows i ret in
       Fun ps ret2 eff2
@@ -114,7 +116,9 @@ fun joinsWithin (i : Inf s) (region : Type) (phi : Type) : Bool ! { St s | e } =
 
 fun splitRow (row : Type) : ([(String, Type)], Type) =
   match row with
-  | RowExtend l f rest -> (match splitRow rest with | (ls, e) -> (V.pushFront ls (l, f), e))
+  | RowExtend l f rest ->
+      (match splitRow rest with
+       | (ls, e) -> (V.pushFront ls (l, f), e))
   | other -> ([], other)
 
 -- Each of `wantLabels` with the first of `have` of its name, first come first
@@ -137,7 +141,10 @@ fun hasPendingJoin (i : Inf s) (mark : Int) (region : Type) : Bool ! { St s | e 
   match zonk i.ar region with
   | Var rid ->
       V.any
-        (\p -> (match zonk i.ar (snd p) with | Var id -> id == rid | _ -> False))
+        (\p ->
+          (match zonk i.ar (snd p) with
+           | Var id -> id == rid
+           | _ -> False))
         (V.drop (stGetRef i.subsumptions) mark)
   | _ -> False
 
@@ -648,7 +655,9 @@ pass! {
     | Arm { later pat, later guard, later body } ->
         (let p = pat (binding cx) in
          let u =
-           (match cx.arm with | Just (st, _) -> unifyAt cx.i (typInferringPat p) st | None -> ())
+           (match cx.arm with
+            | Just (st, _) -> unifyAt cx.i (typInferringPat p) st
+            | None -> ())
          in
          let g =
            M.map
@@ -786,7 +795,8 @@ pass! {
                body = b
              })
     | Bind.Pat { later pat, later value } ->
-        (match patBindParts cx out pat value with | (p, v) -> Bind.Pat { pat = p, value = v })
+        (match patBindParts cx out pat value with
+         | (p, v) -> Bind.Pat { pat = p, value = v })
 }
 
 -- `id`, a pattern's name, bound to `t` and collected as the pattern's.
@@ -869,7 +879,9 @@ fun appParts (cx : Cx s) (src : HirArena) out (func : HirExpr) (args : [HirExpr]
      | (x0, result) ->
          (match applied cx src out result (V.drop args 1) with
           | (xs, t) -> (f, V.pushFront xs x0, t)))
-  else (match applied cx src out (typInferringExprIn out f) args with | (xs, t) -> (f, xs, t))
+  else
+    (match applied cx src out (typInferringExprIn out f) args with
+     | (xs, t) -> (f, xs, t))
 
 -- Each of `args` applied in turn to what has type `fty0`.
 fun applied (cx : Cx s) (src : HirArena) out (fty0 : Type) (args : [HirExpr]) =
@@ -921,7 +933,9 @@ fun runStArg (cx : Cx s) (src : HirArena) out (body : HirExpr) =
   let v = stSetRef i.stLevels (V.pushBack (stGetRef i.stLevels) (levelOf i.ar)) in
   let state = freshSkolem i.ar in
   let lam =
-    (match viewHirExpr src body with | HirExprView.Lam r -> V.len r.params == 1 | _ -> False)
+    (match viewHirExpr src body with
+     | HirExprView.Lam r -> V.len r.params == 1
+     | _ -> False)
   in
   let pl = plain cx in
   let x = inferExpr src out (if lam then { pl | seed = Just state } else pl) body in
@@ -971,7 +985,9 @@ fun consParts (cx : Cx s) (src : HirArena) out (ref : InferringRef) (args : [Hir
                   (\cty v ->
                     step
                       cty
-                      (match v with | Just (_, x) -> typInferringExprIn out x | None -> Error))
+                      (match v with
+                       | Just (_, x) -> typInferringExprIn out x
+                       | None -> Error))
                   cty0
                   values
             | None -> Error)
@@ -1010,7 +1026,11 @@ fun namedRecordArg (src : HirArena) (args : [HirExpr]) (labels : Maybe [String])
 
 -- A constructor's record written back, its fields in the order written: those
 -- inferred already as the constructor's, and any other as it comes.
-fun rewrittenRecord (cx : Cx s) (src : HirArena) out (given : HirExpr)
+fun rewrittenRecord
+    (cx : Cx s)
+    (src : HirArena)
+    out
+    (given : HirExpr)
     (done : [(HirExprField, InferringExpr)])
     : InferringExpr ! { St s | e } =
   let fs =
@@ -1315,7 +1335,9 @@ fun patConsParts (cx : Cx s) (src : HirArena) out (ref : InferringRef) (args : [
                   (\cty p ->
                     step
                       cty
-                      (match p with | Just (_, x) -> typInferringPatIn out x | None -> fresh i.ar))
+                      (match p with
+                       | Just (_, x) -> typInferringPatIn out x
+                       | None -> fresh i.ar))
                   cty0
                   parts
             | None -> Error)
@@ -1350,7 +1372,11 @@ fun namedRecordPat (src : HirArena) (args : [HirPat]) (labels : Maybe [String])
        | _ -> None)
   | _ -> None
 
-fun rewrittenPRecord (cx : Cx s) (src : HirArena) out (given : HirPat)
+fun rewrittenPRecord
+    (cx : Cx s)
+    (src : HirArena)
+    out
+    (given : HirPat)
     (done : [(HirPatField, InferringPat)])
     : InferringPat ! { St s | e } =
   let fs =
@@ -1424,7 +1450,11 @@ fun aloneFun (cx : Cx s) out (toplevel : Bool) (vid : Int) params (ret : Maybe H
   let paramTys = V.map (\p -> typInferringPatIn out p) ps in
   match declaredResult i cx.here ret with
   | (rt, declaredEff) ->
-      let u3 = (match declaredEff with | Just eff -> unifyAt i bodyEff eff | None -> ()) in
+      let u3 =
+        (match declaredEff with
+         | Just eff -> unifyAt i bodyEff eff
+         | None -> ())
+      in
       let fnTy = funcEff paramTys rt bodyEff in
       let u4 = bindMono i vid fnTy in
       let u5 = seedSig i vid fnTy in
@@ -1460,9 +1490,17 @@ fun memberFun (cx : Cx s) out (seed : [(Int, Type)]) params (ret : Maybe HirType
   let paramTys = V.map (\p -> typInferringPatIn out p) ps in
   match declaredResult i cx.here ret with
   | (rt, declaredEff) ->
-      let v = (match declaredEff with | Just eff -> unifyAt i bodyEff eff | None -> ()) in
+      let v =
+        (match declaredEff with
+         | Just eff -> unifyAt i bodyEff eff
+         | None -> ())
+      in
       let fnTy = funcEff paramTys rt bodyEff in
-      let w = (match V.get seed 0 with | Just (_, st) -> unifyAt i st fnTy | None -> ()) in
+      let w =
+        (match V.get seed 0 with
+         | Just (_, st) -> unifyAt i st fnTy
+         | None -> ())
+      in
       let b = body (plain cx) in
       let x = unifyAt i rt (typInferringExprIn out b) in
       let y = stSetRef i.curEffect saved in
@@ -1611,11 +1649,17 @@ pass! {
 -- A group of top-level bindings, each with where it is, inferred together
 -- when they mention one another (`recursive`), each written into its
 -- module's tables and what it became kept in `done`.
-fun inferGroup (i : Inf s) outs (done : StRef s (HashMap String Int)) (binds : [(Here, HirBind)])
+fun inferGroup
+    (i : Inf s)
+    outs
+    (done : StRef s (HashMap String Int))
+    (binds : [(Here, HirBind)])
     (recursive : Bool)
     : () ! { St s | e } =
   if not recursive and V.len binds == 1 then
-    (match V.get binds 0 with | Just (here, b) -> topBind i outs done here b | None -> ())
+    (match V.get binds 0 with
+     | Just (here, b) -> topBind i outs done here b
+     | None -> ())
   else
     let started = beginBinding i in
     let u = enterLevel i.ar in
@@ -1697,21 +1741,24 @@ fun isFunBind (here : Here) (b : HirBind) : Bool =
   | _ -> False
 
 fun seedGroup (i : Inf s) (here : Here) (b : HirBind) : [(Int, Type)] ! { St s | e } =
-  let arity = (match viewHirBind here.a b with | HirBindView.Fun r -> V.len r.params | _ -> 0) in
-  V.map
-    (\vid ->
-      let t =
-        (if arity > 0 then
-           (let ps = V.map (\k -> fresh i.ar) (V.range 0 arity) in
-            let ret = fresh i.ar in
-            let eff = freshEffect i.ar in
-            funcEff ps ret eff)
-         else fresh i.ar)
-      in
-      let u = bindMono i vid t in
-      let v = seedSig i vid t in
-      (vid, t))
-    (boundBy here.a b)
+  let arity =
+    (match viewHirBind here.a b with
+     | HirBindView.Fun r -> V.len r.params
+     | _ -> 0)
+  in V.map
+       (\vid ->
+         let t =
+           (if arity > 0 then
+              (let ps = V.map (\k -> fresh i.ar) (V.range 0 arity) in
+               let ret = fresh i.ar in
+               let eff = freshEffect i.ar in
+               funcEff ps ret eff)
+            else fresh i.ar)
+         in
+         let u = bindMono i vid t in
+         let v = seedSig i vid t in
+         (vid, t))
+       (boundBy here.a b)
 
 -- --- a unit's declarations ---------------------------------------------------
 
@@ -1903,7 +1950,11 @@ record AliasSrc = {
 
 -- An alias expanded -- the aliases it is written in first -- and a cycle an
 -- error, as `meadow_infer`'s `alias_reaches` finds it.
-fun expandAlias (i : Inf s) (a : HirArena) (batch : [AliasSrc]) (visiting : [String])
+fun expandAlias
+    (i : Inf s)
+    (a : HirArena)
+    (batch : [AliasSrc])
+    (visiting : [String])
     (name : String)
     : () ! { St s | e } =
   if M.isSome (H.lookup name (stGetRef i.aliases)) then ()
@@ -1968,9 +2019,16 @@ fun typeNames (i : Inf s) (a : HirArena) (t : HirType) (out : [String]) : [Strin
   | _ -> out
 
 -- A trait declaration, registered.
-fun registerTraitDecl (i : Inf s) (a : HirArena) (items : [Item]) (nameNode : HirName)
-    (paramNodes : [HirName]) (superBounds : [HirBound]) (assocNodes : [HirAssoc])
-    (sigs : [HirMethodSig]) (defaults : [HirBind])
+fun registerTraitDecl
+    (i : Inf s)
+    (a : HirArena)
+    (items : [Item])
+    (nameNode : HirName)
+    (paramNodes : [HirName])
+    (superBounds : [HirBound])
+    (assocNodes : [HirAssoc])
+    (sigs : [HirMethodSig])
+    (defaults : [HirBind])
     : () ! { St s | e } =
   let tname = hirNameText a nameNode in
   let canon = typeCanon items tname in
@@ -2066,8 +2124,13 @@ fun assocCanon (shape : Maybe TraitShape) (name : String) : String =
 
 -- The bodies inside a module's traits and `impl`s: each default, and each
 -- `impl`'s methods held to the trait's types at the implementing type.
-fun inferTraits (i : Inf s) outs (done : StRef s (HashMap String Int)) (here : Here)
-    (decls : [HirDecl]) (dicts : HashMap String Int)
+fun inferTraits
+    (i : Inf s)
+    outs
+    (done : StRef s (HashMap String Int))
+    (here : Here)
+    (decls : [HirDecl])
+    (dicts : HashMap String Int)
     : () ! { St s | e } =
   let a = here.a in
   V.foldl
@@ -2088,8 +2151,14 @@ fun inferTraits (i : Inf s) outs (done : StRef s (HashMap String Int)) (here : H
     ()
     decls
 
-fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int)) (here : Here) (tr : String)
-    (methods : [HirBind]) (dict : Int)
+fun inferImpl
+    (i : Inf s)
+    outs
+    (done : StRef s (HashMap String Int))
+    (here : Here)
+    (tr : String)
+    (methods : [HirBind])
+    (dict : Int)
     : () ! { St s | e } =
   let a = here.a in
   match (H.lookup tr (stGetRef i.shapes), schemeOf i dict) with
@@ -2204,7 +2273,10 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int)) (here : Her
 
 -- Infer unit `r`, whose dependencies exported `deps` -- their values' schemes
 -- -- and `depTypes`, in the order its dependencies' items were given binders.
-@pub fun inferUnit (r : Renamed) (deps : [DepExports]) (depTypes : [TypeEnv])
+@pub fun inferUnit
+    (r : Renamed)
+    (deps : [DepExports])
+    (depTypes : [TypeEnv])
     (texts : HashMap String String)
     : Inferred =
   runSt (\() ->
@@ -2225,7 +2297,9 @@ fun inferImpl (i : Inf s) outs (done : StRef s (HashMap String Int)) (here : Her
         (\w k ->
           (match (V.get r.depItems k, V.get depExports k) with
            | (Just (it : Item), Just (ex : Export)) ->
-               (match ex.scheme with | Just sc -> setScheme i it.id sc | None -> ())
+               (match ex.scheme with
+                | Just sc -> setScheme i it.id sc
+                | None -> ())
            | _ -> ()))
         ()
         (V.range 0 (V.len r.depItems))
@@ -2653,7 +2727,11 @@ fun exportEffectOps (i : Inf s) (items : [Item]) : () ! { St s | e } =
 
 -- This unit's traits' methods and `impl`s' dictionaries, recorded and
 -- exported.
-fun exportTraits (i : Inf s) (here : Here) (items : [Item]) (decls : [HirDecl])
+fun exportTraits
+    (i : Inf s)
+    (here : Here)
+    (items : [Item])
+    (decls : [HirDecl])
     (dicts : HashMap String Int)
     : () ! { St s | e } =
   let a = here.a in
@@ -2715,7 +2793,11 @@ fun declarations (i : Inf s) (k : Int) (decls : [HirDecl]) (items : [Item]) : ()
 
 -- A module's top-level binders, each a line: where it is written, its name,
 -- and its scheme -- `from to name : scheme`.
-fun dumpModule (i : Inf s) (r : Renamed) (k : Int) (schemes : HashMap Int Scheme)
+fun dumpModule
+    (i : Inf s)
+    (r : Renamed)
+    (k : Int)
+    (schemes : HashMap Int Scheme)
     (texts : HashMap String String)
     : (String, [String]) ! { St s | e } =
   let d = declaredOf r k in

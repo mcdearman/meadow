@@ -124,7 +124,10 @@ fun collect k n act acc =
   if k <= 0 then acc else collect (k - 1) n act (pushBack acc (timeLoop n act))
 
 -- Measure `act` under `config`, counting `units` of work per call.
-@pub fun benchUnitsWith (config : BenchConfig) (name : String) (units : Int)
+@pub fun benchUnitsWith
+    (config : BenchConfig)
+    (name : String)
+    (units : Int)
     (act : () -> b ! { Time | e })
     : Report ! { Time | e } =
   let _ = warmUp (monotonic () + config.warmupNanos) act in

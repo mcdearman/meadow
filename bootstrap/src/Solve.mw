@@ -413,7 +413,9 @@ fun varsOf (q : Quantified) : [Int] =
   | HirTypeView.List r -> collectTyvars a r.item out
   | HirTypeView.Record r ->
       let fs = V.foldl (\acc f -> collectTyvars a (hirTypeFieldTy a f) acc) out r.fields in
-      (match r.tail with | Just tl -> addVar fs (hirNameText a tl) | None -> fs)
+      (match r.tail with
+       | Just tl -> addVar fs (hirNameText a tl)
+       | None -> fs)
 
 fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out else V.pushBack out n
 
@@ -427,14 +429,19 @@ fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out e
     : Type ! { St s | e } =
   match viewHirType a t with
   | HirTypeView.Var r ->
-      (match H.lookup (hirNameText a r.name) params with | Just k -> Bound k | None -> Error)
+      (match H.lookup (hirNameText a r.name) params with
+       | Just k -> Bound k
+       | None -> Error)
   | HirTypeView.Con r ->
       let args = V.map (\x -> tyOf i a x params) r.args in
       let name = canonOf i (hirRefId a r.ref) (hirNameText a r.name) in
       conNamed i name args
   | HirTypeView.Fun r ->
-      let eff = (match r.row with | Just row -> effOf i a row params | None -> RowEmpty) in
-      funcEff (V.map (\x -> tyOf i a x params) r.params) (tyOf i a r.result params) eff
+      let eff =
+        (match r.row with
+         | Just row -> effOf i a row params
+         | None -> RowEmpty)
+      in funcEff (V.map (\x -> tyOf i a x params) r.params) (tyOf i a r.result params) eff
   | HirTypeView.Tuple r -> Tuple (V.map (\x -> tyOf i a x params) r.items)
   | HirTypeView.Vector r -> vectorT (tyOf i a r.item params)
   | HirTypeView.List r -> listT (tyOf i a r.item params)
@@ -442,7 +449,9 @@ fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out e
       let rest =
         (match r.tail with
          | Just tl ->
-             (match H.lookup (hirNameText a tl) params with | Just k -> Bound k | None -> Error)
+             (match H.lookup (hirNameText a tl) params with
+              | Just k -> Bound k
+              | None -> Error)
          | None -> RowEmpty)
       in Record
            (V.foldl

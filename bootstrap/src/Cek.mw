@@ -202,8 +202,11 @@ fun eval (m : Machine) (t : CoreTerm) (env : Map (Ref Value)) (k : List Frame) =
   | CoreTermCase s arms -> go m (Eval s env) (Match arms env :: k)
   | CoreTermPerform e o x -> go m (Eval x env) (PerformWith e o :: k)
   | CoreTermHandle body clauses retId r ->
-      let returned = (match (retId, r) with | (Just v, Just b) -> Just (v, b) | _ -> None) in
-      go m (Eval body env) (HandleMark clauses returned env :: k)
+      let returned =
+        (match (retId, r) with
+         | (Just v, Just b) -> Just (v, b)
+         | _ -> None)
+      in go m (Eval body env) (HandleMark clauses returned env :: k)
   | CoreTermIll -> Err "evaluating an ill-formed expression"
 
 -- A sequence of sub-expressions, left to right, then what they make.
@@ -232,7 +235,11 @@ fun ret (m : Machine) (v : Value) (f : Frame) (k : List Frame) =
        | other -> Err "`if` condition is not a Bool: ${display other}")
   | Bind var body env -> go m (Eval body (define env var v)) k
   | LetRec scope binds body ->
-      let u = (match V.get binds 0 with | Just (var, _) -> fill scope var v | None -> ()) in
+      let u =
+        (match V.get binds 0 with
+         | Just (var, _) -> fill scope var v
+         | None -> ())
+      in
       let later = V.drop binds 1 in
       (match V.get later 0 with
        | Just (_, rhs) -> go m (Eval rhs scope) (LetRec scope later body :: k)
@@ -246,9 +253,16 @@ fun ret (m : Machine) (v : Value) (f : Frame) (k : List Frame) =
             | Shape.Tuple -> go m (Ret (Tuple all)) k
             | Shape.Array -> go m (Ret (Array all)) k
             | Shape.Ctor n -> go m (Ret (Ctor n all)) k
-            | Shape.Prim op -> (match prim op all with | Ok r -> go m (Ret r) k | Err e -> Err e)))
+            | Shape.Prim op ->
+                (match prim op all with
+                 | Ok r -> go m (Ret r) k
+                 | Err e -> Err e)))
   | BuildRecord done pending env ->
-      let label = (match V.get pending 0 with | Just f -> coreFieldLabel m.arena f | None -> "") in
+      let label =
+        (match V.get pending 0 with
+         | Just f -> coreFieldLabel m.arena f
+         | None -> "")
+      in
       let all = withField label v done in
       let later = V.drop pending 1 in
       (match V.get later 0 with
@@ -278,8 +292,11 @@ fun ret (m : Machine) (v : Value) (f : Frame) (k : List Frame) =
        | other -> Err "a `match` guard is not a Bool: ${display other}")
   | PerformWith e o -> perform m e o v k
   | Cache var ->
-      let u = (match Map.lookup var m.root with | Just r -> setRef r v | None -> ()) in
-      go m (Ret v) k
+      let u =
+        (match Map.lookup var m.root with
+         | Just r -> setRef r v
+         | None -> ())
+      in go m (Ret v) k
   | HandleMark _ r henv ->
       (match r with
        | Just (param, body) -> go m (Eval body (define henv param v)) k
@@ -303,10 +320,13 @@ fun select (m : Machine) (label : String) (v : Value) (k : List Frame) =
        | None -> Err "record has no field `${label}`")
   | Ctor name vals ->
       let named = V.find (\f -> fst f == name) m.fields in
-      let at = (match named with | Just (_, fs) -> indexOf label fs 0 | None -> 0 - 1) in
-      (match V.get vals at with
-       | Just x -> go m (Ret x) k
-       | None -> Err "`${ctorSpelling name}` has no field `${label}`")
+      let at =
+        (match named with
+         | Just (_, fs) -> indexOf label fs 0
+         | None -> 0 - 1)
+      in (match V.get vals at with
+          | Just x -> go m (Ret x) k
+          | None -> Err "`${ctorSpelling name}` has no field `${label}`")
   | other -> Err "cannot select `.${label}` from ${display other}"
 
 -- Where `x` is in `xs`, from `i` on, or -1.
@@ -317,7 +337,12 @@ fun indexOf (x : String) (xs : [String]) (i : Int) : Int =
 
 -- The arms from `from` on, against `v`: the first whose pattern matches, and
 -- whose guard -- evaluated next, if it has one -- holds.
-fun arms_ (m : Machine) (arms : [CoreArm]) (env : Map (Ref Value)) (from : Int) (v : Value)
+fun arms_
+    (m : Machine)
+    (arms : [CoreArm])
+    (env : Map (Ref Value))
+    (from : Int)
+    (v : Value)
     (k : List Frame) =
   let a = m.arena in
   match V.get arms from with
@@ -639,7 +664,9 @@ fun prim (op : String) (args : [Value]) : Result String Value ! { Mut | e } =
        | other -> Err "stThaw: expected an Array, got ${display other}")
   | "Compact" -> Ok (Compact a)
   | "GetCompact" ->
-      (match a with | Compact x -> Ok x | other -> Err "expected a compact, got ${display other}")
+      (match a with
+       | Compact x -> Ok x
+       | other -> Err "expected a compact, got ${display other}")
   | "CompactAdd" ->
       (match a with
        | Compact _ -> Ok (Compact b)

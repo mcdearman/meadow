@@ -107,7 +107,9 @@ fun lookupIn h shift k node =
          | Entry eh ek ev if eh == h and ek == k -> Just ev
          | Entry _ _ _ -> None)
   | Collision ch pairs if ch == h ->
-      (match pairIndex k pairs with | Just i -> Just (snd (arrayGet pairs i)) | None -> None)
+      (match pairIndex k pairs with
+       | Just i -> Just (snd (arrayGet pairs i))
+       | None -> None)
   | Collision _ _ -> None
 
 @pub fun member (k : a) (m : HashMap a b) : Bool =
@@ -202,7 +204,9 @@ fun collapse node =
   | Collision ch pairs if arrayLen pairs == 1 ->
       (match arrayGet pairs 0 with | (k, v) -> Entry ch k v)
   | Bitmap _ slots if arrayLen slots == 1 ->
-      (match arrayGet slots 0 with | Entry _ _ _ as entry -> entry | Child _ -> Child node)
+      (match arrayGet slots 0 with
+       | Entry _ _ _ as entry -> entry
+       | Child _ -> Child node)
   | _ -> Child node
 
 -- Apply `f` to what `k` holds, if it holds anything.
@@ -276,7 +280,9 @@ fun mapNode f node =
            (\acc s ->
              arrayPush
                acc
-               (match s with | Entry h k v -> Entry h k (f v) | Child sub -> Child (mapNode f sub)))
+               (match s with
+                | Entry h k v -> Entry h k (f v)
+                | Child sub -> Child (mapNode f sub)))
            #[]
            slots)
 

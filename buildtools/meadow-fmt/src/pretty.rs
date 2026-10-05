@@ -339,7 +339,7 @@ struct Printer<'a> {
     /// where a `let … in` may be one line.
     alone: bool,
     /// What is read is the head of a declaration: its name and what it
-    /// takes, which run on over lines as many to a line as fit.
+    /// takes, which are one line or a line each.
     heading: bool,
 }
 
@@ -775,7 +775,7 @@ impl<'a> Printer<'a> {
         match self.toks[j].text {
             "let" => self.let_in(stops, alone),
             "if" => self.if_then(stops),
-            "match" => self.match_with(stops, alone),
+            "match" => self.match_with(stops),
             "handle" => self.handle(stops),
             _ => self.lambda(stops),
         }
@@ -918,11 +918,17 @@ impl<'a> Printer<'a> {
         if self.heading {
             args.push(last);
             let mut args = args.into_iter();
+            // As rustfmt has a signature: on one line, or the name on the
+            // first and everything it takes a line each.
             let mut out = Vec::new();
             out.extend(args.next());
-            let more: Vec<Doc> = args.map(|a| Doc::Fit(Box::new(a))).collect();
+            if let Some(name) = args.next() {
+                out.push(text(" "));
+                out.push(name);
+            }
+            let more: Vec<Doc> = args.flat_map(|a| [Doc::Line, a]).collect();
             out.push(nest(4, cat(more)));
-            return cat(out);
+            return group(cat(out));
         }
         let mut args = args.into_iter();
         let mut init = Vec::new();
@@ -1351,7 +1357,7 @@ impl<'a> Printer<'a> {
 
     /// `match … with` and its arms: an arm to a line, under the `match`.
     /// Two arms that fit on the line with it stay there.
-    fn match_with(&mut self, stops: u8, alone: bool) -> Doc {
+    fn match_with(&mut self, stops: u8) -> Doc {
         let mut out = vec![self.t(self.i), text(" ")];
         self.i += 1;
         out.push(self.expr(stops | WITH));
@@ -1376,8 +1382,6 @@ impl<'a> Printer<'a> {
         let d = cat(out);
         if arms > 2 || spaced {
             broken(d)
-        } else if alone {
-            group(d)
         } else {
             small(d, SMALL)
         }
@@ -1631,8 +1635,8 @@ fun long () =
         );
     }
 
-    // Two short arms stay on the line of their `match`; more than two, or any
-    // that make it long, have a line each.
+    // Two arms that are short stay on the line of their `match`, in brackets
+    // or out; more than two, or any that make it long, have a line each.
     #[test]
     fn a_match_has_an_arm_to_a_line() {
         check(
@@ -1653,7 +1657,10 @@ fun name f =
 fun parse text =
   match quick text with
   | Just v -> Ok v
-  | None -> (match P.runParser document text with | Ok v -> Ok v | Err e -> Err (P.showError e))
+  | None ->
+      (match P.runParser document text with
+       | Ok v -> Ok v
+       | Err e -> Err (P.showError e))
 "#,
         );
     }
@@ -1680,14 +1687,20 @@ fun skip s n i =
         );
     }
 
+    // As rustfmt has a signature. A head that fits but for its type keeps
+    // what it takes on its line, and the type starts the next.
     #[test]
-    fn a_long_head_runs_on_and_its_type_starts_a_line() {
+    fn a_long_head_has_a_line_to_each_thing_it_takes() {
         check(
             r#"@pub fun lowered (pkg : String) (input : String) (tree : Green Grouped) (exps : HashMap String Json) (fx : HashMap String Fixity) : AstProgram = top
 
 fun declareOp (acc : HashMap String Fixity) (f : Fixity) (o : Syntax Surface) : HashMap String Fixity ! { Report | e } = acc
 "#,
-            r#"@pub fun lowered (pkg : String) (input : String) (tree : Green Grouped) (exps : HashMap String Json)
+            r#"@pub fun lowered
+    (pkg : String)
+    (input : String)
+    (tree : Green Grouped)
+    (exps : HashMap String Json)
     (fx : HashMap String Fixity)
     : AstProgram =
   top

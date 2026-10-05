@@ -239,7 +239,9 @@ fun dollar (trees : [Tree]) (i : Int) (d : Tok) : Result Invalid (Piece, Int) =
         (match identOf t with
          | Just name ->
              let colon =
-               (match V.get trees (i + 2) with | Just (Leaf c) -> c.text == ":" | _ -> False)
+               (match V.get trees (i + 2) with
+                | Just (Leaf c) -> c.text == ":"
+                | _ -> False)
              in if not colon then Ok (Var name Tt, 2)
                 else
                   (match V.get trees (i + 3) with
@@ -484,7 +486,12 @@ fun matchRepeat (inside : [Piece]) (sep : Maybe Tok) (trees : [Tree]) (tail : [P
   let limit = max 0 (V.len trees - M.unwrapOr 0 (fixedLen tail)) in
   repeatFrom inside sep trees limit 0 []
 
-fun repeatFrom (inside : [Piece]) (sep : Maybe Tok) (trees : [Tree]) (limit : Int) (at : Int)
+fun repeatFrom
+    (inside : [Piece])
+    (sep : Maybe Tok)
+    (trees : [Tree])
+    (limit : Int)
+    (at : Int)
     (passes : [HashMap String Binding])
     : ([HashMap String Binding], Int) =
   match (if at >= limit then None else passStart sep trees at (V.isEmpty passes)) with
@@ -580,13 +587,23 @@ fun parses (k : Fragment) (trees : [Tree]) : Bool =
 -- standing where the call's argument does, `at`, its name marked with
 -- expansion `mark` if it is one that can be a local (`name#3`); each the call
 -- passed in standing where it was written.
-@pub fun substitute (template : [Tree]) (bound : HashMap String Binding) (whole : (Int, Int))
-    (pkg : String) (mark : Int)
+@pub fun substitute
+    (template : [Tree])
+    (bound : HashMap String Binding)
+    (whole : (Int, Int))
+    (pkg : String)
+    (mark : Int)
     : Result Invalid [Tok] =
   writeFrom template bound whole pkg mark 0 []
 
-fun writeFrom (template : [Tree]) (bound : HashMap String Binding) (whole : (Int, Int))
-    (pkg : String) (mark : Int) (i : Int) (out : [Tok])
+fun writeFrom
+    (template : [Tree])
+    (bound : HashMap String Binding)
+    (whole : (Int, Int))
+    (pkg : String)
+    (mark : Int)
+    (i : Int)
+    (out : [Tok])
     : Result Invalid [Tok] =
   let a = fst whole in
   let z = snd whole in
@@ -612,8 +629,14 @@ fun marked (mark : Int) (t : Tok) : Tok =
   | _ -> t
 
 -- What the `$` at `i` stands for, and how many trees it took.
-fun splice (template : [Tree]) (i : Int) (bound : HashMap String Binding) (whole : (Int, Int))
-    (pkg : String) (mark : Int) (d : Tok)
+fun splice
+    (template : [Tree])
+    (i : Int)
+    (bound : HashMap String Binding)
+    (whole : (Int, Int))
+    (pkg : String)
+    (mark : Int)
+    (d : Tok)
     : Result Invalid ([Tok], Int) =
   let a = fst whole in
   let z = snd whole in

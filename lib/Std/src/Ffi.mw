@@ -88,7 +88,9 @@ use Std.Result.Result.*
 @pub fun function (library : Library) (name : String) : Result String Function ! { Process | e } =
   match library with
   | Library lib ->
-      (match ffiSymbol (lib, name) with | Ok at -> Ok (Function at) | Err why -> Err why)
+      (match ffiSymbol (lib, name) with
+       | Ok at -> Ok (Function at)
+       | Err why -> Err why)
 
 fun wire (a : Arg) : (Int, Int, Float, String) =
   match a with
@@ -256,19 +258,25 @@ fun cFunction (name : String) =
   if hasC () then
     let _ =
       assertTrue
-        (match open "/no/such/library.dylib" with | Err _ -> True | Ok _ -> False)
+        (match open "/no/such/library.dylib" with
+         | Err _ -> True
+         | Ok _ -> False)
         "no such library"
     in match libc () with
        | Err why -> noC why "the C library opens"
        | Ok l ->
            assertTrue
-             (match function l "meadow_no_such_function" with | Err _ -> True | Ok _ -> False)
+             (match function l "meadow_no_such_function" with
+              | Err _ -> True
+              | Ok _ -> False)
              "no such function"
   else ()
 
 @test fun aLibraryThatIsNotThereIsAnError () =
   assertTrue
-    (match open "/no/such/library.dylib" with | Err _ -> True | Ok _ -> False)
+    (match open "/no/such/library.dylib" with
+     | Err _ -> True
+     | Ok _ -> False)
     "no such library"
 
 @test fun theNullAddressIsNeitherReadNorWritten () =

@@ -579,36 +579,53 @@ fun rigidName (t : Type) : Maybe String =
 
 -- `t` with every variable deeper than `level` -- every one, for `None` --
 -- quantified, but number variables unless `classes`.
-@pub fun quantifyFrom (ar : Arena s) (t : Type) (level : Maybe Int) (q : Quantified)
+@pub fun quantifyFrom
+    (ar : Arena s)
+    (t : Type)
+    (level : Maybe Int)
+    (q : Quantified)
     (classes : Bool)
     : (Type, Quantified) ! { St s | e } =
   match t with
   | Var id ->
-      let deep = (match level with | Just l -> slotLevel ar id > l | None -> True) in
-      if (not (isClass (slotKind ar id)) or classes) and deep then
-        (match H.lookup id q.map with
-         | Just i -> (Bound i, q)
-         | None ->
-             let i = V.len q.kinds in
-             (
-               Bound i,
-               Quantified { map = H.insert id i q.map, kinds = V.pushBack q.kinds (slotKind ar id) }
-             ))
-      else (Var id, q)
+      let deep =
+        (match level with
+         | Just l -> slotLevel ar id > l
+         | None -> True)
+      in if (not (isClass (slotKind ar id)) or classes) and deep then
+           (match H.lookup id q.map with
+            | Just i -> (Bound i, q)
+            | None ->
+                let i = V.len q.kinds in
+                (
+                  Bound i,
+                  Quantified {
+                    map = H.insert id i q.map,
+                    kinds = V.pushBack q.kinds (slotKind ar id)
+                  }
+                ))
+         else (Var id, q)
   | Con name args ->
-      (match quantifyAll ar args level q classes with | (xs, q2) -> (Con name xs, q2))
-  | Tuple items -> (match quantifyAll ar items level q classes with | (xs, q2) -> (Tuple xs, q2))
+      (match quantifyAll ar args level q classes with
+       | (xs, q2) -> (Con name xs, q2))
+  | Tuple items ->
+      (match quantifyAll ar items level q classes with
+       | (xs, q2) -> (Tuple xs, q2))
   | Fun args ret eff ->
       (match quantifyAll ar args level q classes with
        | (xs, q2) ->
            (match quantifyFrom ar ret level q2 classes with
             | (r, q3) ->
-                (match quantifyFrom ar eff level q3 classes with | (e, q4) -> (Fun xs r e, q4))))
-  | Record row -> (match quantifyFrom ar row level q classes with | (r, q2) -> (Record r, q2))
+                (match quantifyFrom ar eff level q3 classes with
+                 | (e, q4) -> (Fun xs r e, q4))))
+  | Record row ->
+      (match quantifyFrom ar row level q classes with
+       | (r, q2) -> (Record r, q2))
   | RowExtend l f rest ->
       (match quantifyFrom ar f level q classes with
        | (f2, q2) ->
-           (match quantifyFrom ar rest level q2 classes with | (r2, q3) -> (RowExtend l f2 r2, q3)))
+           (match quantifyFrom ar rest level q2 classes with
+            | (r2, q3) -> (RowExtend l f2 r2, q3)))
   | other -> (other, q)
 
 fun quantifyAll (ar : Arena s) (ts : [Type]) (level : Maybe Int) (q : Quantified) (classes : Bool)
@@ -617,7 +634,8 @@ fun quantifyAll (ar : Arena s) (ts : [Type]) (level : Maybe Int) (q : Quantified
     (\acc t ->
       match acc with
       | (xs, q1) ->
-          (match quantifyFrom ar t level q1 classes with | (x, q2) -> (V.pushBack xs x, q2)))
+          (match quantifyFrom ar t level q1 classes with
+           | (x, q2) -> (V.pushBack xs x, q2)))
     ([], q)
     ts
 
@@ -727,7 +745,9 @@ fun writeType (nm : Namer) (t : Type) (prec : Int) (hidden : [Int]) : (String, N
   | Fun args ret eff ->
       let params =
         (if V.len args == 1 then writeType nm (V.getOr Error args 0) arrow hidden
-         else (match writeEach nm args top hidden ", " with | (s, n2) -> ("(" ++ s ++ ")", n2)))
+         else
+           (match writeEach nm args top hidden ", " with
+            | (s, n2) -> ("(" ++ s ++ ")", n2)))
       in (match params with
           | (ps, n2) ->
               (match writeType n2 ret top hidden with
@@ -735,10 +755,15 @@ fun writeType (nm : Namer) (t : Type) (prec : Int) (hidden : [Int]) : (String, N
                    (match effectSuffix n3 eff hidden with
                     | (e, n4) -> (wrapped (prec >= arrow) (ps ++ " -> " ++ r ++ e), n4))))
   | Tuple items ->
-      (match writeEach nm items top hidden ", " with | (s, n2) -> ("(" ++ s ++ ")", n2))
-  | Record row -> (match writeRow nm row hidden with | (s, n2) -> ("{ " ++ s ++ " }", n2))
+      (match writeEach nm items top hidden ", " with
+       | (s, n2) -> ("(" ++ s ++ ")", n2))
+  | Record row ->
+      (match writeRow nm row hidden with
+       | (s, n2) -> ("{ " ++ s ++ " }", n2))
   | RowEmpty -> ("()", nm)
-  | RowExtend _ _ _ -> (match writeRow nm t hidden with | (s, n2) -> ("(| " ++ s ++ " |)", n2))
+  | RowExtend _ _ _ ->
+      (match writeRow nm t hidden with
+       | (s, n2) -> ("(| " ++ s ++ " |)", n2))
 
 fun wrapped (yes : Bool) (s : String) : String = if yes then "(" ++ s ++ ")" else s
 
@@ -749,7 +774,8 @@ fun writeEach (nm : Namer) (ts : [Type]) (prec : Int) (hidden : [Int]) (sep : St
       (\acc t ->
         match acc with
         | (parts, n1) ->
-            (match writeType n1 t prec hidden with | (s, n2) -> (V.pushBack parts s, n2)))
+            (match writeType n1 t prec hidden with
+             | (s, n2) -> (V.pushBack parts s, n2)))
       ([], nm)
       ts
   in match scrutinee with | (parts, n) -> (S.join sep parts, n)
@@ -761,13 +787,17 @@ fun effectSuffix (nm : Namer) (eff : Type) (hidden : [Int]) : (String, Namer) =
   match rowLabels eff with
   | (labels, tail) ->
       let hiddenTail =
-        (match tail with | Just (Bound i) -> V.isEmpty labels and V.elem i hidden | _ -> False)
+        (match tail with
+         | Just (Bound i) -> V.isEmpty labels and V.elem i hidden
+         | _ -> False)
       in if hiddenTail then ("", nm)
          else
            (match tailName nm tail with
             | (named, n2) ->
                 if V.isEmpty labels then
-                  (match named with | Just tn -> (" ! " ++ tn, n2) | None -> ("", n2))
+                  (match named with
+                   | Just tn -> (" ! " ++ tn, n2)
+                   | None -> ("", n2))
                 else
                   let braces = V.len labels != 1 or M.isSome named in
                   (let scrutinee =
@@ -799,7 +829,8 @@ fun rowLabels (t : Type) : ([(String, [Type])], Maybe Type) =
   match t with
   | RowExtend name field rest ->
       let args = (match field with | Tuple a -> a | _ -> []) in
-      (match rowLabels rest with | (more, tail) -> (V.pushFront more (name, args), tail))
+      (match rowLabels rest with
+       | (more, tail) -> (V.pushFront more (name, args), tail))
   | Var id -> ([], Just (Var id))
   | Bound i -> ([], Just (Bound i))
   | _ -> ([], None)
@@ -827,7 +858,8 @@ fun writeRowFrom (nm : Namer) (row : Type) (hidden : [Int]) (first : Bool) (acc 
              (acc ++ (if first then "" else ", ") ++ label ++ " : " ++ s))
   | RowEmpty -> (acc, nm)
   | Var id ->
-      (match nameVar nm id with | (n, n2) -> (acc ++ (if first then "" else " ") ++ "| " ++ n, n2))
+      (match nameVar nm id with
+       | (n, n2) -> (acc ++ (if first then "" else " ") ++ "| " ++ n, n2))
   | Bound i -> (acc ++ (if first then "" else " ") ++ "| " ++ boundName nm i, nm)
   | other ->
       (match writeType nm other top hidden with
@@ -850,7 +882,9 @@ fun writeRowFrom (nm : Namer) (row : Type) (hidden : [Int]) (first : Bool) (acc 
 
 fun counted (t : Type) (acc : (HashMap Int Int, [Int])) : (HashMap Int Int, [Int]) =
   match t with
-  | Bound i -> (match acc with | (c, ts) -> (H.insert i (M.unwrapOr 0 (H.lookup i c) + 1) c, ts))
+  | Bound i ->
+      (match acc with
+       | (c, ts) -> (H.insert i (M.unwrapOr 0 (H.lookup i c) + 1) c, ts))
   | Con _ args -> V.foldl (\a x -> counted x a) acc args
   | Tuple args -> V.foldl (\a x -> counted x a) acc args
   | Fun args ret eff -> counted eff (counted ret (V.foldl (\a x -> counted x a) acc args))
@@ -859,7 +893,9 @@ fun counted (t : Type) (acc : (HashMap Int Int, [Int])) : (HashMap Int Int, [Int
       let a1 = counted f acc in
       let a2 =
         (match rest with
-         | Bound i -> (match a1 with | (c, ts) -> (c, if V.elem i ts then ts else V.pushBack ts i))
+         | Bound i ->
+             (match a1 with
+              | (c, ts) -> (c, if V.elem i ts then ts else V.pushBack ts i))
          | _ -> a1)
       in counted rest a2
   | _ -> acc

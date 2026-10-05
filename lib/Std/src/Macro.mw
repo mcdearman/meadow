@@ -312,7 +312,10 @@ impl Reflect (Maybe a) where Reflect a {
     | Datum.Tag "None" _ -> Ok None
     | Datum.Tag "Just" xs ->
         (match V.get xs 0 with
-         | Just x -> (match fromDatum x with | Ok y -> Ok (Just y) | Err e -> Err e)
+         | Just x ->
+             (match fromDatum x with
+              | Ok y -> Ok (Just y)
+              | Err e -> Err e)
          | None -> Err "`Just` without what it holds")
     | other -> Err (expected "a Maybe" other)
 }
@@ -385,8 +388,11 @@ fun commas (parts : [[TokenTree]]) : [TokenTree] =
 --
 -- `settled` is whether anything more can still be defined. Until it is, a
 -- lookup of an unknown name abandons the run; after, it is answered `None`.
-@pub fun expanding (settled : Bool) (scope : [(String, Datum)])
-    (run : [TokenTree] -> [TokenTree] ! { Expand | e }) (input : [TokenTree])
+@pub fun expanding
+    (settled : Bool)
+    (scope : [(String, Datum)])
+    (run : [TokenTree] -> [TokenTree] ! { Expand | e })
+    (input : [TokenTree])
     : Wire ! e =
   wireOutcome
     (handle run input with {

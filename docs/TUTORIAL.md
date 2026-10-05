@@ -4240,6 +4240,8 @@ fun describe n =
 - A definition is cut after its `=`, a call has what it is given a line each, a
   function given last starts on the line of the call, and a record is set out as
   rustfmt sets out a struct.
+- A head too long for its line has a line to each thing it takes, and its type
+  the line after, as rustfmt has a signature.
 - The steps of a `let … in` have a line each, and so do the arms of a `match`; a
   `match` with two short arms, or one `let` with its body, stays on one line.
 - An `if` keeps its `then` on its line, and each `else` starts one.

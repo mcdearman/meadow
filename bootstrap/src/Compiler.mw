@@ -120,7 +120,10 @@ fun groupedOf (ds : [Declared]) (parsed : Result [(Int, String)] (Green Surface)
 
 -- The unit at `dir` renamed: each module's names, as the rename test
 -- compares them, by its path; what the unit exports; and whether it says.
-fun renamedOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity)
+fun renamedOf
+    (dir : String)
+    (imported : [Interface])
+    (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
     : ([(String, [String])], [Export], Bool) =
   match unitOf dir imported fx files with
@@ -135,7 +138,10 @@ fun renamedOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixit
 -- The unit at `dir` inferred: each module's top-level bindings' schemes, as
 -- the infer test compares them, by its path; what the unit exports, each with
 -- its scheme; whether it says; and what it knows about types.
-fun inferredOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity)
+fun inferredOf
+    (dir : String)
+    (imported : [Interface])
+    (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
     : ([(String, [String])], [Export], Bool, TypeEnv) =
   match unitOf dir imported fx files with
@@ -170,7 +176,10 @@ fun inferredOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixi
 
 -- The unit at `dir` renamed: its modules, each with its path, and what
 -- renaming made of them.
-fun unitOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity)
+fun unitOf
+    (dir : String)
+    (imported : [Interface])
+    (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
     : ([(String, Source)], Renamed) =
   let manifest = V.find (\x -> match x with | (p, _, _) -> S.endsWith "Meadow.toml" p) files in
@@ -182,7 +191,11 @@ fun unitOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity)
            | (p, text, _) -> (if S.endsWith ".json" p then [text] else []))
          files)
   in
-  let pkg = (match manifest with | Just (_, text, _) -> packageName text | None -> "") in
+  let pkg =
+    (match manifest with
+     | Just (_, text, _) -> packageName text
+     | None -> "")
+  in
   let isStd = pkg == "Std" in
   let src = Path.join dir "src" in
   let sources =

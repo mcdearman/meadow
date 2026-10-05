@@ -30,6 +30,19 @@ fn meadow() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_meadow")))
 }
 
+/// How the Rust compiler is asked to build what MeadowBoot's answer is
+/// compared with: for the one platform MeadowBoot decides a `@cfg` for --
+/// Windows on x86-64, a debug build (`Scopes.enabled`, `Infer.metaHolds`) --
+/// and not for whichever machine the test is run on. Otherwise a declaration
+/// under `@cfg(unix)` is there on one side and not the other wherever the
+/// test runs on a Unix, as `Std.Ffi`'s tests were.
+fn as_meadowboot_builds() -> meadow::Options {
+    let mut opts = meadow::Options::debug().entry("result");
+    opts.cfg.os = "windows";
+    opts.cfg.arch = "x86_64";
+    opts
+}
+
 /// MeadowBoot, built once for the whole run as `meadow build --release` builds
 /// it -- offline when its dependencies are fetched already, fetching them when
 /// not -- and the executable that made. Its runs are of the executable, so
@@ -1256,9 +1269,7 @@ fn built(root: &Path) -> Option<(meadow::pipeline::CompiledGraph, Vec<(PathBuf, 
     } else {
         root.to_path_buf()
     };
-    let graph =
-        meadow::pipeline::compile_packages(&entry, meadow::Options::debug().entry("result"))
-            .ok()?;
+    let graph = meadow::pipeline::compile_packages(&entry, as_meadowboot_builds()).ok()?;
     let mut roots: Vec<(PathBuf, String)> = graph
         .packages
         .iter()
@@ -1447,7 +1458,7 @@ fn every_source_infers_as_meadow_infer_infers_it() {
     let mut packages: HashMap<PathBuf, HashMap<PathBuf, String>> = HashMap::new();
     let mut expanded = Vec::new();
     meadow_compiler::expand::record::start();
-    let _ = meadow::stdlib::compile_fresh(meadow::Options::debug().entry("result"));
+    let _ = meadow::stdlib::compile_fresh(as_meadowboot_builds());
     for r in meadow_compiler::expand::record::take() {
         if let Some(file) = named_file(&r.filename, &[]) {
             expanded.push((file, r));
@@ -1733,7 +1744,7 @@ fn every_source_renames_as_meadow_rename_renames_it() {
     // The standard library's too, which a build otherwise reads back from a
     // cache without expanding anything.
     meadow_compiler::expand::record::start();
-    let _ = meadow::stdlib::compile_fresh(meadow::Options::debug().entry("result"));
+    let _ = meadow::stdlib::compile_fresh(as_meadowboot_builds());
     for r in meadow_compiler::expand::record::take() {
         if let Some(file) = named_file(&r.filename, &[]) {
             expanded.push((file, r));

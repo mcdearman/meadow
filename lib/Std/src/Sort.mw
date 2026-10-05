@@ -324,10 +324,10 @@ fun siftDown cmp cells lo n i =
       (stableSortBy (\x y -> compare (fst x) (fst y)) ps)
       [(0, "b"), (0, "d"), (1, "a"), (1, "c"), (1, "e")]
       "ties keep their original order" in
-    assertEq
-    (stableSortListBy (\x y -> compare (fst x) (fst y)) (V.toList ps))
-    [(0, "b"); (0, "d"); (1, "a"); (1, "c"); (1, "e")]
-    "and the same for a List"
+  assertEq
+  (stableSortListBy (\x y -> compare (fst x) (fst y)) (V.toList ps))
+  [(0, "b"); (0, "d"); (1, "a"); (1, "c"); (1, "e")]
+  "and the same for a List"
 
 @test fun theStableSortAgreesWithTheFastOneOnValues () =
   let v = V.map (\i -> (i * 31) % 97) (V.range 0 300) in

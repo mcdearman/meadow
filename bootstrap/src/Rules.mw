@@ -557,10 +557,10 @@ fun parses (k : Fragment) (trees : [Tree]) : Bool =
              ]
            ]
      | _ -> given) in
-    match parseSurfaceTokens toks with
-    | (g, errs) ->
-        V.isEmpty errs
-          and V.len (V.filter (\x -> R.kindOf x == Surface.NodeDecl) (R.children (R.root g))) == 1
+  match parseSurfaceTokens toks with
+  | (g, errs) ->
+      V.isEmpty errs
+        and V.len (V.filter (\x -> R.kindOf x == Surface.NodeDecl) (R.children (R.root g))) == 1
 
 -- --- writing a template ------------------------------------------------------
 

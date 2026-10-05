@@ -263,10 +263,10 @@ fun padTo width s =
       , unitsPerCall = 1
       , unitsPerSecond = 1000000
     } in
-    let line = formatReport r in
-    let _ = assertTrue (S.contains "fib" line) "names the benchmark" in
-    let _ = assertTrue (S.contains "1.00µs" line) "reports the median" in
-    assertTrue (S.contains "1_000_000/s" line) "reports throughput"
+  let line = formatReport r in
+  let _ = assertTrue (S.contains "fib" line) "names the benchmark" in
+  let _ = assertTrue (S.contains "1.00µs" line) "reports the median" in
+  assertTrue (S.contains "1_000_000/s" line) "reports throughput"
 
 @test fun throughputCountsWorkNotCalls () =
   -- A call that does 1000 units of work at 1us per call is a million units per
@@ -282,17 +282,17 @@ fun padTo width s =
       , unitsPerCall = 1000
       , unitsPerSecond = 1000000000
     } in
-    let plain =
-      Report { name = "n"
-        , iterations = 1
-        , samples = 1
-        , best = 1000
-        , median = 1000
-        , spread = 0
-        , perSecond = 1000000
-        , unitsPerCall = 1
-        , unitsPerSecond = 1000000
-      } in
-      let _ = assertEq (throughput r) 1000000000 "units win when there are units"
-      in
+  let plain =
+    Report { name = "n"
+      , iterations = 1
+      , samples = 1
+      , best = 1000
+      , median = 1000
+      , spread = 0
+      , perSecond = 1000000
+      , unitsPerCall = 1
+      , unitsPerSecond = 1000000
+    } in
+  let _ = assertEq (throughput r) 1000000000 "units win when there are units"
+  in
   assertEq (throughput plain) 1000000 "calls otherwise"

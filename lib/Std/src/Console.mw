@@ -188,8 +188,8 @@ fun readAllLoop acc =
   let parse = \s -> match s with | "yes" -> Just True | _ -> None in
   let (got, written) =
     withOutput (\() -> withInput ["no", "maybe", "yes"] (\() -> promptUntil "?" "again" parse)) in
-    let a = assertEq got (Just True) "keeps asking past the answers that do not parse"
-    in
+  let a = assertEq got (Just True) "keeps asking past the answers that do not parse"
+  in
   assertEq written "?again\n?again\n?" "asked three times, told off twice"
 
 @test fun promptUntilGivesUpAtEndOfInput () =

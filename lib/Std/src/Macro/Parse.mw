@@ -191,9 +191,9 @@ def sample : [TokenTree] =
       |> P.keep ident
       |> P.skip (punct "=")
       |> P.keep (treesUntil (\t -> False)) in
-    match parseTokens rule sample with
-    | Ok got -> assertEq (V.len (snd got)) 2 "a word and a group, as written"
-    | Err e -> assertEq (V.len e) 0 "it parses"
+  match parseTokens rule sample with
+  | Ok got -> assertEq (V.len (snd got)) 2 "a word and a group, as written"
+  | Err e -> assertEq (V.len e) 0 "it parses"
 
 @test fun aFailureIsAtTheTokenThatWasWrong () =
   let wanted = P.skipThen ident (punct ":") in

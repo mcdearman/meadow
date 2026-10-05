@@ -847,7 +847,9 @@ impl Indenter {
         // own column is the better answer there.
         // And an `in` alone on its line: what is under it is what the `let`
         // is for, and stands where the block it is in puts it.
-        let lone_in = toks.len() == 1 && toks.first_text() == "in";
+        // So is an `in` that ends its line, `let x = v in`: the line under
+        // it is the next of the sequence, level with the `let`.
+        let lone_in = toks.last_text() == "in";
         // And a bracket that ends its line: there is nothing after it for
         // what it holds to be lined up under, so that goes a unit in -- a
         // record's fields under `Ctor {`, as rustfmt has a struct's.
@@ -1273,6 +1275,38 @@ fun d name =
         // And again changes nothing.
         let once = w("fun f xs =\n  let named =\n    V.filter known xs\n  in\n  named\n");
         assert_eq!(w(&once), once);
+    }
+
+    #[test]
+    fn what_follows_an_in_is_level_with_its_let() {
+        // The second `let` was left where it stood, two in from the first,
+        // and its `in` with it, so the body was out of line with both.
+        let src = "\
+fun c () =
+  let other = \\i value ->
+    -- The next one.
+    wrong real value (between 0 count) in
+    let per = \\i ->
+      match V.get real i with
+      | None -> []
+      | Just x -> [x]
+    in
+  shuffle (V.concatMap per (V.range 0 count))
+";
+        let want = "\
+fun c () =
+  let other = \\i value ->
+    -- The next one.
+    wrong real value (between 0 count) in
+  let per = \\i ->
+    match V.get real i with
+    | None -> []
+    | Just x -> [x]
+  in
+  shuffle (V.concatMap per (V.range 0 count))
+";
+        assert_eq!(f(src), want);
+        assert_eq!(f(want), want, "formatting is idempotent");
     }
 
     #[test]

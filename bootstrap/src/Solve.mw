@@ -456,10 +456,10 @@ fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out e
           (V.map (\x -> tyOf i a x params) (hirLabelArgs a l)))
       []
       (hirRowLabels a row) in
-    V.foldl
-      (\rest (lab : (String, Type)) -> RowExtend (fst lab) (snd lab) rest)
-      tail
-      (V.reverse labels)
+  V.foldl
+    (\rest (lab : (String, Type)) -> RowExtend (fst lab) (snd lab) rest)
+    tail
+    (V.reverse labels)
 
 -- A label onto `acc`, as `meadow_infer`'s `row_labels` puts it: an effect
 -- alias's labels in its place, with its arguments for its parameters, and one

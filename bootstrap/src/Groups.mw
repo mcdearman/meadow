@@ -251,9 +251,9 @@ fun visit (t : Tarjan s) (v : Int) : () ! { St s | e } =
         else ())
       ()
       (V.getOr [] t.edges v) in
-    if stGetArray t.low v == stGetArray t.index v
-    then stSetRef t.out (V.pushBack (stGetRef t.out) (V.reverse (popTo t v [])))
-    else ()
+  if stGetArray t.low v == stGetArray t.index v
+  then stSetRef t.out (V.pushBack (stGetRef t.out) (V.reverse (popTo t v [])))
+  else ()
 
 -- Pop the stack down to `v`, each off it, innermost first.
 fun popTo (t : Tarjan s) (v : Int) (acc : [Int]) : [Int] ! { St s | e } =
@@ -326,7 +326,7 @@ fun moduleMentions (modules : [(HirArena, [Binding])]) owner overloads (m : Int)
           recursive = recursiveComp edges comp
         })
       (V.range 0 (V.len comps)) in
-    (ordered, groups)
+  (ordered, groups)
 
 -- The whole unit's bindings as one graph: `modules` each module's tables and
 -- bindings, in the order `groupModule` left them; a member is a module's

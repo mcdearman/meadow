@@ -505,7 +505,7 @@ fun synonymPat out (env : Env) (m : Meta) (at : Meta) (matcher : Int)
            []
      | 1 -> newHirPatList out m args
      | _ -> newHirPatList out m [newHirPatTuple out m args]) in
-    newHirPatView out m f answer
+  newHirPatView out m f answer
 
 -- The value `name` means, where `$m?P` is any of pattern synonym `P`'s
 -- matchers: what `pattern A | B` names.
@@ -573,19 +573,19 @@ fun interpolated out (env : Env) (m : Meta) (texts : [String]) (holes : [Int]) =
       let f =
         (if hirHoleDebugIn out h then baseOr env "debug" "show" else baseOr env "display" "display")
       in newHirExprApp out hm (newHirExprVar out hm (refTo out env f hm)) [e]) in
-    let parts =
-      V.concatMap
-      (\i ->
-        let t = V.getOr "" texts i in
-        V.append
-          (if S.isEmpty t then [] else [newHirExprLit out m (newHirLitString out m t)])
-          (match V.get holes i with | Just h -> [render h] | None -> []))
-      (V.range 0 (V.len texts)) in
-      newHirExprApp
-        out
-        m
-        (newHirExprVar out m (refTo out env (baseValue env "concatStrings") m))
-        [newHirExprArray out m parts]
+  let parts =
+    V.concatMap
+    (\i ->
+      let t = V.getOr "" texts i in
+      V.append
+        (if S.isEmpty t then [] else [newHirExprLit out m (newHirLitString out m t)])
+        (match V.get holes i with | Just h -> [render h] | None -> []))
+    (V.range 0 (V.len texts)) in
+  newHirExprApp
+    out
+    m
+    (newHirExprVar out m (refTo out env (baseValue env "concatStrings") m))
+    [newHirExprArray out m parts]
 
 fun baseOr (env : Env) (name : String) (prim : String) : Int =
   match H.lookup name env.scope.base with
@@ -648,12 +648,12 @@ fun bindBinders out (b : Int) : [(String, Int)] ! { Table Binder | e } =
                        else []))
           b.uses)
       binders in
-    let grouped =
-      V.foldl
-        (\h x -> H.insert (fst x) (V.pushBack (M.unwrapOr [] (H.lookup (fst x) h)) (snd x)) h)
-        H.empty
-        lines
-    in
+  let grouped =
+    V.foldl
+      (\h x -> H.insert (fst x) (V.pushBack (M.unwrapOr [] (H.lookup (fst x) h)) (snd x)) h)
+      H.empty
+      lines
+  in
   H.fromVec
     (V.map
       (\kv ->

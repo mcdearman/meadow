@@ -125,17 +125,17 @@ fun letE () =
       |> P.keep (P.defer exprE)
       |> P.skip (keyword "in")
       |> P.keep (P.defer exprE) in
-    -- Whether it is a `let rec` decides whether what was read is one at all.
-    P.bind parts (\read ->
-      match read with
-      | (None, name, args, rhs, body) ->
-          P.pure (Let name (V.foldr (\a acc -> Lam a acc) rhs args) body)
-      | (Just r, name, args, rhs, body) ->
-          (match V.head args with
-           | None -> P.fail "an argument after `let rec`"
-           | Just first ->
-               let inner = V.foldr (\a acc -> Lam a acc) rhs (V.drop args 1) in
-               P.pure (LetRec name first inner body)))
+  -- Whether it is a `let rec` decides whether what was read is one at all.
+  P.bind parts (\read ->
+    match read with
+    | (None, name, args, rhs, body) ->
+        P.pure (Let name (V.foldr (\a acc -> Lam a acc) rhs args) body)
+    | (Just r, name, args, rhs, body) ->
+        (match V.head args with
+         | None -> P.fail "an argument after `let rec`"
+         | Just first ->
+             let inner = V.foldr (\a acc -> Lam a acc) rhs (V.drop args 1) in
+             P.pure (LetRec name first inner body)))
 
 fun exprE () = P.choice [P.defer letE, P.defer lamE, P.defer ifE, P.defer cmpE]
 

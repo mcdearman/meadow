@@ -111,10 +111,10 @@ fun under (dir : String) : [String] ! { Fs | e } =
             (match locate root dir e with | Ok d -> Ok (V.pushBack ds d) | Err why -> Err why))
       (Ok [])
       named in
-    match (found, std) with
-    | (Err why, _) -> Err why
-    | (Ok ds, Just s) -> Ok (if absolute dir == s then ds else V.pushBack ds s)
-    | (Ok ds, None) -> Ok ds
+  match (found, std) with
+  | (Err why, _) -> Err why
+  | (Ok ds, Just s) -> Ok (if absolute dir == s then ds else V.pushBack ds s)
+  | (Ok ds, None) -> Ok ds
 
 -- Where dependency `e` of the unit at `dir` is.
 fun locate (root : String) (dir : String) (e : Entry)

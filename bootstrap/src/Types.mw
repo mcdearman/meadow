@@ -935,11 +935,11 @@ fun counted (t : Type) (acc : (HashMap Int Int, [Int])) :
   match scrutinee with
   | (parts, n3) ->
       let several = V.len parts > 1 in
-        let context =
-          if V.isEmpty parts
-          then ""
-          else (if several then "(" ++ S.join ", " parts ++ ")" else S.join ", " parts) ++ " => "
-        in
+      let context =
+        if V.isEmpty parts
+        then ""
+        else (if several then "(" ++ S.join ", " parts ++ ")" else S.join ", " parts) ++ " => "
+      in
       head ++ context ++ fst (writeType n3 scheme.ty top hidden)
 
 -- --- tests -------------------------------------------------------------------
@@ -1009,7 +1009,7 @@ use Std.Test (assertEq)
       let w = unify ar x y in
       let z = unify ar y (boolT ()) in
       (showType (zonk ar v), showType (zonk ar x))) in
-    assertEq got ("Int", "Bool") "directly, and through another"
+  assertEq got ("Int", "Bool") "directly, and through another"
 
 @test fun aRecursiveTypeIsRefused () =
   let got =
@@ -1019,7 +1019,7 @@ use Std.Test (assertEq)
       match unify ar v (func [v] v) with
       | Err (Occurs _ _) -> True
       | _ -> False) in
-    assertEq got True "`a = a -> a` is no type"
+  assertEq got True "`a = a -> a` is no type"
 
 @test fun rowsAreLinedUpByLabel () =
   let got =
@@ -1030,7 +1030,7 @@ use Std.Test (assertEq)
       in
       let u = unify ar lhs rhs in
       showType (zonk ar lhs)) in
-    assertEq got "{ x : Int, y : Bool }" "the rest takes `y`"
+  assertEq got "{ x : Int, y : Bool }" "the rest takes `y`"
 
 @test fun aTrialIsTakenBack () =
   let got =
@@ -1041,7 +1041,7 @@ use Std.Test (assertEq)
       let u = unify ar v (intT ()) in
       let w = rollback ar snap in
       showType (zonk ar v)) in
-    assertEq got "a" "unbound again"
+  assertEq got "a" "unbound again"
 
 @test fun onlyDeeperVariablesAreQuantified () =
   let got =
@@ -1056,4 +1056,4 @@ use Std.Test (assertEq)
         V.len (snd (quantifyFrom ar deep (Just l) noneQuantified True)).kinds,
         V.len (snd (quantifyFrom ar shallow (Just l) noneQuantified True)).kinds
       )) in
-    assertEq got (1, 0) "the one made inside"
+  assertEq got (1, 0) "the one made inside"

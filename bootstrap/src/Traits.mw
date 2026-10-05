@@ -477,12 +477,12 @@ fun assocVar (assoc : String) (over : [Type]) (st : AssocVars) :
   | Just (_, _, k) -> (k, st)
   | None ->
       let k = V.len st.quant in
-        (
-          k,
-          AssocVars
-            { table = V.pushBack st.table (assoc, over, k), quant = V.pushBack st.quant Plain
-            }
-        )
+      (
+        k,
+        AssocVars
+          { table = V.pushBack st.table (assoc, over, k), quant = V.pushBack st.quant Plain
+          }
+      )
 
 -- `t` with every `Elem τ` a quantifier.
 @pub fun liftAssocs (i : Inf s) (t : Type) (st : AssocVars) :
@@ -705,21 +705,21 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int) :
         | None -> acc)
       (assocs, V.replicate (V.len assocs) (V.range 0 np))
       supers in
-    let allAssocs = fst inherited in
-    let assocParams = snd inherited in
-    let n = V.len allAssocs in
-    let shape =
-      TraitShape {
-        params = np,
-        supers = supers,
-        assocs = allAssocs,
-        assocParams = assocParams,
-        ownAssocs = V.len assocs,
-        methods = V.map (\m -> match m with | (mn, _, _, _) -> mn) methods,
-        dict = dict,
-        labels = V.append (V.map (\(sup : Super) -> superLabel sup.tr) supers) (V.map (\m -> match m with | (mn, _, _, _) -> mn) methods)
-      }
-    in
+  let allAssocs = fst inherited in
+  let assocParams = snd inherited in
+  let n = V.len allAssocs in
+  let shape =
+    TraitShape {
+      params = np,
+      supers = supers,
+      assocs = allAssocs,
+      assocParams = assocParams,
+      ownAssocs = V.len assocs,
+      methods = V.map (\m -> match m with | (mn, _, _, _) -> mn) methods,
+      dict = dict,
+      labels = V.append (V.map (\(sup : Super) -> superLabel sup.tr) supers) (V.map (\m -> match m with | (mn, _, _, _) -> mn) methods)
+    }
+  in
   let u =
     V.foldl
       (\x k ->

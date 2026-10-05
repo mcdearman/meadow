@@ -176,19 +176,19 @@ fun chain (out : Origin Surface Grouped) (table : HashMap String Fixity)
         | (Just op, Just operand) -> [(op, operand)]
         | _ -> [])
       rest in
-    let applied =
-      V.foldl
-      (\st s ->
-        match (st, s) with
-        | ((outs, ops), (op, operand)) ->
-            let name = S.trim (W.textOf out op) in
-            let here = fixityOf table name in
-            let reduced = reduce out outs ops name here op in
-            ( V.pushBack (fst reduced) (leaf operand), V.pushBack (snd reduced) (op, here, name)
-            ))
-      ([leaf first], [])
-      steps in
-      let outs = V.foldr (\o acc -> apply out acc o) (fst applied) (snd applied) in
+  let applied =
+    V.foldl
+    (\st s ->
+      match (st, s) with
+      | ((outs, ops), (op, operand)) ->
+          let name = S.trim (W.textOf out op) in
+          let here = fixityOf table name in
+          let reduced = reduce out outs ops name here op in
+          ( V.pushBack (fst reduced) (leaf operand), V.pushBack (snd reduced) (op, here, name)
+          ))
+    ([leaf first], [])
+    steps in
+  let outs = V.foldr (\o acc -> apply out acc o) (fst applied) (snd applied) in
   M.unwrapOr (leaf first) (V.get outs (V.len outs - 1))
 
 -- Apply every operator on the stack that goes before operator `name`, which
@@ -213,18 +213,18 @@ fun reduce (out : Origin Surface Grouped) (outs : [Part Grouped])
               "`${topName}` is `${keyword there} ${show there.level}`, which does not group: `x ${topName} y ${topName} z` means nothing"
             else
               "`${topName}` (`${keyword there} ${show there.level}`) and `${name}` (`${keyword here} ${show here.level}`) cannot be mixed without parentheses" in
-              let u = say (errorAt (spanMeta (W.from at) (W.to at)) why) in
-              True in
-              if goes
-              then
-                reduce
-                out
-                (apply out outs (top, there, topName))
-                (V.take ops (V.len ops - 1))
-                name
-                here
-                at
-              else (outs, ops)
+          let u = say (errorAt (spanMeta (W.from at) (W.to at)) why) in
+          True in
+      if goes
+      then
+        reduce
+        out
+        (apply out outs (top, there, topName))
+        (V.take ops (V.len ops - 1))
+        name
+        here
+        at
+      else (outs, ops)
 
 -- The top two operands, the operator applied to them.
 fun apply (out : Origin Surface Grouped) (outs : [Part Grouped])

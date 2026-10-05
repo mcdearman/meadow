@@ -181,12 +181,12 @@ fun unitOf (dir : String) (imported : [Interface]) (fx : HashMap String Fixity)
             )]
         | _ -> [])
       files in
-    let deps =
-      V.map
-        (\(i : Interface) ->
-          DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis })
-        imported
-    in
+  let deps =
+    V.map
+      (\(i : Interface) ->
+        DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis })
+      imported
+  in
   (sources, renameUnit pkg isStd (V.map snd sources) deps)
 
 fun fileOf (s : Source) : String = s.file
@@ -279,31 +279,31 @@ fun compiling (u : Given Interface) =
             ["${path}: ${S.join "; " (V.map (\e -> "${snd e} at byte ${show (fst e)}") errs)}\n"]
         | _ -> [])
       (V.range 0 (V.len sources)) in
-    if not (V.isEmpty failed) then Err (S.join "" failed)
+  if not (V.isEmpty failed) then Err (S.join "" failed)
+  else
+    let groups = compilerGroupedEach db files in
+    let wrong =
+      V.concatMap
+      (\i ->
+        match (V.get sources i, V.get groups i) with
+        | (Just (path, text), Just (Just (_, ds))) ->
+            (if V.isEmpty ds then [] else [renderAll path text ds])
+        | _ -> [])
+      (V.range 0 (V.len sources)) in
+    if not (V.isEmpty wrong) then Err (S.join "" wrong)
     else
-      let groups = compilerGroupedEach db files in
-      let wrong =
-        V.concatMap
-        (\i ->
-          match (V.get sources i, V.get groups i) with
-          | (Just (path, text), Just (Just (_, ds))) ->
-              (if V.isEmpty ds then [] else [renderAll path text ds])
-          | _ -> [])
-        (V.range 0 (V.len sources)) in
-        if not (V.isEmpty wrong) then Err (S.join "" wrong)
-        else
-          match compilerInferred db 0 with
-          | (_, exports, anyVis, types) ->
-              let manifest =
-                M.unwrapOr
-                  ""
-                  (M.map snd (V.find (\s -> S.endsWith "Meadow.toml" (fst s)) (unitSources u)))
-              in
-              Ok
-                (Interface {
-                  fixities = compilerFixities db 0,
-                  package = packageName manifest,
-                  exports = exports,
-                  anyVis = anyVis,
-                  types = types
-                })
+      match compilerInferred db 0 with
+      | (_, exports, anyVis, types) ->
+          let manifest =
+            M.unwrapOr
+              ""
+              (M.map snd (V.find (\s -> S.endsWith "Meadow.toml" (fst s)) (unitSources u)))
+          in
+          Ok
+            (Interface {
+              fixities = compilerFixities db 0,
+              package = packageName manifest,
+              exports = exports,
+              anyVis = anyVis,
+              types = types
+            })

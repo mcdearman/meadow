@@ -102,12 +102,8 @@ fun main () = game ()
   assertEq (beats (beats (beats Rock))) Rock "rock -> scissors -> paper -> rock"
 
 @test fun judgingAgreesWithBeating () =
-  let cases =
-    [ (Rock, Scissors, Win)
-      , (Scissors, Rock, Lose)
-      , (Paper, Paper, Draw)
-    ] in
-    assertEq (map (\(a, b, _) -> judge a b) cases) (map (\(_, _, o) -> o) cases) "judged"
+  let cases = [ (Rock, Scissors, Win) , (Scissors, Rock, Lose) , (Paper, Paper, Draw) ] in
+  assertEq (map (\(a, b, _) -> judge a b) cases) (map (\(_, _, o) -> o) cases) "judged"
 
 @test fun inputIsForgiving () =
   let got = map parseChoice ["ROCK", " p ", "Scissors", "banana"] in
@@ -117,6 +113,5 @@ fun main () = game ()
   -- The whole game, with no terminal and no entropy: `Console` supplies the
   -- moves and `Random` is seeded, so the transcript is fixed. This runs `game`
   -- itself -- if the loop, the tally or the parsing broke, this fails.
-  let played =
-    R.withSeed 7 (\() -> withInput ["rock", "nonsense", "paper", "quit"] game) in
-    assertEq played () "a full game plays through to the summary"
+  let played = R.withSeed 7 (\() -> withInput ["rock", "nonsense", "paper", "quit"] game) in
+  assertEq played () "a full game plays through to the summary"

@@ -371,27 +371,27 @@ fun traitDecl (c : Lc) b (m : Meta) (name : GTree) (params : [GTree])
         else
           (match definedBy c b (R.kindOf x == NodeFunItem) (sigName x) (childrenOf NodeClause x) (spanOf x) with | Just d -> [d] | None -> []))
       rest in
-    newAstDeclTrait b m
-    (nm b (nameOf name))
-    (V.map (\p -> nm b (nameOf p)) params)
-    (V.map (bound c b) (match supers with | Just sp -> childrenOf NodeBound sp | None -> []))
-    (V.map
-      (\a ->
-        newAstAssoc
-          b
-          (spanOf a)
-          (nm b (nameOf (must TokenUpperIdent a)))
-          (V.concatMap
-            (\t -> match childOf TokenLowerIdent t with
-                   | Just x -> [nm b (nameOf x)]
-                   | None -> [])
-            (childrenOf NodeTAtom a)))
-      assocs)
-    (V.map
-      (\x ->
-        newAstMethodSig b (spanOf x) (nm b (sigName x)) (ty c b (must NodeType (must NodeAnnot x))))
-      sigs)
-    defaults
+  newAstDeclTrait b m
+  (nm b (nameOf name))
+  (V.map (\p -> nm b (nameOf p)) params)
+  (V.map (bound c b) (match supers with | Just sp -> childrenOf NodeBound sp | None -> []))
+  (V.map
+    (\a ->
+      newAstAssoc
+        b
+        (spanOf a)
+        (nm b (nameOf (must TokenUpperIdent a)))
+        (V.concatMap
+          (\t -> match childOf TokenLowerIdent t with
+                 | Just x -> [nm b (nameOf x)]
+                 | None -> [])
+          (childrenOf NodeTAtom a)))
+    assocs)
+  (V.map
+    (\x ->
+      newAstMethodSig b (spanOf x) (nm b (sigName x)) (ty c b (must NodeType (must NodeAnnot x))))
+    sigs)
+  defaults
 
 -- The name a signature is for.
 fun sigName (s : GTree) : Nm =
@@ -616,7 +616,7 @@ fun synonym (c : Lc) b (n : Nm) (s : GTree) (m : Meta) =
      | 0 -> noArgs "True"
      | 1 -> newAstExprList b m (vars ())
      | _ -> newAstExprList b m [newAstExprTuple b m (vars ())]) in
-    let no = (if V.len ps == 0 then noArgs "False" else newAstExprList b m []) in
+  let no = (if V.len ps == 0 then noArgs "False" else newAstExprList b m []) in
   let arms = [ newAstArm b m (pat c b rhs) None yes, newAstArm b m (newAstPatWild b m) None no ]
   in
   let scrutinee = at "$scrutinee" in
@@ -629,24 +629,24 @@ fun synonym (c : Lc) b (n : Nm) (s : GTree) (m : Meta) =
       [newAstPatVar b n.at (nm b scrutinee)]
       None
       (newAstExprMatch b m (newAstExprVar b m (nm b scrutinee)) arms)) in
-    let builder =
-      (match childOf NodeSynBuilder s with
-       | Just bl ->
-           Just ( V.map (param c b) (childrenOf NodeParam bl), expr c b (must NodeExpr bl) )
-       | None ->
-           if both and builds rhs
-           then Just ( V.map (\(p : Nm) -> newAstPatVar b p.at (nm b p)) ps, patExpr c b rhs )
-           else None) in
-      match builder with
-      | Just (params, body) ->
-          [
-            (False, matcher),
-            (
-              False,
-              newAstDeclBind b m (newAstBindFun b m (nm b (at "$b${n.text}")) params None body)
-            )
-          ]
-      | None -> [(False, matcher)]
+  let builder =
+    (match childOf NodeSynBuilder s with
+     | Just bl ->
+         Just ( V.map (param c b) (childrenOf NodeParam bl), expr c b (must NodeExpr bl) )
+     | None ->
+         if both and builds rhs
+         then Just ( V.map (\(p : Nm) -> newAstPatVar b p.at (nm b p)) ps, patExpr c b rhs )
+         else None) in
+  match builder with
+  | Just (params, body) ->
+      [
+        (False, matcher),
+        (
+          False,
+          newAstDeclBind b m (newAstBindFun b m (nm b (at "$b${n.text}")) params None body)
+        )
+      ]
+  | None -> [(False, matcher)]
 
 -- `pattern A | B`: the matchers that together match every value.
 fun complete b (names : [Nm]) (m : Meta) =
@@ -892,7 +892,7 @@ fun recPat (c : Lc) b (s : GTree) (m : Meta) =
           (nm b n)
           (match childOf NodePFieldValue f with | Just v -> pat c b (must NodePat v) | None -> newAstPatVar b n.at (nm b n)))
       (childrenOf NodePField s) in
-    newAstPatRecord b m fs (has NodeOpenTail s)
+  newAstPatRecord b m fs (has NodeOpenTail s)
 
 -- `[p; q]`, `[;]`, `[p, q]`, `[]`.
 fun brackPat (c : Lc) b (s : GTree) (m : Meta) =
@@ -1022,7 +1022,7 @@ fun bracePat (c : Lc) b (s : GTree) (m : Meta) =
           (nm b n)
           (match childOf NodeFieldValue item with | Just v -> asExprPat c b (must NodeAsExpr v) | None -> newAstPatVar b n.at (nm b n)))
       (childrenOf NodeBraceItem s) in
-    newAstPatRecord b m fs (has NodeBraceTail s)
+  newAstPatRecord b m fs (has NodeBraceTail s)
 
 fun brackExprPat (c : Lc) b (s : GTree) (m : Meta) =
   match childOf NodeBrackBody s with
@@ -1675,9 +1675,9 @@ fun interp (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
       [ V.map text (childrenOf TokenInterpStart s),
         V.map (\mid -> text (must TokenInterpMid mid)) (childrenOf NodeInterpMid s),
         V.map text (childrenOf TokenInterpEnd s) ] in
-    let hole =
-      \h -> newAstHole b (spanOf h) (exprIn c b hs (must NodeExpr h) None) (tokenIs TokenDebugFmt h)
-    in
+  let hole =
+    \h -> newAstHole b (spanOf h) (exprIn c b hs (must NodeExpr h) None) (tokenIs TokenDebugFmt h)
+  in
   let holes =
     V.pushFront
       (V.map (\mid -> hole (must NodeHole mid)) (childrenOf NodeInterpMid s))
@@ -1720,11 +1720,11 @@ fun braceE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
               (nm b n)
               (match childOf NodeFieldValue i with | Just fv -> e (must NodeExpr (must NodeAsExpr fv)) | None -> newAstExprVar b n.at (nm b n)))
           items in
-        let base =
-          M.andThen
-            (\t -> M.map (\te -> e (must NodeExpr te)) (childOf NodeTailExpr t))
-            (childOf NodeBraceTail s)
-        in
+      let base =
+        M.andThen
+          (\t -> M.map (\te -> e (must NodeExpr te)) (childOf NodeTailExpr t))
+          (childOf NodeBraceTail s)
+      in
       newAstExprRecord b m fs base
 
 -- `[lo .. hi]`, `[a; b]`, `[;]`, `[a, b]`, `[]`.
@@ -2369,8 +2369,8 @@ fun chainOf (c : Lc) b (first : Int) (steps : [(Json, Int)]) =
             (V.pushBack (fst reduced) x, V.pushBack (snd reduced) (op, here)))
       ([first], [])
       steps in
-    let outs = V.foldr (\o acc -> applyOp b acc o) (fst done) (snd done) in
-    V.getOr first outs (V.len outs - 1)
+  let outs = V.foldr (\o acc -> applyOp b acc o) (fst done) (snd done) in
+  V.getOr first outs (V.len outs - 1)
 
 -- Apply every operator on the stack that goes before one that binds as `here`.
 fun reduceOps (c : Lc) b (outs : [Int]) ops (here : Fixity) =

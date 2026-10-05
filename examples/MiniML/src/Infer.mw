@@ -190,12 +190,11 @@ fun infer counter env level e =
       let fT = newTv counter (level + 1) in
       let argT = newTv counter (level + 1) in
       let resT = newTv counter (level + 1) in
-      let inner =
-        (param, Scheme.Forall V.empty argT) :: (name, Scheme.Forall V.empty fT) :: env in
-        let ignored = unify fT (Ty.Fun argT resT) in
-        let bodyT = infer counter inner (level + 1) rhs in
-        let ignored2 = unify resT bodyT in
-        infer counter ((name, generalize level fT) :: env) level body
+      let inner = (param, Scheme.Forall V.empty argT) :: (name, Scheme.Forall V.empty fT) :: env in
+      let ignored = unify fT (Ty.Fun argT resT) in
+      let bodyT = infer counter inner (level + 1) rhs in
+      let ignored2 = unify resT bodyT in
+      infer counter ((name, generalize level fT) :: env) level body
   | Expr.If c t f ->
       let cT = infer counter env level c in
       let ignored = unify cT Ty.Bool in

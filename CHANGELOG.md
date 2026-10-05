@@ -40,6 +40,9 @@ beyond the last release is under _Unreleased_.
 
 ### Fixed
 
+- `meadow fmt` puts the line after a `let … in` level with the `let`. A second
+  `let` written further in stayed there, and its `in` with it, so the body
+  under them was out of line with both.
 - `meadow fmt` places the `in` of a `let` written in brackets. It sent that
   `in` to the left margin and lost its place in the bracket for the lines
   after. A bracketed `let` is now laid out with its value four in, its `in`

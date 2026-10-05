@@ -557,29 +557,29 @@ fun applyUse (cx : UnitCx) (m : ModFrame) (acc : Layers) (one : (AstDecl, Vis))
              if V.isEmpty names
              then bring acc vis (bareUse items root)
              else withRefs (bring acc vis (namedIn items names)) (namedRefs items written)) in
-        -- `use Ty ...` for a type this very module declares.
-        match (if V.len segs == 1 then typeIn m.items else None) with
-        | Just t -> useType acc vis m.items t lastAt written glob False
-        | None ->
-            if (not (V.isEmpty local) or V.getOr "" segs 0 == cx.pkg)
-            and hasSibling cx local
-            then moduleUse (siblingItems cx local here)
-            else
-              (match (if V.isEmpty local then None else typeIn (siblingItems cx localOwner here)) with
-               | Just t ->
-                   useType acc vis (siblingItems cx localOwner here) t lastAt written glob cx.isStd
-               | None ->
-                   (match V.find (\(d : Dep) -> d.name == V.getOr "" segs 0) cx.deps with
-                    | None -> acc
-                    | Just d ->
-                        let path = V.drop segs 1 in
-                        if depHas d path then moduleUse (depItems d path)
-                        else
-                          (let items = depItems d (V.drop owner 1) in
-                            match typeIn items with
-                            | Just t ->
-                                useType acc vis items t lastAt written glob True
-                            | None -> acc)))
+      -- `use Ty ...` for a type this very module declares.
+      match (if V.len segs == 1 then typeIn m.items else None) with
+      | Just t -> useType acc vis m.items t lastAt written glob False
+      | None ->
+          if (not (V.isEmpty local) or V.getOr "" segs 0 == cx.pkg)
+          and hasSibling cx local
+          then moduleUse (siblingItems cx local here)
+          else
+            (match (if V.isEmpty local then None else typeIn (siblingItems cx localOwner here)) with
+             | Just t ->
+                 useType acc vis (siblingItems cx localOwner here) t lastAt written glob cx.isStd
+             | None ->
+                 (match V.find (\(d : Dep) -> d.name == V.getOr "" segs 0) cx.deps with
+                  | None -> acc
+                  | Just d ->
+                      let path = V.drop segs 1 in
+                      if depHas d path then moduleUse (depItems d path)
+                      else
+                        (let items = depItems d (V.drop owner 1) in
+                          match typeIn items with
+                          | Just t ->
+                              useType acc vis items t lastAt written glob True
+                          | None -> acc)))
 
 -- The base every module of the unit shares: the primitives, then the
 -- prelude. For a module of the standard library, the modules before it whose
@@ -702,7 +702,7 @@ fun scopeOf (cx : UnitCx) (sh : Shared) (m : ModFrame) :
       bools = sh.bools,
       traitAssocs = sh.traitAssocs,
       vectorEmpty = sh.vectorEmpty } in
-    (scope, used.reexports, used.refs)
+  (scope, used.reexports, used.refs)
 
 -- --- a unit ------------------------------------------------------------------
 
@@ -765,8 +765,8 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
     V.map
       (\(d : DepExports) -> Dep { name = d.name, items = depItemsOf d.exports, anyVis = d.anyVis })
       deps in
-    let cx = UnitCx { pkg = pkg, isStd = isStd, anyVis = anyVis, frames = frames, deps = depCx }
-    in
+  let cx = UnitCx { pkg = pkg, isStd = isStd, anyVis = anyVis, frames = frames, deps = depCx }
+  in
   -- Every constructor of every type the unit knows, by its type: its own
   -- modules', each type with the constructors declared beside it, and its
   -- dependencies'.
@@ -792,12 +792,12 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
         items)
     H.empty
     groups in
-    -- `and` and `or` are `Bool`'s constructors, whatever is in scope.
-    let allItems =
-      V.append
-        (V.concatMap (\(f : ModFrame) -> f.items) frames)
-        (V.concatMap (\(d : Dep) -> V.map snd d.items) depCx)
-    in
+  -- `and` and `or` are `Bool`'s constructors, whatever is in scope.
+  let allItems =
+    V.append
+      (V.concatMap (\(f : ModFrame) -> f.items) frames)
+      (V.concatMap (\(d : Dep) -> V.map snd d.items) depCx)
+  in
   let bools =
     V.foldl
       (\h (c : Item) -> if c.kind == "c" and c.owner == "Bool" then H.insert c.name c.id h else h)
@@ -853,17 +853,17 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
       else h)
     H.empty
     allItems in
-    let ctorFields =
-      V.foldl
-        (\h (c : Item) -> match c.fields with
-                          | Just fs ->
-                              (if c.kind == "c"
-                                then H.insert c.id fs h
-                                else h)
-                          | None -> h)
-        H.empty
-        allItems
-    in
+  let ctorFields =
+    V.foldl
+      (\h (c : Item) -> match c.fields with
+                        | Just fs ->
+                            (if c.kind == "c"
+                              then H.insert c.id fs h
+                              else h)
+                        | None -> h)
+      H.empty
+      allItems
+  in
   let sh =
     Shared {
       prims = prims,
@@ -916,24 +916,24 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source])
               })
             (V.append f.items re))
     done in
-    -- The standard library's operators, `display`, `debug` and comparison are
-    -- at its root too: every program has them unqualified.
-    let flat =
-      if isStd
-      then
-        V.concatMap
-          (\(e : Export) ->
-            if V.elem (dotted e.module) flatModules
-            and e.vis == Exported
-            then [{ e | module = [] }]
-            else [])
-          exports
-      else [] in
-      let modules =
-        V.map
-          (\(f : ModFrame) -> Declared { file = f.src.file, path = framePath f, items = f.items })
-          frames
-      in
+  -- The standard library's operators, `display`, `debug` and comparison are
+  -- at its root too: every program has them unqualified.
+  let flat =
+    if isStd
+    then
+      V.concatMap
+        (\(e : Export) ->
+          if V.elem (dotted e.module) flatModules
+          and e.vis == Exported
+          then [{ e | module = [] }]
+          else [])
+        exports
+    else [] in
+  let modules =
+    V.map
+      (\(f : ModFrame) -> Declared { file = f.src.file, path = framePath f, items = f.items })
+      frames
+  in
   (programs, V.append exports flat, anyVis, modules, depCtors, prims)
 
 -- A dependency's exports as items, each with the module it is in: one binder

@@ -1,0 +1,410 @@
+-- Cut: the upper IR every front end hands Meadow's back end (`docs/CUT.md`),
+-- as a Lingua language, and the lowering of `Core` to it.
+--
+-- Cut is a sequent calculus: a producer makes a value, a consumer receives
+-- one, and a statement is one meeting the other. So lowering a term is
+-- saying where its value goes: `lower` carries the consumer down the tree,
+-- and each case answers the statement that gives its term's value to it. A
+-- term another needs the value of is lowered with a consumer that names the
+-- value and goes on -- `μ̃ x: rep. s` -- which is the whole of how
+-- evaluation order is said.
+--
+-- Every binder says how its value is represented, which is what `Core`'s
+-- types are kept for: `repOf`.
+--
+-- A function is codata with one method, `apply`, of one argument, and a
+-- top-level binding is a `val`: the closure, or the value. That is the
+-- least there is to say, and enough to run; a `def` with every parameter at
+-- once, for a function called with all it takes, is for later.
+--
+-- What is not lowered yet answers `error "unsupported: …"`, so a program
+-- with one in it still reads, and says so when it runs: data and `case`,
+-- records and arrays, a function defined inside another that calls itself,
+-- effects, and anything generic in how a value is represented.
+
+use Lingua (lang!, pass!)
+use Lingua.Lang (Meta, spanMeta)
+use MeadowBoot.Core
+use MeadowBoot.Core (Core!)
+use MeadowBoot.Types
+use MeadowBoot.Types.Type.*
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Char as C
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- --- the language ------------------------------------------------------------
+
+@pub(pkg) lang! {
+  pub Cut with In
+  File + File { entry : String, answer : String, decls : [Decl] }
+  Decl + Val { symbol : String, rep : String, body : Stmt }
+  Decl + Def { symbol : String, params : [Param], conts : [Param], body : Stmt }
+  Param + Param { name : String, rep : String }
+  Prod + Var { name : String }
+  Prod + Sym { symbol : String }
+  Prod + Int { value : Int }
+  Prod + Float { value : Float }
+  Prod + Char { code : Int }
+  Prod + Str { text : String }
+  Prod + Bool { value : Bool }
+  Prod + Unit {}
+  Prod + Con { symbol : String, args : [Prod] }
+  Prod + Tuple { items : [Prod] }
+  Prod + Array { items : [Prod] }
+  Prod + Mu { k : String, body : Stmt }
+  Prod + Cocase { methods : [Method] }
+  Method + Method { name : String, params : [Param], conts : [Param], body : Stmt }
+  Cons + KVar { name : String }
+  Cons + Halt {}
+  Cons + MuT { name : String, rep : String, body : Stmt }
+  Cons + Call { method : String, args : [Prod], conts : [Cons] }
+  Stmt + Cut { prod : Prod, cons : Cons }
+  Stmt + Invoke { symbol : String, args : [Prod], conts : [Cons] }
+  Stmt + Prim { op : String, args : [Prod], conts : [Cons] }
+  Stmt + Error { message : String }
+}
+
+-- --- what lowering carries ---------------------------------------------------
+
+-- What `lower` carries is a record of two things: `k`, where the value of
+-- the term being lowered goes, and `tops`, which binders are top-level
+-- definitions -- a mention of one reads a `val`.
+
+-- How a value of type `t` is represented.
+fun repOf (t : Type) : String =
+  match t with
+  | Con "Int" [] -> "i64"
+  | Con "Float" [] -> "f64"
+  | Con "Float32" [] -> "f32"
+  | Con "Bool" [] -> "bool"
+  | Con "Char" [] -> "char"
+  | Con "String" [] -> "str"
+  | Con "Unit" [] -> "unit"
+  | Con "Int8" [] -> "i8"
+  | Con "Int16" [] -> "i16"
+  | Con "Int32" [] -> "i32"
+  | Con "UInt8" [] -> "u8"
+  | Con "UInt16" [] -> "u16"
+  | Con "UInt32" [] -> "u32"
+  | Con "UInt64" [] -> "u64"
+  | _ -> "ptr"
+
+def nowhere : Meta = spanMeta 0 0
+
+-- The package every symbol here is in: one program, built with no library.
+def package : String = "meadow:boot/"
+
+fun topSymbol (id : Int) : String = "${package}d${show id}"
+
+-- A primitive's name in Cut: `meadow_rt::Prim`'s, its first letter small.
+fun primName (op : String) : String =
+  if stringByteLength op == 0 then op
+  else S.toLower (stringSlice op 0 1) ++ stringSlice op 1 (stringByteLength op)
+
+-- --- the lowering ------------------------------------------------------------
+
+pass! {
+  lower : Core -> Cut with cx from Term
+    | LInt { value } -> newCutProdInt out here value
+    | LBig { value } -> newCutProdInt out here value
+    | LF64 { value } -> newCutProdFloat out here value
+    | LF32 { value } -> newCutProdFloat out here value
+    | LWord { ty, bits } -> newCutProdInt out here bits
+    | LStr { text } -> newCutProdStr out here text
+    | LChar { code } -> newCutProdChar out here code
+    | LBool { value } -> newCutProdBool out here value
+    | LUnit {} -> newCutProdUnit out here
+    | Const { lit } -> newCutStmtCut out here lit cx.k
+    | Var { id } ->
+        (if M.isSome (H.lookup id cx.tops) then
+           newCutStmtCut out here (newCutProdSym out here (topSymbol id)) cx.k
+         else newCutStmtCut out here (newCutProdVar out here "v${show id}") cx.k)
+    | Lam { param, paramTy, raw body } ->
+        (let k = "k${show node}" in
+         let inner = lowerTerm src out { cx | k = newCutConsKVar out here k } body in
+         let method =
+           newCutMethod
+             out
+             here
+             "apply"
+             [newCutParam out here "v${show param}" (repOf paramTy)]
+             [newCutParam out here k "ptr"]
+             inner
+         in newCutStmtCut out here (newCutProdCocase out here [method]) cx.k)
+    | App { raw func, raw arg } ->
+        (let f = "f${show node}" in
+         let a = "a${show node}" in
+         let call =
+           newCutStmtCut
+             out
+             here
+             (newCutProdVar out here f)
+             (newCutConsCall out here "apply" [newCutProdVar out here a] [cx.k])
+         in
+         let given = named src out cx here a arg call in
+         named src out cx here f func given)
+    | Let { id, raw value, raw body } ->
+        named src out cx here "v${show id}" value (lowerTerm src out cx body)
+    | If { raw cond, raw yes, raw no } ->
+        joined out cx here "j${show node}" (\inner ->
+          (let c = "c${show node}" in
+           let branch =
+             \t -> newCutConsMuT out here "u${show node}" "unit" (lowerTerm src out inner t)
+           in named
+                src
+                out
+                inner
+                here
+                c
+                cond
+                (newCutStmtPrim out here "if" [newCutProdVar out here c] [branch no, branch yes])))
+    | Prim { op, raw args } ->
+        (let names = V.map (\i -> "p${show node}_${show i}") (V.range 0 (V.len args)) in
+         let done =
+           newCutStmtPrim
+             out
+             here
+             (primName op)
+             (V.map (\n -> newCutProdVar out here n) names)
+             [cx.k]
+         in V.foldr
+              (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
+              done
+              (V.zip names args))
+    | Tuple { raw items } ->
+        (let names = V.map (\i -> "t${show node}_${show i}") (V.range 0 (V.len items)) in
+         let done =
+           newCutStmtCut
+             out
+             here
+             (newCutProdTuple out here (V.map (\n -> newCutProdVar out here n) names))
+             cx.k
+         in V.foldr
+              (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
+              done
+              (V.zip names items))
+    | LetRec { raw binds, raw body } -> unsupported out here "a local function that calls itself"
+    | Array { raw items } -> unsupported out here "an array"
+    | Proj { raw tuple, index } -> unsupported out here "a tuple's item"
+    | Record { raw fields } -> unsupported out here "a record"
+    | Sel { raw target, label } -> unsupported out here "a field"
+    | Extend { raw target, label, raw value } -> unsupported out here "a record extended"
+    | Ctor { name, raw args } -> unsupported out here "a constructor"
+    | Case { raw scrutinee, raw arms } -> unsupported out here "a case"
+    | Perform { eff, op, raw arg } -> unsupported out here "an effect performed"
+    | Handle { raw body, raw clauses, retId, raw ret } -> unsupported out here "a handler"
+    | Join { id, params, raw rhs, raw body } -> unsupported out here "a join"
+    | Jump { id, raw args } -> unsupported out here "a jump"
+    | Ill {} -> newCutStmtError out here "this did not compile"
+    | Bind { id, raw value } -> ()
+    | Field { label, raw value } -> ()
+    | Arm { raw pat, raw guard, raw body } -> ()
+    | Clause { eff, op, param, resume, raw body } -> ()
+    | PWild {} -> ()
+    | PVar { id } -> ()
+    | PAs { id, raw pat } -> ()
+    | PLit { raw lit } -> ()
+    | PTuple { raw items } -> ()
+    | PArray { raw items } -> ()
+    | PCtor { name, raw args } -> ()
+    | PRecord { raw fields } -> ()
+    | PField { label, raw pat } -> ()
+}
+
+fun unsupported out (m : Meta) (what : String) = newCutStmtError out m "unsupported: ${what}"
+
+-- `term` lowered so that its value is `name` in `rest`.
+fun named src out cx (m : Meta) (name : String) term rest =
+  lowerTerm src out { cx | k = newCutConsMuT out m name (repOf (tyCoreTerm src term)) rest } term
+
+-- What `build` makes with somewhere to send a value twice: where the value
+-- goes already, if that is a name, and otherwise a name for it -- `μ j. s`
+-- given to where it goes -- so that a consumer written once is not written
+-- in both branches.
+fun joined out cx (m : Meta) (name : String) build =
+  let kind = kindCutConsIn out cx.k in
+  if kind == CutConsKind.KVar or kind == CutConsKind.Halt then build cx
+  else
+    newCutStmtCut
+      out
+      m
+      (newCutProdMu out m name (build { cx | k = newCutConsKVar out m name }))
+      cx.k
+
+-- --- a program ---------------------------------------------------------------
+
+-- `p` as a program of Cut that answers its entry's value as text: a `val` to
+-- each definition -- the functions first, which read nothing when they are
+-- made -- and an entry that turns the value into the text the CEK machine
+-- would display.
+@pub fun program (p : CoreProgram) : CutProgram =
+  let a = coreArena p in
+  let file = coreRoot p in
+  let defs = coreFileDefs a file in
+  let tops = V.foldl (\h d -> H.insert (coreDefId a d) True h) H.empty defs in
+  let isFun = \d -> kindCoreTerm a (coreDefBody a d) == CoreTermKind.Lam in
+  let ordered = V.append (V.filter isFun defs) (V.filter (\d -> not (isFun d)) defs) in
+  runSt (\() ->
+    let out = newCutBuilder () in
+    let halt = newCutConsHalt out nowhere in
+    let vals =
+      V.map
+        (\d ->
+          newCutDeclVal
+            out
+            nowhere
+            (topSymbol (coreDefId a d))
+            (repOf (tyCoreTerm a (coreDefBody a d)))
+            (lowerTerm a out { k = halt, tops = tops } (coreDefBody a d)))
+        ordered
+    in
+    let entry = coreFileEntry a file in
+    let answerTy =
+      M.unwrapOr
+        Error
+        (M.map (\d -> tyCoreTerm a (coreDefBody a d)) (V.find (\d -> coreDefId a d == entry) defs))
+    in
+    let shown =
+      newCutDeclDef
+        out
+        nowhere
+        "${package}\"#entry\""
+        []
+        [newCutParam out nowhere "k" "ptr"]
+        (shownTo out (newCutProdSym out nowhere (topSymbol entry)) answerTy)
+    in
+    let root = newCutFile out nowhere "${package}\"#entry\"" "str" (V.pushBack vals shown) in
+    CutProgram (freezeCut out) root)
+
+-- The statement that gives `k` the text of `value`, a value of type `t`, as
+-- the CEK machine displays one.
+fun shownTo out value (t : Type) =
+  let k = newCutConsKVar out nowhere "k" in
+  let text = \s -> newCutProdStr out nowhere s in
+  match t with
+  | Con "Int" [] -> newCutStmtInvoke out nowhere "${package}\"#showInt\"" [value] [k]
+  | Con "Bool" [] ->
+      newCutStmtPrim out nowhere "if" [value] [
+        newCutConsMuT out nowhere "u" "unit" (newCutStmtCut out nowhere (text "False") k),
+        newCutConsMuT out nowhere "u" "unit" (newCutStmtCut out nowhere (text "True") k)
+      ]
+  | Con "String" [] ->
+      newCutStmtPrim
+        out
+        nowhere
+        "concatStrings"
+        [newCutProdArray out nowhere [text "\"", value, text "\""]]
+        [k]
+  | Con "Unit" [] -> newCutStmtCut out nowhere (text "()") k
+  | _ -> newCutStmtError out nowhere "unsupported: showing a value of this type"
+
+-- --- the text ----------------------------------------------------------------
+
+-- A program as `meadow_cut::parse` reads it.
+@pub fun text (p : CutProgram) : String =
+  match p with
+  | CutProgram a root ->
+      "cut 0\nentry ${cutFileEntry a root}\nanswer ${cutFileAnswer a root}\n\n"
+        ++ S.join "\n" (V.map (\d -> decl a d) (cutFileDecls a root))
+        ++ showInt
+
+fun decl (a : CutArena) (d : CutDecl) : String =
+  if kindCutDecl a d == CutDeclKind.Val then
+    "val ${cutDeclValSymbol a d} : ${cutDeclValRep a d} =\n  ${stmt a 1 (cutDeclValBody a d)}\n"
+  else
+    "def ${cutDeclDefSymbol a d} ${params a (cutDeclDefParams a d) (cutDeclDefConts a d)} =\n  ${stmt a 1 (cutDeclDefBody a d)}\n"
+
+fun param (a : CutArena) (p : CutParam) : String = "${cutParamName a p}: ${cutParamRep a p}"
+
+fun params (a : CutArena) (ps : [CutParam]) (ks : [CutParam]) : String =
+  "(${S.join ", " (V.map (param a) ps)}; ${S.join ", " (V.map (param a) ks)})"
+
+fun line (depth : Int) : String = "\n" ++ S.repeat "  " depth
+
+fun call (a : CutArena) (depth : Int) (args : [CutProd]) (ks : [CutCons]) : String =
+  "(${S.join ", " (V.map (prod a depth) args)}; ${S.join ", " (V.map (cons a depth) ks)})"
+
+fun stmt (a : CutArena) (depth : Int) (s : CutStmt) : String =
+  let k = kindCutStmt a s in
+  if k == CutStmtKind.Cut then
+    "<${prod a depth (cutStmtCutProd a s)} | ${cons a depth (cutStmtCutCons a s)}>"
+  else if k == CutStmtKind.Invoke then
+    cutStmtInvokeSymbol a s ++ call a depth (cutStmtInvokeArgs a s) (cutStmtInvokeConts a s)
+  else if k == CutStmtKind.Prim then
+    "prim ${cutStmtPrimOp a s}" ++ call a depth (cutStmtPrimArgs a s) (cutStmtPrimConts a s)
+  else "error ${quoted (cutStmtErrorMessage a s)}"
+
+fun prod (a : CutArena) (depth : Int) (p : CutProd) : String =
+  let k = kindCutProd a p in
+  if k == CutProdKind.Var then cutProdVarName a p
+  else if k == CutProdKind.Sym then cutProdSymSymbol a p
+  else if k == CutProdKind.Int then show (cutProdIntValue a p)
+  else if k == CutProdKind.Float then show (cutProdFloatValue a p)
+  else if k == CutProdKind.Char then "'\\u{${hex (cutProdCharCode a p)}}'"
+  else if k == CutProdKind.Str then quoted (cutProdStrText a p)
+  else if k == CutProdKind.Bool then (if cutProdBoolValue a p then "true" else "false")
+  else if k == CutProdKind.Unit then "unit"
+  else if k == CutProdKind.Con then
+    (let args = cutProdConArgs a p in
+     if V.isEmpty args then cutProdConSymbol a p
+     else "${cutProdConSymbol a p}(${S.join ", " (V.map (prod a depth) args)})")
+  else if k == CutProdKind.Tuple then
+    "#tuple(${S.join ", " (V.map (prod a depth) (cutProdTupleItems a p))})"
+  else if k == CutProdKind.Array then
+    "[${S.join ", " (V.map (prod a depth) (cutProdArrayItems a p))}]"
+  else if k == CutProdKind.Mu then
+    "μ ${cutProdMuK a p}.${line (depth + 1)}${stmt a (depth + 1) (cutProdMuBody a p)}"
+  else
+    "cocase {"
+      ++ S.join
+        ";"
+        (V.map
+           (\m ->
+             "${line (depth + 1)}${cutMethodName a m}${params a (cutMethodParams a m) (cutMethodConts a m)} =>${line (depth + 2)}${stmt a (depth + 2) (cutMethodBody a m)}")
+           (cutProdCocaseMethods a p))
+      ++ line depth
+      ++ "}"
+
+fun cons (a : CutArena) (depth : Int) (c : CutCons) : String =
+  let k = kindCutCons a c in
+  if k == CutConsKind.KVar then cutConsKVarName a c
+  else if k == CutConsKind.Halt then "halt"
+  else if k == CutConsKind.MuT then
+    "μ̃ ${cutConsMuTName a c}: ${cutConsMuTRep a c}.${line (depth + 1)}${stmt a (depth + 1) (cutConsMuTBody a c)}"
+  else cutConsCallMethod a c ++ call a depth (cutConsCallArgs a c) (cutConsCallConts a c)
+
+-- A string as Cut writes one.
+fun quoted (s : String) : String =
+  "\""
+    ++ S.join
+      ""
+      (V.map
+         (\c ->
+           if c == '"' then "\\\""
+           else if c == '\\' then "\\\\"
+           else if c == '\n' then "\\n"
+           else if c == '\t' then "\\t"
+           else if c == '\r' then "\\r"
+           else C.toString c)
+         (S.chars s))
+    ++ "\""
+
+fun hex (n : Int) : String =
+  if n < 16 then stringSlice "0123456789abcdef" n (n + 1) else hex (n / 16) ++ hex (n % 16)
+
+-- An `i64` as its digits: what `answer str` needs of a whole number, since a
+-- runtime turns nothing into text but text.
+def showInt : String = "
+def meadow:boot/\"#showInt\" (n: i64; k: ptr) =
+  prim lt(n, 0; μ̃ u: unit. meadow:boot/\"#showNat\"(n; k), μ̃ u: unit. prim sub(0, n; μ̃ m: i64. meadow:boot/\"#showNat\"(m; μ̃ s: str. prim concatStrings([\"-\", s]; k))))
+
+def meadow:boot/\"#showNat\" (n: i64; k: ptr) =
+  prim lt(n, 10; μ̃ u: unit. prim div(n, 10; μ̃ q: i64. meadow:boot/\"#showNat\"(q; μ̃ hi: str. prim mod(n, 10; μ̃ r: i64. meadow:boot/\"#digit\"(r; μ̃ d: str. prim concatStrings([hi, d]; k))))), μ̃ u: unit. meadow:boot/\"#digit\"(n; k))
+
+def meadow:boot/\"#digit\" (d: i64; k: ptr) =
+  prim add(d, 1; μ̃ e: i64. prim stringSlice(\"0123456789\", d, e; k))
+"

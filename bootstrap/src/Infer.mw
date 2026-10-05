@@ -1608,42 +1608,42 @@ fun memberPat (cx : Cx s) out (seed : [(Int, Type)]) pat value =
 -- all it will.
 pass! {
   pub settle : Inferring -> Typed with ar
-    | Expr.Lit { lit, typ } -> Expr.Lit { lit = lit, typ = zonk ar typ }
-    | Expr.Unit { typ } -> Expr.Unit { typ = zonk ar typ }
-    | Expr.Hole { typ } -> Expr.Hole { typ = zonk ar typ }
-    | Expr.MacCall { call, typ } -> Expr.MacCall { call = call, typ = zonk ar typ }
-    | Expr.Var { ref, typ } -> Expr.Var { ref = ref, typ = zonk ar typ }
-    | Lam { params, body, typ } -> Lam { params = params, body = body, typ = zonk ar typ }
-    | App { func, args, typ } -> App { func = func, args = args, typ = zonk ar typ }
-    | Let { binds, body, typ } -> Let { binds = binds, body = body, typ = zonk ar typ }
-    | If { cond, yes, no, typ } -> If { cond = cond, yes = yes, no = no, typ = zonk ar typ }
+    | Expr.Lit { lit, typ } -> Expr.Lit { lit = lit, typ = settled ar typ }
+    | Expr.Unit { typ } -> Expr.Unit { typ = settled ar typ }
+    | Expr.Hole { typ } -> Expr.Hole { typ = settled ar typ }
+    | Expr.MacCall { call, typ } -> Expr.MacCall { call = call, typ = settled ar typ }
+    | Expr.Var { ref, typ } -> Expr.Var { ref = ref, typ = settled ar typ }
+    | Lam { params, body, typ } -> Lam { params = params, body = body, typ = settled ar typ }
+    | App { func, args, typ } -> App { func = func, args = args, typ = settled ar typ }
+    | Let { binds, body, typ } -> Let { binds = binds, body = body, typ = settled ar typ }
+    | If { cond, yes, no, typ } -> If { cond = cond, yes = yes, no = no, typ = settled ar typ }
     | Match { scrutinee, arms, typ } ->
-        Match { scrutinee = scrutinee, arms = arms, typ = zonk ar typ }
-    | Expr.Tuple { items, typ } -> Expr.Tuple { items = items, typ = zonk ar typ }
-    | Expr.Array { items, typ } -> Expr.Array { items = items, typ = zonk ar typ }
-    | Expr.List { items, typ } -> Expr.List { items = items, typ = zonk ar typ }
-    | Expr.Cons { ref, args, typ } -> Expr.Cons { ref = ref, args = args, typ = zonk ar typ }
+        Match { scrutinee = scrutinee, arms = arms, typ = settled ar typ }
+    | Expr.Tuple { items, typ } -> Expr.Tuple { items = items, typ = settled ar typ }
+    | Expr.Array { items, typ } -> Expr.Array { items = items, typ = settled ar typ }
+    | Expr.List { items, typ } -> Expr.List { items = items, typ = settled ar typ }
+    | Expr.Cons { ref, args, typ } -> Expr.Cons { ref = ref, args = args, typ = settled ar typ }
     | Expr.Record { fields, base, typ } ->
-        Expr.Record { fields = fields, base = base, typ = zonk ar typ }
-    | Update { base, fields, typ } -> Update { base = base, fields = fields, typ = zonk ar typ }
-    | Proj { target, label, typ } -> Proj { target = target, label = label, typ = zonk ar typ }
+        Expr.Record { fields = fields, base = base, typ = settled ar typ }
+    | Update { base, fields, typ } -> Update { base = base, fields = fields, typ = settled ar typ }
+    | Proj { target, label, typ } -> Proj { target = target, label = label, typ = settled ar typ }
     | Handle { body, arms, ret, typ } ->
-        Handle { body = body, arms = arms, ret = ret, typ = zonk ar typ }
-    | Pat.Wild { typ } -> Pat.Wild { typ = zonk ar typ }
-    | Pat.Unit { typ } -> Pat.Unit { typ = zonk ar typ }
-    | Pat.MacCall { call, typ } -> Pat.MacCall { call = call, typ = zonk ar typ }
-    | Pat.Lit { lit, typ } -> Pat.Lit { lit = lit, typ = zonk ar typ }
-    | Pat.Var { id, typ } -> Pat.Var { id = id, typ = zonk ar typ }
-    | Pat.As { id, pat, typ } -> Pat.As { id = id, pat = pat, typ = zonk ar typ }
-    | Pat.Ann { pat, ty, typ } -> Pat.Ann { pat = pat, ty = ty, typ = zonk ar typ }
-    | Pat.Cons { ref, args, typ } -> Pat.Cons { ref = ref, args = args, typ = zonk ar typ }
-    | Pat.Tuple { items, typ } -> Pat.Tuple { items = items, typ = zonk ar typ }
-    | Pat.Array { items, typ } -> Pat.Array { items = items, typ = zonk ar typ }
-    | Pat.List { items, typ } -> Pat.List { items = items, typ = zonk ar typ }
-    | Pat.Vector { items, typ } -> Pat.Vector { items = items, typ = zonk ar typ }
+        Handle { body = body, arms = arms, ret = ret, typ = settled ar typ }
+    | Pat.Wild { typ } -> Pat.Wild { typ = settled ar typ }
+    | Pat.Unit { typ } -> Pat.Unit { typ = settled ar typ }
+    | Pat.MacCall { call, typ } -> Pat.MacCall { call = call, typ = settled ar typ }
+    | Pat.Lit { lit, typ } -> Pat.Lit { lit = lit, typ = settled ar typ }
+    | Pat.Var { id, typ } -> Pat.Var { id = id, typ = settled ar typ }
+    | Pat.As { id, pat, typ } -> Pat.As { id = id, pat = pat, typ = settled ar typ }
+    | Pat.Ann { pat, ty, typ } -> Pat.Ann { pat = pat, ty = ty, typ = settled ar typ }
+    | Pat.Cons { ref, args, typ } -> Pat.Cons { ref = ref, args = args, typ = settled ar typ }
+    | Pat.Tuple { items, typ } -> Pat.Tuple { items = items, typ = settled ar typ }
+    | Pat.Array { items, typ } -> Pat.Array { items = items, typ = settled ar typ }
+    | Pat.List { items, typ } -> Pat.List { items = items, typ = settled ar typ }
+    | Pat.Vector { items, typ } -> Pat.Vector { items = items, typ = settled ar typ }
     | Pat.Record { fields, open, typ } ->
-        Pat.Record { fields = fields, open = open, typ = zonk ar typ }
-    | Pat.View { fn, pat, typ } -> Pat.View { fn = fn, pat = pat, typ = zonk ar typ }
+        Pat.Record { fields = fields, open = open, typ = settled ar typ }
+    | Pat.View { fn, pat, typ } -> Pat.View { fn = fn, pat = pat, typ = settled ar typ }
 }
 
 -- A group of top-level bindings, each with where it is, inferred together

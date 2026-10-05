@@ -6,6 +6,7 @@
 
 mod Lex
 mod Core
+mod Cut
 mod Cek
 mod Syntax
 mod Parse
@@ -21,6 +22,7 @@ use Lingua (cli!)
 use MeadowBoot.Lex (lex, dump)
 use MeadowBoot.Core (program, erase)
 use MeadowBoot.Cek as Cek
+use MeadowBoot.Cut as Cut
 use MeadowBoot.Parse (parsed, checked)
 use MeadowBoot.Fixity (chainsOf)
 use MeadowBoot.Unit (packageOf, absolute)
@@ -80,6 +82,9 @@ cli! {
     | run
       "Compile each file's unit to core, run its `result` with the CEK machine, and say its value"
       { files : [String] "the files to read, each in a package" }
+    | cut
+      "Compile each file's unit to Cut, and write the program that answers its `result` as text"
+      { files : [String] "the files to read, each in a package" }
 }
 
 fun main () = catch failed (\() -> run (argsCli ()))
@@ -102,6 +107,7 @@ fun run (cli : Cli) =
   | Cli.Rename r -> finish (renameFiles r.files)
   | Cli.Infer r -> finish (inferFiles r.files)
   | Cli.Run r -> finish (runFiles r.files)
+  | Cli.Cut r -> finish (cutFiles r.files)
 
 -- Each of `files`, its names resolved with every other of its unit's -- a
 -- package, built with the units it depends on first -- under a line naming
@@ -176,6 +182,31 @@ fun runFiles (files : [String]) =
   in
   let built = V.map (\r -> buildUnits r) roots in
   V.foldl (\ok f -> runFile f and ok) True files
+
+-- Each of `files`, its unit lowered to Cut, under a line naming it: the
+-- program, as `meadow_cut` reads one, or `not compiled`.
+fun cutFiles (files : [String]) =
+  let roots =
+    V.foldl
+      (\acc f ->
+        match packageOf f with
+        | Just r -> (if V.elem r acc then acc else V.pushBack acc r)
+        | None -> acc)
+      []
+      files
+  in
+  let built = V.map (\r -> buildUnits r) roots in
+  V.foldl (\ok f -> cutFile f and ok) True files
+
+fun cutFile (path : String) =
+  let file = absolute path in
+  let core =
+    M.andThen
+      (\r -> M.andThen (\u -> compilerCore (unitDatabase u) 0) (Res.toMaybe (givenUnits r r)))
+      (packageOf file)
+  in match core with
+     | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in True)
+     | Just p -> (let u = writeOutput "== ${path}\n${Cut.text (Cut.program p)}" in True)
 
 fun runFile (path : String) =
   let file = absolute path in

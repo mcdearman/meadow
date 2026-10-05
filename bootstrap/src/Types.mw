@@ -282,6 +282,24 @@ fun innerState (ar : Arena s) (field : Type) (level : Int) : Bool ! { St s | e }
   | RowExtend l f rest -> RowExtend l (zonk ar f) (zonk ar rest)
   | other -> other
 
+-- `t` as the tree a program is lowered from holds it: zonked, and a number
+-- nothing settled the type of an `Int`, a fraction a `Float` -- which is what
+-- one is where nothing says otherwise. A definition generic in its number is
+-- so its `Int` copy, and the only one until lowering makes the others.
+@pub fun settled (ar : Arena s) (t : Type) : Type ! { St s | e } =
+  match prune ar t with
+  | Con name args -> Con name (V.map (settled ar) args)
+  | Fun args ret eff -> Fun (V.map (settled ar) args) (settled ar ret) (settled ar eff)
+  | Tuple items -> Tuple (V.map (settled ar) items)
+  | Record row -> Record (settled ar row)
+  | RowExtend l f rest -> RowExtend l (settled ar f) (settled ar rest)
+  | Var id ->
+      (match slotKind ar id with
+       | Num -> Con "Int" []
+       | Frac -> Con "Float" []
+       | _ -> Var id)
+  | other -> other
+
 -- The unbound variables of `t`, after `out`, each once, in the order met.
 @pub fun freeVars (ar : Arena s) (t : Type) (out : [Int]) : [Int] ! { St s | e } =
   match prune ar t with

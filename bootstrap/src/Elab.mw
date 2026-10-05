@@ -1,4 +1,4 @@
--- ToCore: a unit's typed modules made core -- `meadow_core`'s lowering, with
+-- Elab: a unit's typed modules made core -- `meadow_core`'s lowering, with
 -- the types already gone, which is the core the CEK machine runs.
 --
 -- Two passes. `bare` takes off what says nothing at run time: a pattern's

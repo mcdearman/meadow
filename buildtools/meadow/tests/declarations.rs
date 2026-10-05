@@ -442,6 +442,25 @@ fn a_qualified_constructor_takes_named_fields() {
 // --- record update --------------------------------------------------------------
 
 #[test]
+fn an_update_takes_a_field_by_its_name_alone() {
+    // `{ r | x }` among others is `{ r | x = x }`, as `{ x }` is `{ x = x }`.
+    is(
+        "def plain = { lr = 1, epochs = 1, steps = 2 }\n\
+         def result = let steps = 9 in let epochs = 7 in\n\
+           let a = { plain | lr = 5, steps } in\n\
+           let b = { plain | steps, epochs } in\n\
+           (a.lr, a.epochs, a.steps, b.lr, b.epochs, b.steps)\n",
+        "(5, 1, 9, 1, 7, 9)",
+    );
+    // One name alone each side of the bar is the other thing it was already:
+    // the record after the bar, with a field before it.
+    is(
+        "def result = let lr = 3 in let more = { lr | { steps = 4 } } in (more.lr, more.steps)\n",
+        "(3, 4)",
+    );
+}
+
+#[test]
 fn an_update_replaces_the_fields_it_names() {
     is(
         "record Person = { name : String, age : Int, tags : [String;] }\n\

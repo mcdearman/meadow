@@ -1238,6 +1238,12 @@ fun main () =
 (Person("Ann", 42), 41, 1, 5)
 ```
 
+A field whose value is a variable of the same name can be written as the name
+alone, as in Rust: `{ x, y }` is `{ x = x, y = y }`, a pattern `Point { x, y }`
+binds `x` and `y`, and `{ r | x, y = 2 }` is `{ r | x = x, y = 2 }`. The one
+place it does not reach is an update of a single field: `{ r | x }` already
+means the extension below, so that one is written `{ r | x = x }`.
+
 The record is evaluated first, then the new values in the order they are
 written. As with selection, a nominal record's type has to be known where it is
 updated, and a `data` type with several constructors has no one record to

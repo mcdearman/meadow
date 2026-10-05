@@ -1758,11 +1758,11 @@ where
             });
 
         // `{ r | x = e, y = e }`: `r` with those fields replaced. Tried before the
-        // `{ x = e | r }` extension, which it can only be mistaken for when its
-        // fields have no `=`, and then it is not this.
-        let update_field = lower_ident()
-            .then_ignore(just(Token::Eq))
-            .then(expr.clone());
+        // `{ x = e | r }` extension. A field may be a name alone here too,
+        // `{ r | x, y = e }` for `{ r | x = x, y = e }`, with one exception:
+        // `{ a | b }` is already the extension of `b` with a field `a = a`,
+        // and stays that. So an update of one field writes its `=`.
+        let update_field = lower_ident().then(just(Token::Eq).ignore_then(expr.clone()).or_not());
         let update_expr = expr
             .clone()
             .then_ignore(just(Token::Bar))
@@ -1774,7 +1774,20 @@ where
                     .collect::<Vec<_>>(),
             )
             .delimited_by(just(Token::LBrace), just(Token::RBrace))
-            .map_with(|(base, fields), e| Located::new(Expr::Update(base, fields), e.span()))
+            .try_map(|(base, fields), span| {
+                if fields.len() == 1 && fields[0].1.is_none() {
+                    return Err(Rich::custom(span, "an extension, not an update"));
+                }
+                let fields = fields
+                    .into_iter()
+                    .map(|(name, val)| {
+                        let val =
+                            val.unwrap_or_else(|| Located::new(Expr::Var(name.clone()), name.span));
+                        (name, val)
+                    })
+                    .collect();
+                Ok(Located::new(Expr::Update(base, fields), span))
+            })
             .boxed();
 
         let record_expr = record_field

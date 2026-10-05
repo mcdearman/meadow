@@ -32,6 +32,9 @@ beyond the last release is under _Unreleased_.
 
 ### Added
 
+- A record update takes a field by its name alone, as construction does:
+  `{ r | x, y = 2 }` is `{ r | x = x, y = 2 }`. An update of one field still
+  writes its `=`, since `{ r | x }` is the extension of `x` with a field `r`.
 - `@!name(…)` before a module's first declaration is an attribute of the
   module. `@!feature(…)` is the one there is.
 - A package has features, as a Cargo crate does: `[features]` in `Meadow.toml`

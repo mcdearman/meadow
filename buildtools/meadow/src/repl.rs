@@ -858,11 +858,33 @@ fn print_banner() {
     // deprecated `clear()` shadows `Vec::clear` at any wider scope.
     use yansi::Paint as _;
 
+    // Short, so that the name is still on the screen when the prompt is:
+    // everything else there is to say is `:help`'s.
     println!();
     println!("{}", LOGO.green().bold());
     println!();
-    println!("  {}", "Meadow REPL.".bold());
+    println!(
+        "  {}  {} commands and keys   {} a tour   {} quit",
+        "Meadow REPL.".bold(),
+        ":help".cyan().bold(),
+        ":tour".cyan().bold(),
+        ":q".cyan().bold()
+    );
+    println!(
+        "  {} completes   {} finds a declaration   {} starts a new line",
+        "Tab".cyan().bold(),
+        "Ctrl+F".cyan().bold(),
+        "Ctrl+J".cyan().bold()
+    );
     println!();
+}
+
+/// `:help`: every command, and the keys, at the length the banner is not.
+fn print_help() {
+    use yansi::Paint as _;
+
+    println!();
+    println!("  {}  {}", format!("{:<17}", ":help").cyan().bold(), "this");
     for (cmd, what) in COMMANDS {
         // Pad *before* styling: a width applies to the whole formatted value,
         // escape bytes included, so padding afterwards would misalign the column.
@@ -1212,6 +1234,7 @@ impl Session {
                     let trimmed = entry.trim();
                     match trimmed {
                         ":q" | ":quit" => break,
+                        ":help" | ":h" | ":?" => print_help(),
                         ":reset" => {
                             self.prefix.truncate(self.std_len);
                             self.cache = self.std_cache.clone();

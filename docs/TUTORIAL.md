@@ -138,6 +138,7 @@ Useful commands:
 | `:time`        | time every entry from now on (`:time` again stops)         |
 | `:time <expr>` | time just this entry                                       |
 | `:tour`        | a guided tour of the language, a step at a time            |
+| `:help`        | every command, and the keys                                |
 | `:q`           | quit                                                       |
 
 **The tour** is this document's shorter cousin, taken at the prompt rather than

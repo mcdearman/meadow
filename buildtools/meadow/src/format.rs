@@ -45,6 +45,22 @@ fn formatted(src: &str, opts: &Options) -> Result<String, String> {
     if tokens(src) == tokens(&out) {
         Ok(out)
     } else {
+        // `MEADOW_FMT_WHY=1` says where: the first token that differs, and
+        // the few before it, which is what finds the line.
+        if std::env::var_os("MEADOW_FMT_WHY").is_some() {
+            let (a, b) = (tokens(src), tokens(&out));
+            let at = a
+                .iter()
+                .zip(&b)
+                .position(|(x, y)| x != y)
+                .unwrap_or(a.len().min(b.len()));
+            eprintln!(
+                "first difference at token {at}: {:?} vs {:?}",
+                a.get(at),
+                b.get(at)
+            );
+            eprintln!("  before: {:?}", &a[at.saturating_sub(6)..at]);
+        }
         Err("cutting its lines would change what it says; left as it is".to_string())
     }
 }

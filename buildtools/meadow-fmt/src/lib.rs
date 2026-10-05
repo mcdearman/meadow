@@ -66,12 +66,14 @@ pub fn format_within(src: &str, width: usize) -> String {
     let mut text = format(src);
     for _ in 0..6 {
         let cut = wrap::wrap(&text, width);
-        let whole = join_groups(&cut, width);
-        let lets = join_lets(&whole, width);
-        let next = format(&join_braces(
-            &join_ins(&settle_ins(&lets, width), width),
-            width,
-        ));
+        // Lines are joined only where no string runs over them: see
+        // `outside_literals`.
+        let joined = outside_literals(&cut, |code| {
+            let whole = join_groups(code, width);
+            let lets = join_lets(&whole, width);
+            join_braces(&join_ins(&settle_ins(&lets, width), width), width)
+        });
+        let next = format(&joined);
         if next == text {
             break;
         }
@@ -85,6 +87,52 @@ pub fn format_within(src: &str, width: usize) -> String {
 /// Re-indents every line, strips trailing whitespace, collapses runs of blank
 /// lines to one, drops leading and trailing blank lines, and ends with exactly
 /// one newline. The result uses `\r\n` if that is what `src` mostly used.
+/// `text` with `join` applied to each run of its lines that no string
+/// literal runs over, and the lines one does run over left exactly as they
+/// are.
+///
+/// A line break inside a string is part of the string: a generator's
+/// templates are strings many lines long, with code in their holes, and a
+/// line of one looks like a line of code. Joining two of them would change
+/// what the string says. So a join never sees such a line, nor the line a
+/// string starts or ends on.
+fn outside_literals(text: &str, join: impl Fn(&str) -> String) -> String {
+    let mut scan = Indenter::new();
+    let mut out = String::with_capacity(text.len());
+    let mut run = String::new();
+    let flush = |run: &mut String, out: &mut String| {
+        if !run.is_empty() {
+            let joined = join(run);
+            out.push_str(&joined);
+            if !joined.ends_with('\n') {
+                out.push('\n');
+            }
+            run.clear();
+        }
+    };
+    for line in text.lines() {
+        let before = !scan.nest.is_empty();
+        if before {
+            scan.code(line);
+        } else {
+            scan.code(line.trim());
+        }
+        if before || !scan.nest.is_empty() {
+            flush(&mut run, &mut out);
+            out.push_str(line);
+            out.push('\n');
+        } else {
+            run.push_str(line);
+            run.push('\n');
+        }
+    }
+    flush(&mut run, &mut out);
+    if !text.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
 /// `in` and what follows it on one line, for a `let` written in brackets:
 ///
 /// ```text
@@ -1556,6 +1604,26 @@ fun p r =
         assert_eq!(
             format_within(src, 100),
             "fun p r = wrap (Pat.Cons { ref = refAlts out env n, args = args })\n"
+        );
+    }
+
+    #[test]
+    fn nothing_inside_a_string_is_joined() {
+        // A template: a string several lines long, with a hole in it. Its
+        // lines look like a definition and its body, and are neither.
+        let src = "\
+fun template name =
+  \"fun ${name} x =
+  match x with
+  | A -> 1
+\"
+";
+        assert_eq!(format_within(src, 100), src);
+        // And what is around it is still joined.
+        let around = "def a =\n  1\n\ndef s = \"one\ntwo\"\n\ndef b =\n  2\n";
+        assert_eq!(
+            format_within(around, 100),
+            "def a = 1\n\ndef s = \"one\ntwo\"\n\ndef b = 2\n"
         );
     }
 

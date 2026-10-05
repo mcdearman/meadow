@@ -35,6 +35,8 @@ beyond the last release is under _Unreleased_.
 - `meadow fmt` puts a space between a name and a `{` written against it,
   `Ctor{` to `Ctor {`, and indents what follows a bracket that ends its line
   by one level.
+- The REPL starts with a short banner, so its name is still on the screen at
+  the first prompt, and `:help` lists the commands and the keys.
 - The REPL's banner and the tutorial say which keys force a new line on macOS:
   `Ctrl+J` always, and Option+Return once the terminal sends Option as Meta.
 - The REPL colours what is typed as the language server would: the entry is

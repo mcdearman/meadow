@@ -1590,6 +1590,41 @@ every stream type -- and is evaluated wherever it is used. Like a `def`, its
 body may not perform effects. A `def` is made once, and so is used at one type
 per trait.
 
+**Associated effects.** What a method performs can be each implementation's
+to say, as an associated type is. The trait names the effect, of its
+parameters; an `impl` says which effects it is there; and a method's type
+performs it:
+
+```meadow
+data Done = Done #[Int]
+data Writing s = Writing (StArray s Int)
+
+trait Rows r {
+  effect Reading r
+  fun slot : r -> Int -> Int ! Reading r
+}
+
+impl Rows Done {
+  effect Reading Done = {}
+  fun slot r i = match r with | Done a -> arrayGet a i
+}
+
+impl Rows (Writing s) {
+  effect Reading (Writing s) = { St s }
+  fun slot r i = match r with | Writing a -> stGetArray a i
+}
+
+fun second rows = slot rows 1
+```
+
+`second` is `Rows r => r -> Int`, performing whatever reading its rows does:
+nothing for a `Done`, so `second d` is a pure expression, and `St s` for a
+`Writing s`, so it runs inside that array's `runSt`. An associated effect is
+the _rest_ of the row it is written in, so effects may be named before it --
+`! { Console, Reading r }` -- and a variable may not follow it. Where the
+implementation is known the dictionary is compiled away, as every trait's is,
+and a call of `slot` is a call of that `impl`'s function.
+
 What is left out, for now:
 
 - A method's type mentions the trait's parameter, its associated types,

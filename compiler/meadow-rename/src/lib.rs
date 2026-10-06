@@ -64,6 +64,8 @@ pub struct Resolver {
     all_traits: HashMap<InternedString, TraitInfo>,
     /// Associated type -> the trait it belongs to, both canonical.
     all_assocs: HashMap<InternedString, InternedString>,
+    /// Every associated effect, canonical, and the trait it is of.
+    all_assoc_effects: HashMap<InternedString, InternedString>,
     /// The dictionaries of this unit's `impl`s, and the default methods of its
     /// traits: values no program names, which every dependent still needs.
     hidden_exports: Vec<VarId>,
@@ -417,6 +419,8 @@ struct TraitInfo {
     params: usize,
     /// Associated types, canonical, in declaration order.
     assocs: Vec<InternedString>,
+    /// Associated effects, canonical, in declaration order.
+    effects: Vec<InternedString>,
     /// Method names, in declaration order, and whether each has a default.
     methods: Vec<(InternedString, bool)>,
 }
@@ -550,6 +554,7 @@ impl Resolver {
             all_effects: HashMap::new(),
             all_traits: HashMap::new(),
             all_assocs: HashMap::new(),
+            all_assoc_effects: HashMap::new(),
             hidden_exports: Vec::new(),
             ctors: HashMap::new(),
             visible_ctors: builtin_ctors(),
@@ -1509,7 +1514,7 @@ impl Resolver {
                     // The dictionary's type: the trait's parameters, then each
                     // associated type.
                     let n = td.params.len();
-                    self.declare_tycon(name, n + td.assocs.len(), td.name.span);
+                    self.declare_tycon(name, n + td.assocs.len() + td.effects.len(), td.name.span);
                     let mut info = TraitInfo {
                         params: n,
                         ..TraitInfo::default()
@@ -1519,6 +1524,18 @@ impl Resolver {
                         let assoc = self.qualify(*assoc.value());
                         self.all_assocs.insert(assoc, canonical);
                         info.assocs.push(assoc);
+                    }
+                    // An associated effect is an effect's name, which a row
+                    // may say, of as many types as the trait is.
+                    for (effect, _) in &td.effects {
+                        let e = *effect.value();
+                        let c = self.qualify(e);
+                        self.effects.insert(e, Named::One(c, n));
+                        self.all_effects.insert(c, n);
+                        let vis = self.vis;
+                        self.frame().effects.push((e, n, vis));
+                        self.all_assoc_effects.insert(c, canonical);
+                        info.effects.push(c);
                     }
                     for (method, _) in &td.sigs {
                         let m = *method.value();
@@ -1631,9 +1648,21 @@ impl Resolver {
                 hir::Decl::Trait(td) => {
                     let n = td.params.len();
                     if in_scope {
-                        offer(&mut self.tycons, td.name, n + td.assocs.len());
+                        offer(
+                            &mut self.tycons,
+                            td.name,
+                            n + td.assocs.len() + td.effects.len(),
+                        );
                     }
-                    self.all_types.insert(td.name, n + td.assocs.len());
+                    self.all_types
+                        .insert(td.name, n + td.assocs.len() + td.effects.len());
+                    for e in &td.effects {
+                        if in_scope {
+                            offer(&mut self.effects, *e.value(), n);
+                        }
+                        self.all_effects.insert(*e.value(), n);
+                        self.all_assoc_effects.insert(*e.value(), td.name);
+                    }
                     for a in &td.assocs {
                         if in_scope {
                             offer(&mut self.tycons, *a.value(), n);
@@ -1646,6 +1675,7 @@ impl Resolver {
                         TraitInfo {
                             params: n,
                             assocs: td.assocs.iter().map(|a| *a.value()).collect(),
+                            effects: td.effects.iter().map(|e| *e.value()).collect(),
                             methods: td
                                 .methods
                                 .iter()
@@ -2114,6 +2144,19 @@ impl Resolver {
         // types come with the trait.
         if let Some(arity) = self.imported_effect_arity(canonical) {
             self.effects.insert(spelled, Named::One(canonical, arity));
+        }
+        let effects: Vec<InternedString> = self
+            .all_traits
+            .get(&canonical)
+            .map(|t| t.effects.clone())
+            .unwrap_or_default();
+        for e in effects {
+            if let Some(arity) = self.imported_effect_arity(e) {
+                self.effects.insert(
+                    InternedString::from(hir::spelling(&e)),
+                    Named::One(e, arity),
+                );
+            }
         }
         let assocs: Vec<InternedString> = self
             .all_traits
@@ -2785,6 +2828,26 @@ impl Resolver {
             let c = self.qualify(*assoc.value());
             assocs.push(self.node(c, assoc.span));
         }
+        let mut effects = Vec::new();
+        for (effect, of) in &td.effects {
+            let same = of.len() == td.params.len()
+                && of
+                    .iter()
+                    .zip(&td.params)
+                    .all(|(a, b)| a.value() == b.value());
+            if !same {
+                self.error(
+                    format!(
+                        "`effect {} …`: an associated effect is of the trait's parameters, `{listed}`",
+                        effect.value(),
+                    ),
+                    "not the trait's parameters".to_string(),
+                    effect.span,
+                );
+            }
+            let c = self.qualify(*effect.value());
+            effects.push(self.node(c, effect.span));
+        }
         let mut methods = Vec::new();
         for (method, ty) in &td.sigs {
             let m = *method.value();
@@ -2852,6 +2915,7 @@ impl Resolver {
                 params,
                 supers,
                 assocs,
+                effects,
                 methods,
                 dict: canonical_ctor(canonical, InternedString::from("#dict")),
             }),
@@ -2917,6 +2981,62 @@ impl Resolver {
             let is = self.resolve_ty(is);
             assocs.push((self.node(c, name.span), is));
         }
+        let mut effects = Vec::new();
+        for (name, at, is) in &id.effects {
+            let found = match self.effects.get(name.value()) {
+                Some(Named::One(c, _)) if info.effects.contains(c) => Some(*c),
+                _ => None,
+            };
+            let Some(c) = found else {
+                self.error(
+                    format!(
+                        "`{}` is not an associated effect of `{shown}`",
+                        name.value()
+                    ),
+                    "no such associated effect".to_string(),
+                    name.span,
+                );
+                continue;
+            };
+            let same =
+                at.len() == id.tys.len() && at.iter().zip(&id.tys).all(|(a, b)| same_type(a, b));
+            if !same {
+                self.error(
+                    format!(
+                        "`effect {} …` in an `impl` is at the implementing types",
+                        name.value()
+                    ),
+                    "write what follows the trait's name after `impl` here".to_string(),
+                    name.span,
+                );
+            }
+            if effects
+                .iter()
+                .any(|(l, _): &(hir::Label, _)| *l.value() == c)
+            {
+                self.error(
+                    format!("`{}` is given twice", name.value()),
+                    "already given".to_string(),
+                    name.span,
+                );
+                continue;
+            }
+            let is = self.resolve_effect_row(is);
+            effects.push((self.node(c, name.span), is));
+        }
+        for want in &info.effects {
+            if !effects.iter().any(|(l, _)| l.value() == want) {
+                self.error(
+                    format!(
+                        "this `impl {shown}` does not say what `{}` is",
+                        hir::spelling(want)
+                    ),
+                    format!("add `effect {} … = {{ … }}`", hir::spelling(want)),
+                    id.tr.span,
+                );
+            }
+        }
+
         for want in &info.assocs {
             if !assocs.iter().any(|(l, _)| l.value() == want) {
                 self.error(
@@ -2986,6 +3106,7 @@ impl Resolver {
                 tys,
                 context,
                 assocs,
+                effects,
                 methods,
                 dict,
             }),
@@ -3135,33 +3256,49 @@ impl Resolver {
     }
 
     fn resolve_effect_row(&mut self, row: &ast::EffectRow) -> hir::EffectRow {
-        let labels = row
-            .labels
-            .iter()
-            .map(|(name, args)| {
-                let n = *name.value();
-                let found = self.effects.get(&n).cloned();
-                let label = match &found {
-                    Some(Named::One(c, _)) => *c,
-                    _ => n,
-                };
-                match found {
-                    Some(Named::One(_, arity)) if arity == args.len() => {}
-                    Some(Named::One(_, arity)) => self.error(
-                        format!("effect `{n}` takes {arity} argument(s), got {}", args.len()),
-                        "wrong number of effect arguments".to_string(),
+        let mut labels = Vec::new();
+        let mut assoc: Option<(InternedString, Vec<hir::LTypeExpr>)> = None;
+        for (name, args) in &row.labels {
+            let n = *name.value();
+            let found = self.effects.get(&n).cloned();
+            let label = match &found {
+                Some(Named::One(c, _)) => *c,
+                _ => n,
+            };
+            match found {
+                Some(Named::One(_, arity)) if arity == args.len() => {}
+                Some(Named::One(_, arity)) => self.error(
+                    format!("effect `{n}` takes {arity} argument(s), got {}", args.len()),
+                    "wrong number of effect arguments".to_string(),
+                    name.span,
+                ),
+                Some(Named::Ambiguous(cs)) => self.ambiguous_type(n, &cs, name.span),
+                None => self.error(
+                    format!("unknown effect `{n}`"),
+                    "not declared".to_string(),
+                    name.span,
+                ),
+            }
+            let args: Vec<hir::LTypeExpr> = args.iter().map(|a| self.resolve_ty(a)).collect();
+            // A trait's associated effect is not a label: it is whatever
+            // row its implementation says, and so the rest of this one.
+            if self.all_assoc_effects.contains_key(&label) {
+                if assoc.is_some() || row.tail.is_some() {
+                    self.error(
+                        format!(
+                            "`{n}` is an associated effect, which is the rest of a row: \
+                             a row has one of those, or a variable, and not both"
+                        ),
+                        "a second rest of the row".to_string(),
                         name.span,
-                    ),
-                    Some(Named::Ambiguous(cs)) => self.ambiguous_type(n, &cs, name.span),
-                    None => self.error(
-                        format!("unknown effect `{n}`"),
-                        "not declared".to_string(),
-                        name.span,
-                    ),
+                    );
+                } else {
+                    assoc = Some((label, args));
                 }
-                (label, args.iter().map(|a| self.resolve_ty(a)).collect())
-            })
-            .collect();
+                continue;
+            }
+            labels.push((label, args));
+        }
         let tail = row.tail.as_ref().map(|t| {
             let name = *t.value();
             let id = self
@@ -3186,7 +3323,11 @@ impl Resolver {
                 });
             self.node(id, t.span)
         });
-        hir::EffectRow { labels, tail }
+        hir::EffectRow {
+            labels,
+            tail,
+            assoc,
+        }
     }
 
     fn resolve_bind(&mut self, bind: &ast::Bind) -> hir::Bind {

@@ -473,6 +473,9 @@ pub struct TraitDecl {
     pub supers: Vec<(Label, Vec<usize>)>,
     /// Associated types, canonical: each a type the implementation chooses.
     pub assocs: Vec<Label>,
+    /// Associated effects, canonical: each an effect row the implementation
+    /// chooses, of the trait's parameters as an associated type is.
+    pub effects: Vec<Label>,
     pub methods: Vec<TraitMethod>,
     /// The canonical name of the dictionary's constructor.
     pub dict: InternedString,
@@ -508,6 +511,8 @@ pub struct ImplDecl {
     pub context: Vec<Bound>,
     /// `(associated type, what it is here)`.
     pub assocs: Vec<(Label, LTypeExpr)>,
+    /// `(associated effect, the effects it is here)`.
+    pub effects: Vec<(Label, EffectRow)>,
     /// `(method name, its definition)`. Empty in a dependency's declaration.
     pub methods: Vec<(InternedString, Bind)>,
     /// The top-level value that is this implementation's dictionary -- or the
@@ -570,6 +575,10 @@ pub enum TypeExpr {
 pub struct EffectRow {
     pub labels: Vec<(InternedString, Vec<LTypeExpr>)>,
     pub tail: Option<Ident>,
+    /// A trait's associated effect, at the types it is of: whatever its
+    /// implementation there says, as the rest of the row. A row has this or
+    /// a `tail`, not both: there is one "rest".
+    pub assoc: Option<(InternedString, Vec<LTypeExpr>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

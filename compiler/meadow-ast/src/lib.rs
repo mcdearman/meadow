@@ -213,6 +213,10 @@ pub struct TraitDecl {
     /// `type Elem f`: types each implementation chooses. The name, and the
     /// parameters it was written with, which have to be the trait's.
     pub assocs: Vec<(Ident, Vec<Ident>)>,
+    /// `effect Reading r`: effects each implementation chooses, as it does
+    /// its associated types -- what a method performs where that is not
+    /// the same for every implementation.
+    pub effects: Vec<(Ident, Vec<Ident>)>,
     /// `fun name : T`: what an implementation provides.
     pub sigs: Vec<(Ident, LType)>,
     /// `fun name args = body`: what one gets if it does not.
@@ -230,6 +234,9 @@ pub struct ImplDecl {
     /// `type Elem (Set a) = a`: the name, the types it was written at, and
     /// what it is.
     pub assocs: Vec<(Ident, Vec<LType>, LType)>,
+    /// `effect Reading (Writing s) = { St s }`: the name, the types it was
+    /// written at, and the effects it is.
+    pub effects: Vec<(Ident, Vec<LType>, EffectRow)>,
     pub methods: Vec<Bind>,
 }
 

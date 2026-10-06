@@ -32,6 +32,10 @@ beyond the last release is under _Unreleased_.
 
 ### Added
 
+- A trait can have associated effects: `effect Reading r` in the trait, a row
+  in each `impl` (`effect Reading Done = {}`, `effect Reading (Writing s) = {
+St s }`), and `! Reading r` where a method's type says what it performs. A
+  function generic over the trait performs what its type's `impl` says.
 - `@fmt(skip)` on a declaration, or on a line of its own before one, has
   `meadow fmt` leave it exactly as it is written, as `#[rustfmt::skip]` does.
 - A record update takes a field by its name alone, as construction does:

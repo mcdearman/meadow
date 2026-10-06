@@ -681,3 +681,120 @@ fn a_point_free_function_still_may_not_perform_effects() {
     );
     assert!(errs.contains("cannot perform effects"), "{errs}");
 }
+
+// --- associated effects --------------------------------------------------------
+//
+// What a method performs is each implementation's to say, as what an
+// associated type is: `effect Reading r` in the trait, a row in each `impl`,
+// and `! Reading r` where a method's type says what it performs.
+
+const ROWS: &str = "\
+data Done = Done #[Int]
+data Writing s = Writing (StArray s Int)
+
+trait Rows r {
+  effect Reading r
+  fun slot : r -> Int -> Int ! Reading r
+}
+
+impl Rows Done {
+  effect Reading Done = {}
+  fun slot r i = match r with | Done a -> arrayGet a i
+}
+
+impl Rows (Writing s) {
+  effect Reading (Writing s) = { St s }
+  fun slot r i = match r with | Writing a -> stGetArray a i
+}
+
+fun second rows = slot rows 1
+
+fun sum3 rows = slot rows 0 + slot rows 1 + slot rows 2
+";
+
+#[test]
+fn a_method_performs_what_its_impl_says_it_does() {
+    // Pure at one type, a state's at another, and one generic function over
+    // both: it performs whichever its rows' reading does.
+    let src = format!(
+        "{ROWS}
+fun pureOne (d : Done) : Int = second d
+
+def result =
+  let d = Done #[10, 20, 30] in
+  let w = runSt (\\() -> let a = stThaw #[1, 2, 3] in (second (Writing a), sum3 (Writing a))) in
+  (pureOne d, sum3 d, w)
+"
+    );
+    is(&src, "(20, 60, (2, 6))");
+}
+
+#[test]
+fn a_pure_associated_effect_asks_nothing_of_where_it_is_used() {
+    // Beside something that does perform: the call is not held to be all
+    // the place does, nor the place to be pure.
+    let src = format!(
+        "{ROWS}
+fun shown (d : Done) : String ! {{ Console | e }} =
+  let _ = println (slot d 2) in
+  \"${{sum3 d}}\"
+
+def result = second (Done #[1, 2, 3])
+"
+    );
+    is(&src, "2");
+}
+
+#[test]
+fn what_an_associated_effect_is_cannot_be_left_out_or_made_up() {
+    let missing = errors(
+        "trait Rows r {\n  effect Reading r\n  fun slot : r -> Int ! Reading r\n}\n\
+         impl Rows Int { fun slot r = r }\ndef result = slot 1\n",
+    );
+    assert!(
+        missing.contains("does not say what `Reading` is"),
+        "{missing}"
+    );
+    let unknown = errors(
+        "trait Rows r {\n  fun slot : r -> Int\n}\n\
+         impl Rows Int {\n  effect Reading Int = {}\n  fun slot r = r\n}\ndef result = slot 1\n",
+    );
+    assert!(
+        unknown.contains("`Reading` is not an associated effect of `Rows`"),
+        "{unknown}"
+    );
+    let of_other =
+        errors("trait Rows r {\n  effect Reading s\n  fun slot : r -> Int\n}\ndef result = 1\n");
+    assert!(
+        of_other.contains("an associated effect is of the trait's parameters"),
+        "{of_other}"
+    );
+}
+
+#[test]
+fn an_associated_effect_is_the_rest_of_its_row() {
+    // With effects named before it; not with a variable after, which would
+    // be a second rest.
+    let both = errors(
+        "trait Rows r {\n  effect Reading r\n  fun slot : r -> Int ! { Reading r | e }\n}\n\
+         def result = 1\n",
+    );
+    assert!(
+        both.contains("an associated effect, which is the rest of a row"),
+        "{both}"
+    );
+    let src = "\
+trait Logs r {
+  effect Also r
+  fun note : r -> String -> () ! { Console, Also r }
+}
+
+impl Logs Int {
+  effect Also Int = {}
+  fun note n text = println \"${n}: ${text}\"
+}
+
+def result = 7
+";
+    is(src, "7");
+}

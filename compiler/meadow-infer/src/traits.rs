@@ -150,6 +150,9 @@ pub(crate) struct State {
     methods: HashMap<(InternedString, InternedString), Scheme>,
     /// Associated type -> its trait, and its place among the trait's.
     assoc_of: HashMap<InternedString, (InternedString, usize)>,
+    /// Which of those are associated effects: a row, where the rest are
+    /// types.
+    assoc_effects: HashSet<InternedString>,
     /// By trait and the implementing type's outermost constructor.
     impls: HashMap<(InternedString, String), ImplDef>,
     wanted: Vec<Wanted>,
@@ -235,7 +238,7 @@ impl Infer {
         let mut at = Vec::with_capacity(preds.len());
         for pred in preds {
             at.push(self.tr.wanted.len());
-            self.tr.wanted.push(Wanted {
+            self.want(Wanted {
                 pred,
                 span,
                 owner,
@@ -263,6 +266,21 @@ impl Infer {
     }
 
     // --- solving --------------------------------------------------------------
+
+    /// Ask for `w`. An associated effect of what it asks for is a variable
+    /// until an `impl` says what it is, and is remembered as one: a call that
+    /// performs it has to wait for that, and not be tied to wherever it is
+    /// made first ([`Infer::join_effect_into`]).
+    fn want(&mut self, w: Wanted) {
+        for a in &w.pred.assocs {
+            if let Type::Var(id) = self.arena.zonk(a)
+                && self.arena.slot_kind(id) == VarKind::Effect
+            {
+                self.assoc_effect_vars.insert(id);
+            }
+        }
+        self.tr.wanted.push(w);
+    }
 
     /// A binding begins: what is wanted from here on is its body's.
     pub(crate) fn begin_binding(&mut self) -> usize {
@@ -339,7 +357,7 @@ impl Infer {
         let mut subs = Vec::with_capacity(context.len());
         for pred in context {
             subs.push(self.tr.wanted.len());
-            self.tr.wanted.push(Wanted {
+            self.want(Wanted {
                 pred,
                 span,
                 owner,
@@ -828,6 +846,16 @@ impl Infer {
 
     // --- associated types in written types ------------------------------------
 
+    /// What kind of variable stands for the associated `name`: an effect's,
+    /// for an associated effect.
+    fn assoc_kind(&self, name: InternedString) -> VarKind {
+        if self.tr.assoc_effects.contains(&name) {
+            VarKind::Effect
+        } else {
+            VarKind::Type
+        }
+    }
+
     /// `ty` with every `Elem τ` replaced by a quantifier, a new one for each
     /// associated type at each type, remembered in `table`.
     fn lift_assocs(
@@ -840,7 +868,7 @@ impl Infer {
         match ty {
             Type::Con(name, args) if self.tr.assoc_of.contains_key(name) => {
                 let of: Vec<Type> = args.iter().map(&mut go).collect();
-                Type::Bound(assoc_var(*name, &of, table, quant))
+                Type::Bound(assoc_var(*name, &of, table, quant, self.assoc_kind(*name)))
             }
             Type::Con(name, args) => Type::Con(*name, args.iter().map(go).collect()),
             Type::Tuple(items) => Type::Tuple(items.iter().map(go).collect()),
@@ -877,7 +905,7 @@ impl Infer {
             .zip(params)
             .map(|(a, ps)| {
                 let of: Vec<Type> = ps.iter().filter_map(|p| tys.get(*p).cloned()).collect();
-                Type::Bound(assoc_var(a, &of, table, quant))
+                Type::Bound(assoc_var(a, &of, table, quant, self.assoc_kind(a)))
             })
             .collect();
         Pred { tr, tys, assocs }
@@ -953,7 +981,7 @@ impl Infer {
         let fresh: Vec<Type> = quant.iter().map(|k| self.arena.fresh_of(*k)).collect();
         let owner = self.tr.member;
         for p in preds {
-            self.tr.wanted.push(Wanted {
+            self.want(Wanted {
                 pred: Pred {
                     tr: p.tr,
                     tys: p
@@ -983,7 +1011,14 @@ impl Infer {
         let np = td.params.len();
         // Its own associated types, then what it inherits from the traits it
         // requires, each at the selection of its parameters it is of.
-        let mut assocs: Vec<InternedString> = td.assocs.iter().map(|a| *a.value()).collect();
+        // An associated effect is one of them, after the types: a row the
+        // implementation chooses, where those are types.
+        let mut assocs: Vec<InternedString> = td
+            .assocs
+            .iter()
+            .chain(&td.effects)
+            .map(|a| *a.value())
+            .collect();
         let mut assoc_params: Vec<Vec<usize>> = vec![(0..np).collect(); assocs.len()];
         for (s, idxs) in &td.supers {
             let Some(shape) = self.tr.shapes.get(s.value()) else {
@@ -1017,7 +1052,7 @@ impl Infer {
                 .collect(),
             assocs: assocs.clone(),
             assoc_params: assoc_params.clone(),
-            own_assocs: td.assocs.len(),
+            own_assocs: td.assocs.len() + td.effects.len(),
             methods: td
                 .methods
                 .iter()
@@ -1026,8 +1061,11 @@ impl Infer {
             dict: td.dict,
             labels,
         };
-        for (k, a) in td.assocs.iter().enumerate() {
+        for (k, a) in td.assocs.iter().chain(&td.effects).enumerate() {
             self.tr.assoc_of.insert(*a.value(), (td.name, k));
+        }
+        for e in &td.effects {
+            self.tr.assoc_effects.insert(*e.value());
         }
         self.tr.shapes.insert(td.name, shape);
 
@@ -1062,6 +1100,10 @@ impl Infer {
             }
             let raw = ty_of(&m.ty, &vars, &self.aliases);
             let mut quant = vec![VarKind::Type; np + n + extra.len()];
+            // An associated effect's quantifier is an effect's.
+            for (k, a) in assocs.iter().enumerate() {
+                quant[np + k] = self.assoc_kind(*a);
+            }
             mark_effect_vars(&raw, &mut quant);
             if quant[np + n..].iter().any(|k| *k != VarKind::Effect) {
                 self.trait_error(
@@ -1131,7 +1173,10 @@ impl Infer {
             }
             self.env.insert(*m.var.value(), scheme);
         }
-        let quant = vec![VarKind::Type; np + n];
+        let mut quant = vec![VarKind::Type; np + n];
+        for (k, a) in assocs.iter().enumerate() {
+            quant[np + k] = self.assoc_kind(*a);
+        }
         self.record_ctor(td.name, td.dict, &quant, &head, &fields);
     }
 
@@ -1213,6 +1258,12 @@ impl Infer {
                 .iter()
                 .find(|(l, _)| l.value() == a)
                 .map(|(_, t)| ty_of(t, &vars, &self.aliases))
+                .or_else(|| {
+                    id.effects
+                        .iter()
+                        .find(|(l, _)| l.value() == a)
+                        .map(|(_, row)| eff_of(row, &vars, &self.aliases))
+                })
                 .unwrap_or(Type::Error);
             args.push(self.lift_assocs(&is, &mut table, &mut quant));
         }
@@ -1233,7 +1284,10 @@ impl Infer {
                 args.push(known);
                 continue;
             }
-            args.push(Type::Bound(assoc_var(*a, &of, &mut table, &mut quant)));
+            let kind = self.assoc_kind(*a);
+            args.push(Type::Bound(assoc_var(
+                *a, &of, &mut table, &mut quant, kind,
+            )));
             if let Some(owner) = owner
                 && !preds.iter().any(|p: &Pred| p.tr == owner && p.tys == of)
             {
@@ -1419,7 +1473,7 @@ impl Infer {
                 .supers
                 .iter()
                 .map(|(s, idxs)| {
-                    self.tr.wanted.push(Wanted {
+                    self.want(Wanted {
                         pred: Pred {
                             tr: *s,
                             tys: idxs
@@ -1460,11 +1514,12 @@ fn assoc_var(
     of: &[Type],
     table: &mut Vec<(InternedString, Vec<Type>, u32)>,
     quant: &mut Vec<VarKind>,
+    kind: VarKind,
 ) -> u32 {
     if let Some((_, _, i)) = table.iter().find(|(a, t, _)| *a == assoc && t == of) {
         return *i;
     }
-    quant.push(VarKind::Type);
+    quant.push(kind);
     let i = (quant.len() - 1) as u32;
     table.push((assoc, of.to_vec(), i));
     i

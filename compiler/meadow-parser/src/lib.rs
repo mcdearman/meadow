@@ -519,6 +519,11 @@ where
             .ignore_then(upper_ident())
             .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
             .map(|(name, params)| vec![TraitItem::Assoc(name, params)]),
+        // `effect Reading r`: an effect each implementation chooses.
+        just(Token::Effect)
+            .ignore_then(upper_ident())
+            .then(lower_ident().repeated().at_least(1).collect::<Vec<_>>())
+            .map(|(name, params)| vec![TraitItem::Effect(name, params)]),
         bind_decl.clone().map(|b| vec![TraitItem::Default(b)]),
         // No `context()` here: a method's own bounds are the trait's, so a
         // `=>` in front of its type has nothing to say.
@@ -554,12 +559,14 @@ where
                 params,
                 supers,
                 assocs: Vec::new(),
+                effects: Vec::new(),
                 sigs: Vec::new(),
                 defaults: Vec::new(),
             };
             for item in groups.into_iter().flatten() {
                 match item {
                     TraitItem::Assoc(n, p) => decl.assocs.push((n, p)),
+                    TraitItem::Effect(n, p) => decl.effects.push((n, p)),
                     TraitItem::Sig(n, t) => decl.sigs.push((n, t)),
                     TraitItem::Default(b) => decl.defaults.push(b),
                 }
@@ -579,8 +586,15 @@ where
             .then(ty_atom().repeated().at_least(1).collect::<Vec<_>>())
             .then_ignore(just(Token::Eq))
             .then(ty())
-            .map(|((name, at), is)| Either::Left((name, at, is))),
-        bind_decl.clone().map(Either::Right),
+            .map(|((name, at), is)| ImplItem::Assoc(name, at, is)),
+        // `effect Reading (Writing s) = { St s }`
+        just(Token::Effect)
+            .ignore_then(upper_ident())
+            .then(ty_atom().repeated().at_least(1).collect::<Vec<_>>())
+            .then_ignore(just(Token::Eq))
+            .then(effect_row())
+            .map(|((name, at), is)| ImplItem::Effect(name, at, is)),
+        bind_decl.clone().map(ImplItem::Method),
     ));
     let impl_decl = just(Token::Impl)
         .ignore_then(upper_ident())
@@ -598,12 +612,14 @@ where
                 tys,
                 context,
                 assocs: Vec::new(),
+                effects: Vec::new(),
                 methods: Vec::new(),
             };
             for item in items {
                 match item {
-                    Either::Left(a) => decl.assocs.push(a),
-                    Either::Right(b) => decl.methods.push(b),
+                    ImplItem::Assoc(n, at, is) => decl.assocs.push((n, at, is)),
+                    ImplItem::Effect(n, at, is) => decl.effects.push((n, at, is)),
+                    ImplItem::Method(b) => decl.methods.push(b),
                 }
             }
             LDecl::new(Decl::Impl(decl), e.span())
@@ -968,12 +984,21 @@ fn defined_by<'a>(
     })
 }
 
+/// An item of an `impl` body: what an associated type is, what an associated
+/// effect is, or a method.
+enum ImplItem {
+    Assoc(Ident, Vec<LType>, LType),
+    Effect(Ident, Vec<LType>, EffectRow),
+    Method(Bind),
+}
+
 /// An item of a `trait` body: an associated type, a method's signature, or the
 /// default a method carries. One written item is one or two of these -- two
 /// only when a signature has clauses under it -- which is what lets [`methods`]
 /// see how the trait was written.
 enum TraitItem {
     Assoc(Ident, Vec<Ident>),
+    Effect(Ident, Vec<Ident>),
     Sig(Ident, LType),
     Default(Bind),
 }
@@ -1013,7 +1038,7 @@ fn methods<'a>(
                     defaults.push((*name.value(), name.span, i));
                 }
             }
-            TraitItem::Assoc(..) => {}
+            TraitItem::Assoc(..) | TraitItem::Effect(..) => {}
         }
     }
     for (name, sig_span, sig_at) in &sigs {

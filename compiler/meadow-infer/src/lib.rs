@@ -1202,6 +1202,12 @@ pub struct Infer {
     /// passed as an argument may do less than the parameter's type permits.
     /// Solved by [`Infer::solve_subsumptions`] -- see [`Infer::loosen_argument`].
     subsumptions: Vec<(Type, Type, Span)>,
+    /// The variables that stand for a trait's associated effect at types
+    /// whose `impl` is not found yet: what a call of a method of it performs.
+    assoc_effect_vars: HashSet<u32>,
+    /// Joining what was left to wait: an associated effect that is still a
+    /// variable now is tied to its region after all.
+    settling_joins: bool,
     resolutions: HashMap<NodeId, hir::Alt>,
     errors: Vec<Diagnostic>,
     /// The `runSt` primitive's `VarId` in this unit -- see [`Infer::infer_run_st`].
@@ -1337,6 +1343,8 @@ impl Infer {
             overloads: HashMap::new(),
             pending: Vec::new(),
             subsumptions: Vec::new(),
+            assoc_effect_vars: HashSet::new(),
+            settling_joins: false,
             resolutions: HashMap::new(),
             record_fields: HashMap::new(),
             effects: HashMap::new(),
@@ -1433,7 +1441,41 @@ impl Infer {
     /// gains later would land in the older one, which is an escape. So the
     /// join waits, as a subsumption, until the region has taken shape; the
     /// `runSt` settles what is left before it closes.
+    /// Whether `phi` is, for now, a variable standing for a trait's
+    /// associated effect: the one remembered, or one it was unified with --
+    /// an application's own effect is a fresh variable tied to its callee's.
+    fn is_assoc_effect(&mut self, phi: &Type) -> bool {
+        let Type::Var(id) = self.arena.zonk(phi) else {
+            return false;
+        };
+        // What an `impl` has settled is a variable no longer, and is dropped.
+        let mut still = HashSet::new();
+        let mut found = false;
+        for v in std::mem::take(&mut self.assoc_effect_vars) {
+            if let Type::Var(now) = self.arena.zonk(&Type::Var(v)) {
+                found |= now == id;
+                still.insert(v);
+            }
+        }
+        self.assoc_effect_vars = still;
+        found
+    }
+
     fn join_effect_into(&mut self, span: Span, region: Type, phi: Type) {
+        // A trait's associated effect, of types whose `impl` has not been
+        // found: what it is, that `impl` will say. Unified with the region
+        // now it would *be* the region -- everything else performed here --
+        // and the `impl` would then be refused for saying less. So the join
+        // waits until the binding's wanted are answered.
+        if !self.settling_joins && self.is_assoc_effect(&phi) {
+            self.subsumptions.push((phi, region, span));
+            return;
+        }
+        // Performing nothing asks nothing of the region: what an associated
+        // effect turned out to be, where its `impl` is pure.
+        if matches!(self.arena.zonk(&phi), Type::RowEmpty) {
+            return;
+        }
         // A closed row -- `a -> b ! { Random }`, say, from an annotation --
         // lists what a call performs, not all the region may: the region
         // holds it and possibly more, so it is joined with its end left open.
@@ -2727,6 +2769,7 @@ impl Infer {
                         AliasBody::Effect(_) => AliasBody::Effect(hir::EffectRow {
                             labels: Vec::new(),
                             tail: None,
+                            assoc: None,
                         }),
                     };
                 }
@@ -3735,10 +3778,23 @@ impl Infer {
     /// Tie each argument effect recorded since `mark` into what its parameter
     /// allowed -- a join, so the `St` labels of deeper `runSt`s are left out.
     fn solve_subsumptions(&mut self, mark: usize) {
+        // What waits on an `impl` is joined once that is found, which is
+        // asked for first; one still a variable after that is generic here,
+        // and is the region's own.
+        let waiting: Vec<Type> = self.subsumptions[mark..]
+            .iter()
+            .map(|(phi, ..)| phi.clone())
+            .collect();
+        let waits = waiting.iter().any(|phi| self.is_assoc_effect(phi));
+        if waits {
+            self.solve_wanted();
+        }
         let pending: Vec<_> = self.subsumptions.drain(mark..).collect();
+        let was = std::mem::replace(&mut self.settling_joins, true);
         for (actual, allowed, span) in pending {
             self.join_effect_into(span, allowed, actual);
         }
+        self.settling_joins = was;
     }
 
     /// `runSt body`, applied directly: the one place a type is polymorphic in
@@ -4136,12 +4192,19 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>, aliases: &Aliases) ->
 /// Convert a resolved effect row into an effect [`Type`], with every effect
 /// alias it names replaced by the effects it stands for.
 fn eff_of(row: &hir::EffectRow, params: &HashMap<VarId, u32>, aliases: &Aliases) -> Type {
-    let tail = match &row.tail {
-        Some(v) => params
+    let tail = match (&row.tail, &row.assoc) {
+        (Some(v), _) => params
             .get(v.value())
             .map(|&i| Type::Bound(i))
             .unwrap_or(Type::RowEmpty),
-        None => Type::RowEmpty,
+        // A trait's associated effect, at these types: a type by that name
+        // for now, which `lift_assocs` makes the variable its trait settles
+        // -- as it does an associated type's.
+        (None, Some((name, args))) => Type::Con(
+            *name,
+            args.iter().map(|a| ty_of(a, params, aliases)).collect(),
+        ),
+        (None, None) => Type::RowEmpty,
     };
     let mut labels = Vec::new();
     row_labels(row, params, aliases, &mut labels);
@@ -5288,6 +5351,9 @@ fn collect_tyvars(t: &hir::LTypeExpr, out: &mut HashMap<VarId, u32>) {
                 if let Some(tail) = &row.tail {
                     let next = out.len() as u32;
                     out.entry(*tail.value()).or_insert(next);
+                }
+                if let Some((_, args)) = &row.assoc {
+                    args.iter().for_each(|a| collect_tyvars(a, out));
                 }
             }
         }

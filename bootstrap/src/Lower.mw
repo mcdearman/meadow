@@ -830,20 +830,157 @@ fun row (c : Lc) b (s : GTree) = lowerTyEffRow () b s
 
 -- --- patterns ----------------------------------------------------------------
 --
--- A pattern is written by a function that may be told to span somewhere else:
--- one pattern in parentheses, as an argument, spans the parentheses.
+-- A pass, `lowerPat`, from the grammar's patterns and parameters to the
+-- tree's. What it carries says where a pattern is told to span, if not where
+-- it was written -- one pattern in parentheses, as an argument, spans the
+-- parentheses -- and whether parentheses round one pattern are part of it
+-- (`spans`): of an argument they are, of a parameter not.
 
-fun pat (c : Lc) b (s : GTree) = patAt c b s None
+-- What a pattern carries where nothing tells it to span anywhere else.
+fun px (c : Lc) =
+  let nowhere : Maybe Meta = None in
+  { c = c, over = nowhere, spans = True }
 
-fun patAt (c : Lc) b (s : GTree) (over : Maybe Meta) =
-  let atoms =
-    V.pushFront (V.map (\t -> must NodePAtom t) (childrenOf NodeConsTail s)) (must NodePAtom s)
-  in asesAt
-       b
-       (V.map (\a -> (\o -> patom c b a o, patomSpan a)) atoms)
-       (childrenOf NodeAsTail s)
-       (spanOf s)
-       over
+fun pat (c : Lc) b (s : GTree) = lowerPatPat () b (px c) s
+
+fun param (c : Lc) b (s : GTree) = lowerPatParam () b (px c) s
+
+-- Parentheses in a pattern: `()`, `(p : T)`, `(f -> p)`, a tuple -- or one
+-- pattern, which as an argument (`spans`) takes the parentheses' span and as
+-- a parameter keeps its own. A pattern's own, or an expression's read as
+-- one: the two are written alike.
+fun parenPat (c : Lc) b (s : GTree) (spans : Bool) (over : Maybe Meta) =
+  let m = M.unwrapOr (spanOf s) over in
+  let elems = childrenOf NodeElem s in
+  let elem = \e o -> lowerPatElem () b { (px c) | over = o } e in
+  match childOf NodeParenAnnot s with
+  | Just a -> newAstPatAnn b m (elem (V.getOr s elems 0) None) (ty c b (must NodeType a))
+  | None ->
+      (match V.len elems with
+       | 0 -> newAstPatUnit b m
+       | 1 -> elem (V.getOr s elems 0) (if spans then Just m else None)
+       | _ -> newAstPatTuple b m (V.map (\e -> elem e None) elems))
+
+pass! {
+  lowerPat : Grouped -> Ast with cx from Pat, Param, Elem
+    | Pat { later first, later conses, raw ases } ->
+        asesAt
+          out
+          (V.zip
+             (V.map (\f -> \o -> f { cx | over = o }) (V.pushFront conses first))
+             (V.pushFront
+                (V.map (\t -> patomSpan (must NodePAtom t)) (childrenOf NodeConsTail node))
+                (patomSpan (must NodePAtom node))))
+          ases
+          (spanOf node)
+          cx.over
+    | ConsTail { atom } -> atom
+    | PAtom { con, arg } -> M.unwrapOr (M.unwrapOr (0 - 1) arg) con
+    -- `A x y`, `A.B x y`, or either with nothing after it.
+    | ConPat { raw qual, later args } ->
+        conOf out node qual (V.map (\a -> a (px cx.c)) args) (M.unwrapOr (spanOf node) cx.over)
+    | NullCon { raw qual } -> conOf out node qual [] (M.unwrapOr (spanOf node) cx.over)
+    | Parg { later con, later arg } ->
+        (match (con, arg) with
+         | (Just f, _) -> f (px cx.c)
+         | (_, Just f) -> f (px cx.c)
+         | _ -> 0 - 1)
+    -- A pattern's argument, spanning all it was written with.
+    | Arg { later paren, recPat, array, brack, raw var, raw mac } ->
+        (let m = M.unwrapOr (spanOf node) cx.over in
+         match (paren, V.get (V.concatMap asList [recPat, array, brack]) 0, var, mac) with
+         | (Just f, _, _, _) -> f { cx | spans = True }
+         | (_, Just p, _, _) -> p
+         | (_, _, Just v, _) -> newAstPatVar out m (nm out (vid v))
+         | (_, _, _, Just call) -> patCall cx.c out m call
+         | _ -> litOrWild cx.c out node m)
+    -- A parameter: as a pattern's argument, but for parentheses round one
+    -- pattern, which are not part of it, and a bracket, which starts a whole
+    -- pattern.
+    | Param { later con, later paren, later recPat, later brack, later array, raw var } ->
+        (let plain = px cx.c in
+         let m = spanOf node in
+         match V.get (V.concatMap asList [con, recPat, brack, array]) 0 with
+         | Just f -> f plain
+         | None ->
+             (match (paren, var) with
+              | (Just f, _) -> f { plain | spans = False }
+              | (_, Just v) -> newAstPatVar out m (nm out (vid v))
+              | _ -> litOrWild cx.c out node m))
+    | BrackParam { later first, later conses, raw ases } ->
+        asesAt out (headed cx node NodeBrackPat first conses) ases (spanOf node) None
+    | ArrParam { later first, later conses, raw ases } ->
+        asesAt out (headed cx node NodeArrPat first conses) ases (spanOf node) None
+    | RecPat { later fields, raw open } ->
+        newAstPatRecord
+          out
+          (M.unwrapOr (spanOf node) cx.over)
+          (V.map (\f -> f (px cx.c)) fields)
+          (M.isSome open)
+    | PField { later value } ->
+        (let n = nameOf (must TokenLowerIdent node) in
+         newAstPatField
+           out
+           (spanOf node)
+           (nm out n)
+           (match value with
+            | Just f -> f (px cx.c)
+            | None -> newAstPatVar out n.at (nm out n)))
+    | PFieldValue { pat } -> pat
+    | ArrPat { later items } ->
+        newAstPatArray out (M.unwrapOr (spanOf node) cx.over) (V.map (\f -> f (px cx.c)) items)
+    -- `[p; q]`, `[;]`, `[p, q]`, `[]`.
+    | BrackPat { raw body } ->
+        (let m = M.unwrapOr (spanOf node) cx.over in
+         let each =
+           \k t -> V.map (pat cx.c out) (V.concatMap (childrenOf NodePat) (childrenOf k t))
+         in match body with
+            | None -> newAstPatVector out m []
+            | Just inside ->
+                (match childOf NodePat inside with
+                 | None -> newAstPatList out m []
+                 | Just first ->
+                     (let p = pat cx.c out first in
+                      match (childOf NodeListPatTail inside, childOf NodeVecPatTail inside) with
+                      | (Just t, _) -> newAstPatList out m (V.pushFront (each NodeSemiPat t) p)
+                      | (_, Just t) -> newAstPatVector out m (V.pushFront (each NodeCommaPat t) p)
+                      | _ -> newAstPatVector out m [p])))
+    | PatParen {} -> parenPat cx.c out node cx.spans cx.over
+    -- An element of a pattern's parentheses: `f -> p`, or a pattern.
+    | Elem { raw expr, raw ases, raw view } ->
+        (match view with
+         | Just v ->
+             (let p = must NodePat v in
+              newAstPatView
+                out
+                (M.unwrapOr
+                   (spanMeta (metaStart (exprSpan cx.c expr)) (metaEnd (spanOf p)))
+                   cx.over)
+                (exprOf cx.c out expr)
+                (pat cx.c out p))
+         | None -> asesAt out (exprPatParts cx.c out expr) ases (spanOf node) cx.over)
+}
+
+-- A parameter that starts with a bracket's pattern: that, at the span it is
+-- told to take, and what is consed after it.
+fun headed cx (s : GTree) (k : Grouped) first conses =
+  V.zip
+    (V.map (\f -> \o -> f { (px cx.c) | over = o }) (V.pushFront conses first))
+    (V.pushFront
+       (V.map (\t -> patomSpan (must NodePAtom t)) (childrenOf NodeConsTail s))
+       (spanOf (must k s)))
+
+-- A constructor's pattern, qualified by its type or not.
+fun conOf b (s : GTree) (qual : Maybe GTree) written (m : Meta) =
+  match qual with
+  | Just q ->
+      newAstPatQualCons
+        b
+        m
+        (nm b (nameOf (must TokenUpperIdent s)))
+        (nm b (nameOf (must TokenUpperIdent q)))
+        written
+  | None -> newAstPatCons b m (nm b (nameOf (must TokenUpperIdent s))) written
 
 -- A pattern's parts, each written at a span it may be told to take, and the
 -- span it has of its own: joined by `::`, then by `as`.
@@ -881,155 +1018,15 @@ fun patomSpan (s : GTree) : Meta =
   | Just con -> spanOf con
   | None -> spanOf s
 
-fun patom (c : Lc) b (s : GTree) (over : Maybe Meta) =
-  match childOf NodeConPat s with
-  | Just con -> conPat c b con (childrenOf NodeParg con) over
-  | None -> arg c b (must NodeArg s) over
-
--- `A x y`, `A.B x y`, or either with nothing after it.
-fun conPat (c : Lc) b (s : GTree) (args : [GTree]) (over : Maybe Meta) =
-  let m = M.unwrapOr (spanOf s) over in
-  let written = V.map (parg c b) args in
-  match childOf NodeQualTail s with
-  | Just q ->
-      newAstPatQualCons
-        b
-        m
-        (nm b (nameOf (must TokenUpperIdent s)))
-        (nm b (nameOf (must TokenUpperIdent q)))
-        written
-  | None -> newAstPatCons b m (nm b (nameOf (must TokenUpperIdent s))) written
-
-fun parg (c : Lc) b (s : GTree) =
-  match childOf NodeNullCon s with
-  | Just con -> conPat c b con [] None
-  | None -> arg c b (must NodeArg s) None
-
--- A pattern's argument, spanning all it was written with.
-fun arg (c : Lc) b (s : GTree) (over : Maybe Meta) =
-  let m = M.unwrapOr (spanOf s) over in
-  match firstNode s with
-  | Just n ->
-      let k = R.kindOf n in
-      if k == NodePatParen then parenPat c b n True over
-      else if k == NodeRecPat then recPat c b n m
-      else if k == NodeVid then newAstPatVar b m (nm b (vid n))
-      else if k == NodeArrPat then newAstPatArray b m (V.map (pat c b) (childrenOf NodePat n))
-      else if k == NodeBrackPat then brackPat c b n m
-      else if k == NodeMacCall then patCall c b m n
-      else newAstPatWild b m
-  | None -> litOrWild c b s m
-
 fun litOrWild (c : Lc) b (s : GTree) (m : Meta) =
   match V.get (tokenKids s) 0 with
   | Just t ->
       (if R.kindOf t == TokenWildcard then newAstPatWild b m else newAstPatLit b m (lit c b t))
   | None -> newAstPatWild b m
 
--- A parameter: as a pattern's argument, but for parentheses round one
--- pattern, which are not part of it, and a bracket, which starts a whole
--- pattern.
-fun param (c : Lc) b (s : GTree) =
-  let m = spanOf s in
-  match firstNode s with
-  | Just n ->
-      let k = R.kindOf n in
-      if k == NodeNullCon then conPat c b n [] None
-      else if k == NodePatParen then parenPat c b n False None
-      else if k == NodeRecPat then recPat c b n m
-      else if k == NodeVid then newAstPatVar b m (nm b (vid n))
-      else if k == NodeBrackParam or k == NodeArrParam then
-        let first = (if k == NodeBrackParam then must NodeBrackPat n else must NodeArrPat n) in
-        let head =
-          (\o ->
-            if k == NodeBrackParam then brackPat c b first (M.unwrapOr (spanOf first) o)
-            else
-              newAstPatArray
-                b
-                (M.unwrapOr (spanOf first) o)
-                (V.map (pat c b) (childrenOf NodePat first)))
-        in
-        let atoms =
-          V.pushFront
-            (V.map
-               (\t -> (let a = must NodePAtom t in (\o -> patom c b a o, patomSpan a)))
-               (childrenOf NodeConsTail n))
-            (head, spanOf first)
-        in asesAt b atoms (childrenOf NodeAsTail n) (spanOf n) None
-      else newAstPatWild b m
-  | None -> litOrWild c b s m
-
-fun recPat (c : Lc) b (s : GTree) (m : Meta) =
-  let fs =
-    V.map
-      (\f ->
-        let n = nameOf (must TokenLowerIdent f) in
-        newAstPatField
-          b
-          (spanOf f)
-          (nm b n)
-          (match childOf NodePFieldValue f with
-           | Just v -> pat c b (must NodePat v)
-           | None -> newAstPatVar b n.at (nm b n)))
-      (childrenOf NodePField s)
-  in newAstPatRecord b m fs (has NodeOpenTail s)
-
--- `[p; q]`, `[;]`, `[p, q]`, `[]`.
-fun brackPat (c : Lc) b (s : GTree) (m : Meta) =
-  match childOf NodeBrackPatBody s with
-  | None -> newAstPatVector b m []
-  | Just body ->
-      (match childOf NodePat body with
-       | None -> newAstPatList b m []
-       | Just first ->
-           let p = pat c b first in
-           (match childOf NodeListPatTail body with
-            | Just t ->
-                newAstPatList
-                  b
-                  m
-                  (V.pushFront
-                     (V.map (pat c b) (V.concatMap (childrenOf NodePat) (childrenOf NodeSemiPat t)))
-                     p)
-            | None ->
-                (match childOf NodeVecPatTail body with
-                 | Just t ->
-                     newAstPatVector
-                       b
-                       m
-                       (V.pushFront
-                          (V.map
-                             (pat c b)
-                             (V.concatMap (childrenOf NodePat) (childrenOf NodeCommaPat t)))
-                          p)
-                 | None -> newAstPatVector b m [p])))
-
--- Parentheses in a pattern: `()`, `(p : T)`, `(f -> p)`, a tuple -- or one
--- pattern, which as an argument (`spans`) takes the parentheses' span and as
--- a parameter keeps its own.
-fun parenPat (c : Lc) b (s : GTree) (spans : Bool) (over : Maybe Meta) =
-  let m = M.unwrapOr (spanOf s) over in
-  let elems = childrenOf NodeElem s in
-  match childOf NodeParenAnnot s with
-  | Just a -> newAstPatAnn b m (elemPat c b (V.getOr s elems 0) None) (ty c b (must NodeType a))
-  | None ->
-      (match V.len elems with
-       | 0 -> newAstPatUnit b m
-       | 1 -> elemPat c b (V.getOr s elems 0) (if spans then Just m else None)
-       | _ -> newAstPatTuple b m (V.map (\e -> elemPat c b e None) elems))
-
--- An element of a pattern's parentheses: `f -> p`, or a pattern.
-fun elemPat (c : Lc) b (s : GTree) (over : Maybe Meta) =
-  match childOf NodeViewTail s with
-  | Just v ->
-      let f = must NodeExpr s in
-      let p = must NodePat v in
-      newAstPatView
-        b
-        (M.unwrapOr (spanMeta (metaStart (exprSpan c f)) (metaEnd (spanOf p))) over)
-        (expr c b f)
-        (pat c b p)
-  | None -> asesAt b (exprPatParts c b (must NodeExpr s)) (childrenOf NodeAsTail s) (spanOf s) over
+-- An expression, as the rest of this file writes one: the pass's cases name
+-- a field `expr`, which this is not.
+fun exprOf (c : Lc) b (s : GTree) = expr c b s
 
 -- --- a pattern written as an expression --------------------------------------
 --

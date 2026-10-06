@@ -51,6 +51,92 @@ use Std.Char as C
 }
 
 -- --- building ----------------------------------------------------------------
+--
+-- What a front end makes a program with. `out` is the program being
+-- written, from `builder` to `finished`, and `m` where in the source what
+-- is written came from. The tables under these are the language's own, and
+-- nothing outside this module writes them directly.
+
+@pub(pkg) fun builder () = newCutBuilder ()
+
+-- The program `out` holds, whose root is `root`.
+@pub(pkg) fun finished out root = CutProgram (freezeCut out) root
+
+-- A program: the definition that runs, what becomes of its answer -- `none`
+-- or `str` -- and its declarations.
+@pub(pkg) fun file out (m : Meta) (entry : String) (answer : String) decls =
+  newCutFile out m entry answer decls
+
+-- `data symbol <params> { ctors }`, each constructor its name and its
+-- fields' representations.
+@pub(pkg) fun dataDecl out (m : Meta) (symbol : String) (params : [String]) ctors =
+  newCutDeclData out m symbol params ctors
+
+@pub(pkg) fun ctorDecl out (m : Meta) (name : String) (fields : [String]) =
+  newCutDataCtor out m name fields
+
+-- `val symbol : rep = s`: computed once, what `s` gives to `halt`.
+@pub(pkg) fun valDecl out (m : Meta) (symbol : String) (rep : String) body =
+  newCutDeclVal out m symbol rep body
+
+-- `def symbol (params; conts) = s`.
+@pub(pkg) fun defDecl out (m : Meta) (symbol : String) params conts body =
+  newCutDeclDef out m symbol params conts body
+
+@pub(pkg) fun param out (m : Meta) (name : String) (rep : String) = newCutParam out m name rep
+
+-- Producers.
+@pub(pkg) fun var out (m : Meta) (name : String) = newCutProdVar out m name
+
+@pub(pkg) fun sym out (m : Meta) (symbol : String) = newCutProdSym out m symbol
+
+@pub(pkg) fun int out (m : Meta) (n : Int) = newCutProdInt out m n
+
+@pub(pkg) fun float out (m : Meta) (x : Float) = newCutProdFloat out m x
+
+@pub(pkg) fun char out (m : Meta) (code : Int) = newCutProdChar out m code
+
+@pub(pkg) fun str out (m : Meta) (s : String) = newCutProdStr out m s
+
+@pub(pkg) fun bool out (m : Meta) (b : Bool) = newCutProdBool out m b
+
+@pub(pkg) fun unit out (m : Meta) = newCutProdUnit out m
+
+@pub(pkg) fun con out (m : Meta) (symbol : String) args = newCutProdCon out m symbol args
+
+@pub(pkg) fun tuple out (m : Meta) items = newCutProdTuple out m items
+
+@pub(pkg) fun array out (m : Meta) items = newCutProdArray out m items
+
+-- A function: codata with one method, `apply`, of one argument named `x`,
+-- answering to the continuation named `k`.
+@pub(pkg) fun function out (m : Meta) (x : String) (rep : String) (k : String) body =
+  newCutProdCocase
+    out
+    m
+    [newCutMethod out m "apply" [newCutParam out m x rep] [newCutParam out m k "ptr"] body]
+
+-- Consumers.
+@pub(pkg) fun cont out (m : Meta) (name : String) = newCutConsKVar out m name
+
+@pub(pkg) fun halt out (m : Meta) = newCutConsHalt out m
+
+-- `case { arms }`, each made with `arm`: a constructor's symbol, `#tuple`,
+-- or `_`, the fields it binds, and what to do.
+@pub(pkg) fun caseOf out (m : Meta) arms = newCutConsCase out m arms
+
+@pub(pkg) fun arm out (m : Meta) (pattern : String) fields body =
+  newCutCaseArm out m pattern fields body
+
+-- Statements.
+@pub(pkg) fun give out (m : Meta) prod cons = newCutStmtCut out m prod cons
+
+@pub(pkg) fun invoke out (m : Meta) (symbol : String) args conts =
+  newCutStmtInvoke out m symbol args conts
+
+@pub(pkg) fun prim out (m : Meta) (op : String) args conts = newCutStmtPrim out m op args conts
+
+@pub(pkg) fun fail out (m : Meta) (message : String) = newCutStmtError out m message
 
 @pub(pkg) def nowhere : Meta = spanMeta 0 0
 
@@ -122,10 +208,10 @@ fun decl (a : CutArena) (d : CutDecl) : String =
   else
     "def ${cutDeclDefSymbol a d} ${params a (cutDeclDefParams a d) (cutDeclDefConts a d)} =\n  ${stmt a 1 (cutDeclDefBody a d)}\n"
 
-fun param (a : CutArena) (p : CutParam) : String = "${cutParamName a p}: ${cutParamRep a p}"
+fun paramText (a : CutArena) (p : CutParam) : String = "${cutParamName a p}: ${cutParamRep a p}"
 
 fun params (a : CutArena) (ps : [CutParam]) (ks : [CutParam]) : String =
-  "(${S.join ", " (V.map (param a) ps)}; ${S.join ", " (V.map (param a) ks)})"
+  "(${S.join ", " (V.map (paramText a) ps)}; ${S.join ", " (V.map (paramText a) ks)})"
 
 fun line (depth : Int) : String = "\n" ++ S.repeat "  " depth
 
@@ -189,7 +275,7 @@ fun cons (a : CutArena) (depth : Int) (c : CutCons) : String =
               let fields = cutCaseArmFields a arm in
               let taken =
                 if V.isEmpty fields and pattern != "#tuple" then ""
-                else "(${S.join ", " (V.map (param a) fields)})"
+                else "(${S.join ", " (V.map (paramText a) fields)})"
               in "${line (depth + 1)}${pattern}${taken} =>${line (depth + 2)}${stmt a (depth + 2) (cutCaseArmBody a arm)}"))
            (cutConsCaseArms a c))
       ++ line depth

@@ -11,11 +11,11 @@
 -- types are kept for: `repOf`.
 --
 -- A function is codata with one method, `apply`, of one argument, and a
--- top-level binding is a `val`: the closure, or the value. That is the
+-- top-level C.binding is a `val`: the closure, or the value. That is the
 -- least there is to say, and enough to run; a `def` with every parameter at
 -- once, for a function called with all it takes, is for later.
 --
--- What is not lowered yet answers `error "unsupported: …"`: data and `case`,
+-- What is not lowered yet answers `error "C.unsupported: …"`: data and `case`,
 -- records and arrays, a function defined inside another that calls itself,
 -- effects, and anything generic in how a value is represented.
 
@@ -23,8 +23,8 @@ use Lingua (pass!)
 use Lingua.Lang (Meta)
 use MeadowBoot.Core
 use MeadowBoot.Core (Core!)
-use MeadowBoot.Cut
-use MeadowBoot.Cut (Cut!)
+use MeadowBoot.Cut as C
+use MeadowBoot.Cut (Cut!, CutProgram)
 use MeadowBoot.Types
 use MeadowBoot.Types.Type.*
 use Std.Collections.Vector as V
@@ -36,9 +36,10 @@ use Std.Maybe.Maybe.*
 
 -- --- what lowering carries ---------------------------------------------------
 
--- What `lower` carries is a record of two things: `k`, where the value of
--- the term being lowered goes, and `tops`, which binders are top-level
--- definitions -- a mention of one reads a `val`.
+-- What `lower` carries is a record: `k`, where the value of the term being
+-- lowered goes; `tops`, which binders are top-level definitions -- a mention
+-- of one reads a `val`; and `lifted`, the definitions made of local
+-- functions that call themselves.
 
 -- How a value of type `t` is represented.
 fun repOf (t : Type) : String =
@@ -73,42 +74,33 @@ fun primName (op : String) : String =
 
 pass! {
   lower : Core -> Cut with cx from Term
-    | LInt { value } -> newCutProdInt out here value
-    | LBig { value } -> newCutProdInt out here value
-    | LF64 { value } -> newCutProdFloat out here value
-    | LF32 { value } -> newCutProdFloat out here value
-    | LWord { ty, bits } -> newCutProdInt out here bits
-    | LStr { text } -> newCutProdStr out here text
-    | LChar { code } -> newCutProdChar out here code
-    | LBool { value } -> newCutProdBool out here value
-    | LUnit {} -> newCutProdUnit out here
-    | Const { lit } -> newCutStmtCut out here lit cx.k
+    | LInt { value } -> C.int out here value
+    | LBig { value } -> C.int out here value
+    | LF64 { value } -> C.float out here value
+    | LF32 { value } -> C.float out here value
+    | LWord { ty, bits } -> C.int out here bits
+    | LStr { text } -> C.str out here text
+    | LChar { code } -> C.char out here code
+    | LBool { value } -> C.bool out here value
+    | LUnit {} -> C.unit out here
+    | Const { lit } -> C.give out here lit cx.k
     | Var { id } ->
-        (if M.isSome (H.lookup id cx.tops) then
-           newCutStmtCut out here (newCutProdSym out here (topSymbol id)) cx.k
-         else newCutStmtCut out here (newCutProdVar out here "v${show id}") cx.k)
+        (if M.isSome (H.lookup id cx.tops) then C.give out here (C.sym out here (topSymbol id)) cx.k
+         else C.give out here (C.var out here "v${show id}") cx.k)
     | Lam { param, paramTy, raw body } ->
         (let k = "k${show node}" in
-         let inner = lowerTerm src out { cx | k = newCutConsKVar out here k } body in
-         let method =
-           newCutMethod
-             out
-             here
-             "apply"
-             [newCutParam out here "v${show param}" (repOf paramTy)]
-             [newCutParam out here k "ptr"]
-             inner
-         in newCutStmtCut out here (newCutProdCocase out here [method]) cx.k)
+         let inner = lowerTerm src out { cx | k = C.cont out here k } body in
+         C.give out here (C.function out here "v${show param}" (repOf paramTy) k inner) cx.k)
     | App { raw func, raw arg } ->
         (let f = "f${show node}" in
          let a = "a${show node}" in
-         let call = applied out here (newCutProdVar out here f) (newCutProdVar out here a) cx.k in
+         let call = C.applied out here (C.var out here f) (C.var out here a) cx.k in
          let given = named src out cx here a arg call in
          named src out cx here f func given)
     | Let { id, raw value, raw body } ->
         named src out cx here "v${show id}" value (lowerTerm src out cx body)
     | If { raw cond, raw yes, raw no } ->
-        shared out cx.k here "j${show node}" (\k ->
+        C.shared out cx.k here "j${show node}" (\k ->
           (let inner = { cx | k = k } in
            let c = "c${show node}" in
            named
@@ -118,66 +110,88 @@ pass! {
              here
              c
              cond
-             (branch
+             (C.branch
                 out
                 here
                 "u${show node}"
-                (newCutProdVar out here c)
+                (C.var out here c)
                 (lowerTerm src out inner no)
                 (lowerTerm src out inner yes))))
     | Prim { op, raw args } ->
         (let names = V.map (\i -> "p${show node}_${show i}") (V.range 0 (V.len args)) in
-         let done =
-           newCutStmtPrim
-             out
-             here
-             (primName op)
-             (V.map (\n -> newCutProdVar out here n) names)
-             [cx.k]
-         in V.foldr
-              (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
-              done
-              (V.zip names args))
+         let done = C.prim out here (primName op) (V.map (\n -> C.var out here n) names) [cx.k] in
+         V.foldr
+           (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
+           done
+           (V.zip names args))
     | Tuple { raw items } ->
         (let names = V.map (\i -> "t${show node}_${show i}") (V.range 0 (V.len items)) in
          let done =
-           newCutStmtCut
-             out
-             here
-             (newCutProdTuple out here (V.map (\n -> newCutProdVar out here n) names))
-             cx.k
+           C.give out here (C.tuple out here (V.map (\n -> C.var out here n) names)) cx.k
          in V.foldr
               (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
               done
               (V.zip names items))
-    | LetRec { raw binds, raw body } -> unsupported out here "a local function that calls itself"
-    | Array { raw items } -> unsupported out here "an array"
-    | Proj { raw tuple, index } -> unsupported out here "a tuple's item"
-    | Record { raw fields } -> unsupported out here "a record"
-    | Sel { raw target, label } -> unsupported out here "a field"
-    | Extend { raw target, label, raw value } -> unsupported out here "a record extended"
+    | LetRec { raw binds, raw body } -> lifted src out cx here binds body
+    | Array { raw items } ->
+        (let names = V.map (\i -> "y${show node}_${show i}") (V.range 0 (V.len items)) in
+         let done =
+           C.give out here (C.array out here (V.map (\n -> C.var out here n) names)) cx.k
+         in V.foldr
+              (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
+              done
+              (V.zip names items))
+    | Proj { raw tuple, index } ->
+        (match tyCoreTerm src tuple with
+         | Tuple tys ->
+             (let names = V.map (\i -> "q${show node}_${show i}") (V.range 0 (V.len tys)) in
+              let whole = "q${show node}" in
+              named
+                src
+                out
+                cx
+                here
+                whole
+                tuple
+                (C.give
+                   out
+                   here
+                   (C.var out here whole)
+                   (C.caseOf
+                      out
+                      here
+                      [C.arm
+                         out
+                         here
+                         "#tuple"
+                         (V.map (\q -> C.param out here (fst q) (repOf (snd q))) (V.zip names tys))
+                         (C.give out here (C.var out here (V.getOr "" names index)) cx.k)])))
+         | _ -> C.unsupported out here "an item of what is not known to be a tuple")
+    | Record { raw fields } -> C.unsupported out here "a record"
+    | Sel { raw target, label } -> C.unsupported out here "a field"
+    | Extend { raw target, label, raw value } -> C.unsupported out here "a record extended"
     | Ctor { name, raw args } ->
         (let names = V.map (\i -> "x${show node}_${show i}") (V.range 0 (V.len args)) in
          let done =
-           newCutStmtCut
+           C.give
              out
              here
-             (newCutProdCon out here (symbolOf name) (V.map (\n -> newCutProdVar out here n) names))
+             (C.con out here (symbolOf name) (V.map (\n -> C.var out here n) names))
              cx.k
          in V.foldr
               (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
               done
               (V.zip names args))
     | Case { raw scrutinee, raw arms } ->
-        shared out cx.k here "j${show node}" (\k ->
+        C.shared out cx.k here "j${show node}" (\k ->
           (let inner = { cx | k = k } in
            let s = "s${show node}" in
            named src out inner here s scrutinee (armsFrom src out inner here s arms 0)))
-    | Perform { eff, op, raw arg } -> unsupported out here "an effect performed"
-    | Handle { raw body, raw clauses, retId, raw ret } -> unsupported out here "a handler"
-    | Join { id, params, raw rhs, raw body } -> unsupported out here "a join"
-    | Jump { id, raw args } -> unsupported out here "a jump"
-    | Ill {} -> newCutStmtError out here "this did not compile"
+    | Perform { eff, op, raw arg } -> C.unsupported out here "an effect performed"
+    | Handle { raw body, raw clauses, retId, raw ret } -> C.unsupported out here "a handler"
+    | Join { id, params, raw rhs, raw body } -> C.unsupported out here "a join"
+    | Jump { id, raw args } -> C.unsupported out here "a jump"
+    | Ill {} -> C.fail out here "this did not compile"
     | Bind { id, raw value } -> ()
     | Field { label, raw value } -> ()
     | Arm { raw pat, raw guard, raw body } -> ()
@@ -195,7 +209,159 @@ pass! {
 
 -- `term` lowered so that its value is `name` in `rest`.
 fun named src out cx (m : Meta) (name : String) term rest =
-  lowerTerm src out { cx | k = newCutConsMuT out m name (repOf (tyCoreTerm src term)) rest } term
+  lowerTerm src out { cx | k = C.binding out m name (repOf (tyCoreTerm src term)) rest } term
+
+-- --- local recursion ---------------------------------------------------------
+--
+-- Cut has no function that names itself where it is made, so one is a
+-- definition at the top: of what it mentions from around it, answering the
+-- function. Called, the function asks that definition for itself again --
+-- the name its body knows it by -- and goes on.
+
+-- `let rec f = \x -> … in body`.
+fun lifted src out cx (m : Meta) binds body =
+  match V.get binds 0 with
+  | Just b ->
+      (let id = coreBindId src b in
+       let value = coreBindValue src b in
+       if V.len binds != 1 or kindCoreTerm src value != CoreTermKind.Lam then
+         C.unsupported out m "local functions that call each other"
+       else
+         (let around =
+            V.filter (\fv -> not (M.isSome (H.lookup (fst fv) cx.tops))) (free src value [id] [])
+          in
+          let symbol = "${package}l${show id}" in
+          let self = "v${show id}" in
+          let given = \u -> V.map (\fv -> C.var out m "v${show (fst fv)}") around in
+          let k = "k${show value}" in
+          let inside =
+            C.invoke
+              out
+              m
+              symbol
+              (given ())
+              [C.binding
+                 out
+                 m
+                 self
+                 "ptr"
+                 (lowerTerm src out { cx | k = C.cont out m k } (coreTermLamBody src value))]
+          in
+          let made =
+            C.defDecl
+              out
+              m
+              symbol
+              (V.map (\fv -> C.param out m "v${show (fst fv)}" (repOf (snd fv))) around)
+              [C.param out m "k" "ptr"]
+              (C.give
+                 out
+                 m
+                 (C.function
+                    out
+                    m
+                    "v${show (coreTermLamParam src value)}"
+                    (repOf (coreTermLamParamTy src value))
+                    k
+                    inside)
+                 (C.cont out m "k"))
+          in
+          let u = stSetRef cx.lifted (V.pushBack (stGetRef cx.lifted) made) in
+          C.invoke
+            out
+            m
+            symbol
+            (given ())
+            [C.binding out m self "ptr" (lowerTerm src out cx body)]))
+  | None -> lowerTerm src out cx body
+
+-- The variables `t` mentions and does not bind, each with its type, after
+-- `seen`: what a function lifted out of where it was written has to be
+-- given.
+fun free (a : CoreArena) (t : CoreTerm) (bound : [Int]) (seen : [(Int, Type)]) : [(Int, Type)] =
+  let k = kindCoreTerm a t in
+  let each = \ts b acc -> V.foldl (\x u -> free a u b x) acc ts in
+  if k == CoreTermKind.Var then
+    (let id = coreTermVarId a t in
+     if V.elem id bound or V.any (\s -> fst s == id) seen then seen
+     else V.pushBack seen (id, tyCoreTerm a t))
+  else if k == CoreTermKind.Lam then
+    free a (coreTermLamBody a t) (V.pushBack bound (coreTermLamParam a t)) seen
+  else if k == CoreTermKind.App then
+    free a (coreTermAppArg a t) bound (free a (coreTermAppFunc a t) bound seen)
+  else if k == CoreTermKind.Let then
+    free
+      a
+      (coreTermLetBody a t)
+      (V.pushBack bound (coreTermLetId a t))
+      (free a (coreTermLetValue a t) bound seen)
+  else if k == CoreTermKind.LetRec then
+    (let binds = coreTermLetRecBinds a t in
+     let inner = V.append bound (V.map (\b -> coreBindId a b) binds) in
+     free
+       a
+       (coreTermLetRecBody a t)
+       inner
+       (each (V.map (\b -> coreBindValue a b) binds) inner seen))
+  else if k == CoreTermKind.If then
+    each [coreTermIfCond a t, coreTermIfYes a t, coreTermIfNo a t] bound seen
+  else if k == CoreTermKind.Tuple then each (coreTermTupleItems a t) bound seen
+  else if k == CoreTermKind.Array then each (coreTermArrayItems a t) bound seen
+  else if k == CoreTermKind.Proj then free a (coreTermProjTuple a t) bound seen
+  else if k == CoreTermKind.Record then
+    each (V.map (\f -> coreFieldValue a f) (coreTermRecordFields a t)) bound seen
+  else if k == CoreTermKind.Sel then free a (coreTermSelTarget a t) bound seen
+  else if k == CoreTermKind.Extend then
+    each [coreTermExtendTarget a t, coreTermExtendValue a t] bound seen
+  else if k == CoreTermKind.Ctor then each (coreTermCtorArgs a t) bound seen
+  else if k == CoreTermKind.Prim then each (coreTermPrimArgs a t) bound seen
+  else if k == CoreTermKind.Perform then free a (coreTermPerformArg a t) bound seen
+  else if k == CoreTermKind.Case then
+    V.foldl
+      (\acc arm ->
+        (let inner = V.append bound (bindersOf a (coreArmPat a arm)) in
+         let guarded =
+           (match coreArmGuard a arm with
+            | Just g -> free a g inner acc
+            | None -> acc)
+         in free a (coreArmBody a arm) inner guarded))
+      (free a (coreTermCaseScrutinee a t) bound seen)
+      (coreTermCaseArms a t)
+  else if k == CoreTermKind.Handle then
+    (let body = free a (coreTermHandleBody a t) bound seen in
+     let clauses =
+       V.foldl
+         (\acc c ->
+           free
+             a
+             (coreClauseBody a c)
+             (V.append bound [coreClauseParam a c, coreClauseResume a c])
+             acc)
+         body
+         (coreTermHandleClauses a t)
+     in match (coreTermHandleRetId a t, coreTermHandleRet a t) with
+        | (Just r, Just ret) -> free a ret (V.pushBack bound r) clauses
+        | _ -> clauses)
+  else if k == CoreTermKind.Join then
+    free
+      a
+      (coreTermJoinBody a t)
+      bound
+      (free a (coreTermJoinRhs a t) (V.append bound (coreTermJoinParams a t)) seen)
+  else if k == CoreTermKind.Jump then each (coreTermJumpArgs a t) bound seen
+  else seen
+
+-- The variables a pattern binds.
+fun bindersOf (a : CoreArena) (p : CorePat) : [Int] =
+  let k = kindCorePat a p in
+  if k == CorePatKind.PVar then [corePatPVarId a p]
+  else if k == CorePatKind.PAs then V.pushBack (bindersOf a (corePatPAsPat a p)) (corePatPAsId a p)
+  else if k == CorePatKind.PTuple then V.concatMap (bindersOf a) (corePatPTupleItems a p)
+  else if k == CorePatKind.PArray then V.concatMap (bindersOf a) (corePatPArrayItems a p)
+  else if k == CorePatKind.PCtor then V.concatMap (bindersOf a) (corePatPCtorArgs a p)
+  else if k == CorePatKind.PRecord then
+    V.concatMap (\f -> bindersOf a (corePFieldPat a f)) (corePatPRecordFields a p)
+  else []
 
 -- --- matching ----------------------------------------------------------------
 --
@@ -208,9 +374,9 @@ fun named src out cx (m : Meta) (name : String) term rest =
 -- Arms `i` and after, of a match on the value named `s`.
 fun armsFrom src out cx (m : Meta) (s : String) arms (i : Int) =
   match V.get arms i with
-  | None -> newCutStmtError out m "non-exhaustive pattern match"
+  | None -> C.fail out m "non-exhaustive pattern match"
   | Just arm ->
-      orElse
+      C.orElse
         out
         m
         "n${show arm}"
@@ -227,12 +393,12 @@ fun armsFrom src out cx (m : Meta) (s : String) arms (i : Int) =
                     m
                     name
                     g
-                    (branch
+                    (C.branch
                        out
                        m
                        "u${show arm}"
-                       (newCutProdVar out m name)
-                       (gaveUp out m fail)
+                       (C.var out m name)
+                       (C.gaveUp out m fail)
                        (lowerTerm src out cx (coreArmBody src arm)))))))
         (armsFrom src out cx m s arms (i + 1))
 
@@ -241,20 +407,20 @@ fun armsFrom src out cx (m : Meta) (s : String) arms (i : Int) =
 -- not.
 fun matched src out cx (m : Meta) (x : String) p (fail : String) success =
   let kind = kindCorePat src p in
-  let var = newCutProdVar out m x in
+  let var = C.var out m x in
   if kind == CorePatKind.PWild then success ()
   else if kind == CorePatKind.PVar then
-    newCutStmtCut
+    C.give
       out
       m
       var
-      (binding out m "v${show (corePatPVarId src p)}" (repOf (tyCorePat src p)) (success ()))
+      (C.binding out m "v${show (corePatPVarId src p)}" (repOf (tyCorePat src p)) (success ()))
   else if kind == CorePatKind.PAs then
-    newCutStmtCut
+    C.give
       out
       m
       var
-      (binding
+      (C.binding
          out
          m
          "v${show (corePatPAsId src p)}"
@@ -266,48 +432,48 @@ fun matched src out cx (m : Meta) (x : String) p (fail : String) success =
      if lk == CoreLitKind.LUnit then success ()
      else if lk == CoreLitKind.LBool then
        (if coreLitLBoolValue src l then
-          branch out m "u${show p}" var (gaveUp out m fail) (success ())
-        else branch out m "u${show p}" var (success ()) (gaveUp out m fail))
+          C.branch out m "u${show p}" var (C.gaveUp out m fail) (success ())
+        else C.branch out m "u${show p}" var (success ()) (C.gaveUp out m fail))
      else
-       newCutStmtPrim out m "eq" [var, lowerLit src out cx l] [
-         binding out m "u${show p}" "unit" (gaveUp out m fail),
-         binding out m "u${show p}" "unit" (success ())
+       C.prim out m "eq" [var, lowerLit src out cx l] [
+         C.binding out m "u${show p}" "unit" (C.gaveUp out m fail),
+         C.binding out m "u${show p}" "unit" (success ())
        ])
   else if kind == CorePatKind.PTuple then
     (let items = corePatPTupleItems src p in
      let names = V.map (\i -> "m${show p}_${show i}") (V.range 0 (V.len items)) in
      let pairs = V.zip names items in
-     newCutStmtCut
+     C.give
        out
        m
        var
-       (newCutConsCase
+       (C.caseOf
           out
           m
-          [newCutCaseArm
+          [C.arm
              out
              m
              "#tuple"
-             (V.map (\q -> newCutParam out m (fst q) (repOf (tyCorePat src (snd q)))) pairs)
+             (V.map (\q -> C.param out m (fst q) (repOf (tyCorePat src (snd q)))) pairs)
              (matchedAll src out cx m pairs fail success)]))
   else if kind == CorePatKind.PCtor then
     (let args = corePatPCtorArgs src p in
      let names = V.map (\i -> "m${show p}_${show i}") (V.range 0 (V.len args)) in
      let pairs = V.zip names args in
-     newCutStmtCut
+     C.give
        out
        m
        var
-       (newCutConsCase out m [
-          newCutCaseArm
+       (C.caseOf out m [
+          C.arm
             out
             m
             (symbolOf (corePatPCtorName src p))
-            (V.map (\q -> newCutParam out m (fst q) (repOf (tyCorePat src (snd q)))) pairs)
+            (V.map (\q -> C.param out m (fst q) (repOf (tyCorePat src (snd q)))) pairs)
             (matchedAll src out cx m pairs fail success),
-          newCutCaseArm out m "_" [] (gaveUp out m fail)
+          C.arm out m "_" [] (C.gaveUp out m fail)
         ]))
-  else unsupported out m "a pattern of this kind"
+  else C.unsupported out m "a pattern of this kind"
 
 -- Each named value matched against its pattern, in turn.
 fun matchedAll src out cx (m : Meta) pairs (fail : String) success =
@@ -344,7 +510,16 @@ fun bare (canon : String) : String =
   let defs = coreFileDefs a file in
   let tops = V.foldl (\h d -> H.insert (coreDefId a d) True h) H.empty defs in
   let isFun = \d -> kindCoreTerm a (coreDefBody a d) == CoreTermKind.Lam in
-  let ordered = V.append (V.filter isFun defs) (V.filter (\d -> not (isFun d)) defs) in
+  -- A value is computed after the values it reads, whatever order they
+  -- were written in.
+  let values = V.filter (\d -> not (isFun d)) defs in
+  let reads =
+    \d ->
+      V.filter
+        (\id -> V.any (\v -> coreDefId a v == id) values)
+        (V.map fst (free a (coreDefBody a d) [] []))
+  in
+  let ordered = V.append (V.filter isFun defs) (inOrder a values reads values []) in
   let datas =
     V.map
       (\d ->
@@ -355,32 +530,33 @@ fun bare (canon : String) : String =
         ))
       (coreFileDatas a file)
   in runSt (\() ->
-       let out = newCutBuilder () in
-       let halt = newCutConsHalt out nowhere in
+       let out = C.builder () in
+       let halt = C.halt out C.nowhere in
+       let lifted = stNewRef [] in
        let declared =
          V.map
            (\d ->
              match d with
              | (name, arity, ctors) ->
-                 newCutDeclData
+                 C.dataDecl
                    out
-                   nowhere
+                   C.nowhere
                    (symbolOf name)
                    (V.map (\i -> "'a${show i}") (V.range 0 arity))
                    (V.map
-                      (\c -> newCutDataCtor out nowhere (bare (fst c)) (V.map fieldRep (snd c)))
+                      (\c -> C.ctorDecl out C.nowhere (bare (fst c)) (V.map fieldRep (snd c)))
                       ctors))
            datas
        in
        let vals =
          V.map
            (\d ->
-             newCutDeclVal
+             C.valDecl
                out
-               nowhere
+               C.nowhere
                (topSymbol (coreDefId a d))
                (repOf (tyCoreTerm a (coreDefBody a d)))
-               (lowerTerm a out { k = halt, tops = tops } (coreDefBody a d)))
+               (lowerTerm a out { k = halt, tops = tops, lifted = lifted } (coreDefBody a d)))
            ordered
        in
        let entry = coreFileEntry a file in
@@ -395,27 +571,45 @@ fun bare (canon : String) : String =
          { out = out, datas = datas, wanted = stNewRef [], seen = stNewRef [], next = stNewRef 0 }
        in
        let shown =
-         newCutDeclDef
+         C.defDecl
            out
-           nowhere
+           C.nowhere
            "${package}\"#entry\""
            []
-           [newCutParam out nowhere "k" "ptr"]
-           (shownTo
-              sh
-              (newCutProdSym out nowhere (topSymbol entry))
-              answerTy
-              (newCutConsKVar out nowhere "k"))
+           [C.param out C.nowhere "k" "ptr"]
+           (shownTo sh (C.sym out C.nowhere (topSymbol entry)) answerTy (C.cont out C.nowhere "k"))
        in
        let showers = showersOf sh [] in
        let root =
-         newCutFile
+         C.file
            out
-           nowhere
+           C.nowhere
            "${package}\"#entry\""
            "str"
-           (V.concat [declared, vals, [shown], showers])
-       in CutProgram (freezeCut out) root)
+           (V.concat [declared, stGetRef lifted, vals, [shown], showers])
+       in C.finished out root)
+
+-- `todo` after what each reads, each once: `done` is what is placed already.
+fun inOrder (a : CoreArena) (all : [CoreDef]) reads (todo : [CoreDef]) (done : [CoreDef])
+    : [CoreDef] =
+  V.foldl
+    (\placed d ->
+      if V.any (\p -> coreDefId a p == coreDefId a d) placed then placed
+      else
+        (let first =
+           V.filter
+             (\v ->
+               coreDefId a v != coreDefId a d
+                 and V.elem (coreDefId a v) (reads d)
+                 and not (V.any (\p -> coreDefId a p == coreDefId a v) placed))
+             all
+         in
+         -- What it reads first; itself held as placed meanwhile, so that two
+         -- that read each other end.
+         let before = inOrder a all reads first (V.pushBack placed d) in
+         V.pushBack (V.filter (\p -> coreDefId a p != coreDefId a d) before) d))
+    done
+    todo
 
 -- How a field of a declared type is represented: one of the type's own
 -- parameters as that parameter.
@@ -459,42 +653,43 @@ fun given (args : [Type]) (t : Type) : Type =
 -- The statement that gives `k` the text of `value`, a value of type `t`.
 fun shownTo sh value (t : Type) k =
   let out = sh.out in
-  let text = \s -> newCutProdStr out nowhere s in
+  let text = \s -> C.str out C.nowhere s in
   match t with
-  | Con "Int" [] -> newCutStmtInvoke out nowhere "${package}\"#showInt\"" [value] [k]
+  | Con "Int" [] -> C.invoke out C.nowhere "${package}\"#showInt\"" [value] [k]
   | Con "Bool" [] ->
-      shared out k nowhere (freshName sh) (\j ->
-        branch
+      C.shared out k C.nowhere (freshName sh) (\j ->
+        C.branch
           out
-          nowhere
+          C.nowhere
           (freshName sh)
           value
-          (newCutStmtCut out nowhere (text "False") j)
-          (newCutStmtCut out nowhere (text "True") j))
+          (C.give out C.nowhere (text "False") j)
+          (C.give out C.nowhere (text "True") j))
   | Con "String" [] -> joinedTo out [text "\"", value, text "\""] k
-  | Con "Unit" [] -> newCutStmtCut out nowhere (text "()") k
+  | Con "Unit" [] -> C.give out C.nowhere (text "()") k
   | Tuple items ->
       (let names = V.map (\i -> freshName sh) items in
-       newCutStmtCut
+       C.give
          out
-         nowhere
+         C.nowhere
          value
-         (newCutConsCase
+         (C.caseOf
             out
-            nowhere
-            [newCutCaseArm
+            C.nowhere
+            [C.arm
                out
-               nowhere
+               C.nowhere
                "#tuple"
-               (V.map (\q -> newCutParam out nowhere (fst q) (repOf (snd q))) (V.zip names items))
+               (V.map (\q -> C.param out C.nowhere (fst q) (repOf (snd q))) (V.zip names items))
                (shownAll
                   sh
-                  (V.map (\q -> (newCutProdVar out nowhere (fst q), snd q)) (V.zip names items))
+                  (V.map (\q -> (C.var out C.nowhere (fst q), snd q)) (V.zip names items))
                   []
                   "("
                   ", "
                   ")"
                   k)]))
+  | Con "Array" _ -> wanting sh value t k
   | Con name args ->
       (match dataNamed sh.datas name with
        | Just _ ->
@@ -504,19 +699,29 @@ fun shownTo sh value (t : Type) k =
               else
                 (let v = stSetRef sh.seen (V.pushBack (stGetRef sh.seen) key) in
                  stSetRef sh.wanted (V.pushBack (stGetRef sh.wanted) (key, t)))
-            in newCutStmtInvoke out nowhere (showSymbol key) [value] [k])
-       | None -> unsupported out nowhere "showing a value of this type")
-  | _ -> unsupported out nowhere "showing a value of this type"
+            in C.invoke out C.nowhere (showSymbol key) [value] [k])
+       | None -> C.unsupported out C.nowhere "showing a value of this type")
+  | _ -> C.unsupported out C.nowhere "showing a value of this type"
+
+-- A call of the definition that shows a `t`, which is written if it has not
+-- been asked for before.
+fun wanting sh value (t : Type) k =
+  let key = keyOf t in
+  let u =
+    if V.elem key (stGetRef sh.seen) then ()
+    else
+      (let v = stSetRef sh.seen (V.pushBack (stGetRef sh.seen) key) in
+       stSetRef sh.wanted (V.pushBack (stGetRef sh.wanted) (key, t)))
+  in C.invoke sh.out C.nowhere (showSymbol key) [value] [k]
 
 -- `parts` joined into one string, to `k`.
-fun joinedTo out parts k =
-  newCutStmtPrim out nowhere "concatStrings" [newCutProdArray out nowhere parts] [k]
+fun joinedTo out parts k = C.prim out C.nowhere "concatStrings" [C.array out C.nowhere parts] [k]
 
 -- Each of `parts` -- a value and its type -- made text, and the texts
 -- between `opening` and `closing` with `sep` between them, to `k`.
 fun shownAll sh parts texts (opening : String) (sep : String) (closing : String) k =
   let out = sh.out in
-  let text = \s -> newCutProdStr out nowhere s in
+  let text = \s -> C.str out C.nowhere s in
   match V.get parts 0 with
   | None ->
       (let between =
@@ -531,15 +736,15 @@ fun shownAll sh parts texts (opening : String) (sep : String) (closing : String)
          sh
          value
          t
-         (binding
+         (C.binding
             out
-            nowhere
+            C.nowhere
             s
             "str"
             (shownAll
                sh
                (V.drop parts 1)
-               (V.pushBack texts (newCutProdVar out nowhere s))
+               (V.pushBack texts (C.var out C.nowhere s))
                opening
                sep
                closing
@@ -558,12 +763,103 @@ fun showersOf sh made =
 -- holds.
 fun shower sh (key : String) (t : Type) =
   let out = sh.out in
-  let text = \s -> newCutProdStr out nowhere s in
-  let k = newCutConsKVar out nowhere "k" in
-  let x = newCutProdVar out nowhere "x" in
-  let taking = [newCutParam out nowhere "x" "ptr"] in
-  let to = [newCutParam out nowhere "k" "ptr"] in
+  let text = \s -> C.str out C.nowhere s in
+  let k = C.cont out C.nowhere "k" in
+  let x = C.var out C.nowhere "x" in
+  let taking = [C.param out C.nowhere "x" "ptr"] in
+  let to = [C.param out C.nowhere "k" "ptr"] in
   match t with
+  | Con "Array" inner ->
+      (let item = V.getOr Error inner 0 in
+       let items = "${package}\"#items:${key}\"" in
+       let v = \n -> C.var out C.nowhere n in
+       let (n, e, shownE, j, rest) =
+         (freshName sh, freshName sh, freshName sh, freshName sh, freshName sh)
+       in
+       let more =
+         C.prim
+           out
+           C.nowhere
+           "arrayGet"
+           [x, v "i"]
+           [C.binding
+              out
+              C.nowhere
+              e
+              (repOf item)
+              (shownTo
+                 sh
+                 (v e)
+                 item
+                 (C.binding
+                    out
+                    C.nowhere
+                    shownE
+                    "str"
+                    (C.prim
+                       out
+                       C.nowhere
+                       "add"
+                       [v "i", C.int out C.nowhere 1]
+                       [C.binding
+                          out
+                          C.nowhere
+                          j
+                          "i64"
+                          (C.invoke
+                             out
+                             C.nowhere
+                             items
+                             [x, v j, text ", "]
+                             [C.binding
+                                out
+                                C.nowhere
+                                rest
+                                "str"
+                                (joinedTo out [v "sep", v shownE, v rest] k)])])))]
+       in
+       let each =
+         C.prim
+           out
+           C.nowhere
+           "arrayLen"
+           [x]
+           [C.binding
+              out
+              C.nowhere
+              n
+              "i64"
+              (C.prim out C.nowhere "lt" [v "i", v n] [
+                 C.binding out C.nowhere (freshName sh) "unit" (C.give out C.nowhere (text "") k),
+                 C.binding out C.nowhere (freshName sh) "unit" more
+               ])]
+       in
+       let whole = freshName sh in
+       [
+         C.defDecl
+           out
+           C.nowhere
+           items
+           [
+             C.param out C.nowhere "x" "ptr",
+             C.param out C.nowhere "i" "i64",
+             C.param out C.nowhere "sep" "str"
+           ]
+           to
+           each,
+         C.defDecl
+           out
+           C.nowhere
+           (showSymbol key)
+           taking
+           to
+           (C.invoke
+              out
+              C.nowhere
+              items
+              [x, C.int out C.nowhere 0, text ""]
+              [C.binding out C.nowhere whole "str" (joinedTo out [text "#[", v whole, text "]"] k)])
+       ])
   | Con "List" inner ->
       (let item = V.getOr Error inner 0 in
        let items = "${package}\"#items:${key}\"" in
@@ -572,110 +868,104 @@ fun shower sh (key : String) (t : Type) =
        let shownH = freshName sh in
        let shownRest = freshName sh in
        let each =
-         newCutStmtCut
+         C.give
            out
-           nowhere
+           C.nowhere
            x
-           (newCutConsCase out nowhere [
-              newCutCaseArm
+           (C.caseOf out C.nowhere [
+              C.arm out C.nowhere (symbolOf "List.Nil") [] (C.give out C.nowhere (text "") k),
+              C.arm
                 out
-                nowhere
-                (symbolOf "List.Nil")
-                []
-                (newCutStmtCut out nowhere (text "") k),
-              newCutCaseArm
-                out
-                nowhere
+                C.nowhere
                 (symbolOf "List.Cons")
-                [newCutParam out nowhere h (repOf item), newCutParam out nowhere rest "ptr"]
+                [C.param out C.nowhere h (repOf item), C.param out C.nowhere rest "ptr"]
                 (shownTo
                    sh
-                   (newCutProdVar out nowhere h)
+                   (C.var out C.nowhere h)
                    item
-                   (binding
+                   (C.binding
                       out
-                      nowhere
+                      C.nowhere
                       shownH
                       "str"
-                      (newCutStmtInvoke
+                      (C.invoke
                          out
-                         nowhere
+                         C.nowhere
                          items
-                         [newCutProdVar out nowhere rest, text "; "]
-                         [binding
+                         [C.var out C.nowhere rest, text "; "]
+                         [C.binding
                             out
-                            nowhere
+                            C.nowhere
                             shownRest
                             "str"
                             (joinedTo
                                out
                                [
-                                 newCutProdVar out nowhere "sep",
-                                 newCutProdVar out nowhere shownH,
-                                 newCutProdVar out nowhere shownRest
+                                 C.var out C.nowhere "sep",
+                                 C.var out C.nowhere shownH,
+                                 C.var out C.nowhere shownRest
                                ]
                                k)])))
             ])
        in
        let whole = freshName sh in
        [
-         newCutDeclDef
+         C.defDecl
            out
-           nowhere
+           C.nowhere
            items
-           [newCutParam out nowhere "x" "ptr", newCutParam out nowhere "sep" "str"]
+           [C.param out C.nowhere "x" "ptr", C.param out C.nowhere "sep" "str"]
            to
            each,
-         newCutDeclDef
+         C.defDecl
            out
-           nowhere
+           C.nowhere
            (showSymbol key)
            taking
            to
-           (newCutStmtInvoke
+           (C.invoke
               out
-              nowhere
+              C.nowhere
               items
               [x, text ""]
-              [binding
+              [C.binding
                  out
-                 nowhere
+                 C.nowhere
                  whole
                  "str"
-                 (joinedTo out [text "[", newCutProdVar out nowhere whole, text "]"] k)])
+                 (joinedTo out [text "[", C.var out C.nowhere whole, text "]"] k)])
        ])
   | Con name args ->
       (match dataNamed sh.datas name with
        | Just (_, _, ctors) ->
-           [newCutDeclDef
+           [C.defDecl
               out
-              nowhere
+              C.nowhere
               (showSymbol key)
               taking
               to
-              (newCutStmtCut
+              (C.give
                  out
-                 nowhere
+                 C.nowhere
                  x
-                 (newCutConsCase
+                 (C.caseOf
                     out
-                    nowhere
+                    C.nowhere
                     (V.map
                        (\c ->
                          (let fields = V.map (given args) (snd c) in
                           let names = V.map (\f -> freshName sh) fields in
                           let pairs = V.zip names fields in
-                          newCutCaseArm
+                          C.arm
                             out
-                            nowhere
+                            C.nowhere
                             (symbolOf (fst c))
-                            (V.map (\q -> newCutParam out nowhere (fst q) (repOf (snd q))) pairs)
-                            (if V.isEmpty fields then
-                               newCutStmtCut out nowhere (text (bare (fst c))) k
+                            (V.map (\q -> C.param out C.nowhere (fst q) (repOf (snd q))) pairs)
+                            (if V.isEmpty fields then C.give out C.nowhere (text (bare (fst c))) k
                              else
                                shownAll
                                  sh
-                                 (V.map (\q -> (newCutProdVar out nowhere (fst q), snd q)) pairs)
+                                 (V.map (\q -> (C.var out C.nowhere (fst q), snd q)) pairs)
                                  []
                                  "${bare (fst c)}("
                                  ", "
@@ -687,4 +977,4 @@ fun shower sh (key : String) (t : Type) =
 
 -- `p` as the text of a program of Cut: `program`'s, and the definitions its
 -- entry shows a number with.
-@pub fun written (p : CoreProgram) : String = text (program p) ++ showInt package
+@pub fun written (p : CoreProgram) : String = C.text (program p) ++ C.showInt package

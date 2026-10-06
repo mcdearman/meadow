@@ -18,9 +18,8 @@
 -- An effect performed is `perform`, and a handler `handle`: its resumption
 -- is a function, as Cut has it, so a clause calls it as it would any other.
 --
--- What is not lowered yet answers `error "unsupported: …"`: records, local
--- functions that call each other, joins, and anything generic in how a
--- value is represented.
+-- What is not lowered yet answers `error "unsupported: …"`: records, joins,
+-- and anything generic in how a value is represented.
 
 use Lingua (pass!)
 use Lingua.Lang (Meta)
@@ -68,9 +67,14 @@ def package : String = "meadow:boot/"
 
 fun topSymbol (id : Int) : String = "${package}d${show id}"
 
--- A primitive's name in Cut: `meadow_rt::Prim`'s, its first letter small.
+-- A primitive's name in Cut: `meadow_rt::Prim`'s, its first letter small. A
+-- conversion to a sized integer is named for the type, as it is in source:
+-- `ToWord(U8)` is `toUInt8`.
 fun primName (op : String) : String =
   if stringByteLength op == 0 then op
+  else if S.startsWith "ToWord(" op then
+    (let width = stringSlice op 7 (stringByteLength op - 1) in
+     if S.startsWith "U" width then "toUInt${S.drop width 1}" else "toInt${S.drop width 1}")
   else S.toLower (stringSlice op 0 1) ++ stringSlice op 1 (stringByteLength op)
 
 -- --- the lowering ------------------------------------------------------------
@@ -262,40 +266,39 @@ fun named src out cx (m : Meta) (name : String) term rest =
 -- function. Called, the function asks that definition for itself again --
 -- the name its body knows it by -- and goes on.
 
--- `let rec f = \x -> … in body`.
+-- `let rec f = \x -> … and g = \y -> … in body`: a definition to each, of
+-- what any of them mentions from around them, and every one of them asked
+-- for again where any is in scope -- in each one's body, and in `body`.
 fun lifted src out cx (m : Meta) binds body =
-  match V.get binds 0 with
-  | Just b ->
-      (let id = coreBindId src b in
-       let value = coreBindValue src b in
-       if V.len binds != 1 or kindCoreTerm src value != CoreTermKind.Lam then
-         C.unsupported out m "local functions that call each other"
-       else
-         (let around =
-            V.filter (\fv -> not (M.isSome (H.lookup (fst fv) cx.tops))) (free src value [id] [])
-          in
-          let symbol = "${package}l${show id}" in
-          let self = "v${show id}" in
-          let given = \u -> V.map (\fv -> C.var out m "v${show (fst fv)}") around in
-          let k = "k${show value}" in
-          let inside =
-            C.invoke
-              out
-              m
-              symbol
-              (given ())
-              [C.binding
-                 out
-                 m
-                 self
-                 "ptr"
-                 (lowerTerm src out { cx | k = C.cont out m k } (coreTermLamBody src value))]
-          in
-          let made =
+  if V.isEmpty binds then lowerTerm src out cx body
+  else if V.any (\b -> kindCoreTerm src (coreBindValue src b) != CoreTermKind.Lam) binds then
+    C.unsupported out m "a local value that names itself"
+  else
+    (let ids = V.map (\b -> coreBindId src b) binds in
+     let around =
+       V.filter
+         (\fv -> not (M.isSome (H.lookup (fst fv) cx.tops)))
+         (V.foldl (\seen b -> free src (coreBindValue src b) ids seen) [] binds)
+     in
+     let symbol = \id -> "${package}l${show id}" in
+     let given = \u -> V.map (\fv -> C.var out m "v${show (fst fv)}") around in
+     let each =
+       \rest ->
+         V.foldr
+           (\id acc ->
+             C.invoke out m (symbol id) (given ()) [C.binding out m "v${show id}" "ptr" acc])
+           rest
+           ids
+     in
+     let made =
+       V.map
+         (\b ->
+           (let value = coreBindValue src b in
+            let k = "k${show value}" in
             C.defDecl
               out
               m
-              symbol
+              (symbol (coreBindId src b))
               (V.map (\fv -> C.param out m "v${show (fst fv)}" (repOf (snd fv))) around)
               [C.param out m "k" "ptr"]
               (C.give
@@ -307,17 +310,13 @@ fun lifted src out cx (m : Meta) binds body =
                     "v${show (coreTermLamParam src value)}"
                     (repOf (coreTermLamParamTy src value))
                     k
-                    inside)
-                 (C.cont out m "k"))
-          in
-          let u = stSetRef cx.lifted (V.pushBack (stGetRef cx.lifted) made) in
-          C.invoke
-            out
-            m
-            symbol
-            (given ())
-            [C.binding out m self "ptr" (lowerTerm src out cx body)]))
-  | None -> lowerTerm src out cx body
+                    (each
+                       (lowerTerm src out { cx | k = C.cont out m k } (coreTermLamBody src value))))
+                 (C.cont out m "k"))))
+         binds
+     in
+     let u = stSetRef cx.lifted (V.append (stGetRef cx.lifted) made) in
+     each (lowerTerm src out cx body))
 
 -- The variables `t` mentions and does not bind, each with its type, after
 -- `seen`: what a function lifted out of where it was written has to be
@@ -517,6 +516,41 @@ fun matched src out cx (m : Meta) (x : String) p (fail : String) success =
             (matchedAll src out cx m pairs fail success),
           C.arm out m "_" [] (C.gaveUp out m fail)
         ]))
+  else if kind == CorePatKind.PArray then
+    (let items = corePatPArrayItems src p in
+     let names = V.map (\i -> "m${show p}_${show i}") (V.range 0 (V.len items)) in
+     let pairs = V.zip names items in
+     let len = "l${show p}" in
+     let taken =
+       V.foldr
+         (\i acc ->
+           C.prim
+             out
+             m
+             "arrayGet"
+             [C.var out m x, C.int out m i]
+             [C.binding
+                out
+                m
+                (V.getOr "" names i)
+                (repOf (M.unwrapOr Error (M.map (\q -> tyCorePat src q) (V.get items i))))
+                acc])
+         (matchedAll src out cx m pairs fail success)
+         (V.range 0 (V.len items))
+     in C.prim
+          out
+          m
+          "arrayLen"
+          [var]
+          [C.binding
+             out
+             m
+             len
+             "i64"
+             (C.prim out m "eq" [C.var out m len, C.int out m (V.len items)] [
+                C.binding out m "u${show p}" "unit" (C.gaveUp out m fail),
+                C.binding out m "u${show p}" "unit" taken
+              ])])
   else C.unsupported out m "a pattern of this kind"
 
 -- Each named value matched against its pattern, in turn.

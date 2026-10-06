@@ -475,7 +475,8 @@ prints the string with `Console.writeOutput`. What a value looks like as text
 is the language's to decide, and is the same on every runtime because it is
 ordinary code.
 
-The sized integers do the same at their width. The full list of primitives,
+The sized integers do the same at their width. A conversion to one is named
+for its type, as it is in source: `toUInt8`, `toInt32`. The full list of primitives,
 with what each takes and answers, is `meadow_rt::Prim`. The spec will quote it
 as a table before v0 is frozen.
 

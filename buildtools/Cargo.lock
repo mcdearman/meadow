@@ -956,6 +956,7 @@ dependencies = [
  "meadow-bytecode",
  "meadow-codegen",
  "meadow-compiler",
+ "meadow-cut",
  "meadow-eval",
  "meadow-find",
  "meadow-fmt",
@@ -1045,6 +1046,10 @@ dependencies = [
  "num-traits",
  "serde",
 ]
+
+[[package]]
+name = "meadow-cut"
+version = "0.3.0"
 
 [[package]]
 name = "meadow-diagnostics"

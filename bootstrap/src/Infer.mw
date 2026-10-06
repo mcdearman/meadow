@@ -2611,7 +2611,8 @@ fun newInf (r : Renamed) : Inf s ! { St s | e } =
   }
 
 -- Every declared binder's canonical name -- an operation's is `op:` and its
--- effect's name -- the unit's and its dependencies'.
+-- effect's name -- the unit's and its dependencies', and those of the
+-- constructors a unit built with no library has a binder of its own for.
 fun canonTable (r : Renamed) : HashMap Int String =
   let own = V.concatMap (\(d : Declared) -> d.items) r.modules in
   V.foldl
@@ -2619,7 +2620,17 @@ fun canonTable (r : Renamed) : HashMap Int String =
       if S.startsWith "op:" it.owner then H.insert it.id it.owner h
       else if S.isEmpty it.canon then h
       else H.insert it.id it.canon h)
-    H.empty
+    (V.foldl
+       (\h k ->
+         match V.get r.binders k with
+         | Just (b : Binder) ->
+             if b.kind != "c" or b.site != "-" then h
+             else if b.name == "Nil" or b.name == "Cons" then H.insert k "List.${b.name}" h
+             else if b.name == "True" or b.name == "False" then H.insert k "Bool.${b.name}" h
+             else h
+         | None -> h)
+       H.empty
+       (V.range 0 (V.len r.binders)))
     (V.append own r.depItems)
 
 -- The root module's `main`: the definition that is run rather than defined.

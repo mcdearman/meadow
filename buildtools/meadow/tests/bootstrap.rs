@@ -86,8 +86,9 @@ fn meadowboot(args: &[String]) -> String {
     c.args(args);
     // Where the standard library's sources are, for the passes that build a
     // file's unit and the units it depends on.
-    // `run` is of programs written with no library, as the glade cases are.
-    if args.first().map(String::as_str) != Some("run") {
+    // `run` and `cut` are of programs written with no library, as the glade
+    // cases are.
+    if !matches!(args.first().map(String::as_str), Some("run" | "cut")) {
         c.env("MEADOWBOOT_STD", repo().join("lib").join("Std"));
     }
     // And what the Rust compiler's macros expanded to, where the rename test
@@ -2216,6 +2217,67 @@ fn glade_cases_compiled_by_meadowboot_evaluate_as_the_rust_compiler_has_them() {
     assert!(
         agreeing >= RUN_CASES_AGREEING,
         "{agreeing} of {} cases agree, and {RUN_CASES_AGREEING} did:\n\n{}",
+        files.len(),
+        bad.iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
+}
+
+/// How many glade cases MeadowBoot has to lower to Cut so that the reference
+/// interpreter answers as the Rust compiler does. The rest wait on what Cut
+/// or its interpreter does not have yet -- a record's field, the sized
+/// integers' primitives, the floats' -- more than on the lowering. A case
+/// that stops agreeing is a failure whatever the count.
+const CUT_CASES_AGREEING: usize = 53;
+
+/// What the reference interpreter prints of the Cut program `text`, or why
+/// it printed nothing. On a thread of its own with room to spare: the
+/// interpreter's closures hold all that was in scope where they were made,
+/// and letting go of a long chain of them is as deep as the chain is long.
+fn cut_answer(text: &str) -> String {
+    let text = text.to_string();
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(move || {
+            let program = match meadow_cut::parse(&text) {
+                Ok(p) => p,
+                Err(e) => return format!("does not read: {e}"),
+            };
+            match meadow_cut::interp::run(&program, &meadow_cut::interp::Options::default()) {
+                Ok(out) => out.output,
+                Err((e, _)) => format!("fails: {e}"),
+            }
+        })
+        .expect("a thread")
+        .join()
+        .unwrap_or_else(|_| "the interpreter panicked".to_string())
+}
+
+#[test]
+fn glade_cases_lowered_to_cut_by_meadowboot_answer_as_the_rust_compiler_has_them() {
+    let dir = std::env::temp_dir().join(format!("meadowboot-cut-{}", std::process::id()));
+    let cases = run_cases(&dir);
+    let wants: std::collections::HashMap<PathBuf, String> = cases.iter().cloned().collect();
+    let files: Vec<PathBuf> = cases.iter().map(|(f, _)| f.clone()).collect();
+    let answers: Vec<(PathBuf, String)> = per_file("cut", &files)
+        .into_iter()
+        .map(|(p, text)| (p, format!("{}\n", cut_answer(&text))))
+        .collect();
+    let bad = differences(&answers, |p| format!("{}\n", wants[p]));
+    let _ = std::fs::remove_dir_all(&dir);
+    let agreeing = files.len() - bad.len();
+    eprintln!("{agreeing} of {} cases agree", files.len());
+    if std::env::var_os("MEADOWBOOT_VERBOSE").is_some() {
+        for b in &bad {
+            eprintln!("{b}\n");
+        }
+    }
+    assert!(
+        agreeing >= CUT_CASES_AGREEING,
+        "{agreeing} of {} cases agree, and {CUT_CASES_AGREEING} did:\n\n{}",
         files.len(),
         bad.iter()
             .take(20)

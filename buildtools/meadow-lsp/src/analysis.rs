@@ -394,6 +394,9 @@ pub struct Analysis {
     /// depends on declares publicly. What a workspace symbol search looks
     /// through, besides the library: see `meadow_find`.
     pub declarations: Vec<meadow_find::Decl>,
+    /// What this document's definitions are lowered from, to show one in
+    /// the compiler's IRs: see [`crate::ir`].
+    pub ir: crate::ir::IrSource,
 }
 
 /// A top-level definition, as something to start a program at.
@@ -538,6 +541,11 @@ impl Std {
 
     /// Every binding the standard library defines — the fallback when a name is
     /// in scope but was not written in the open document.
+    /// The library's packages, compiled: what a program is lowered with.
+    pub fn packages(&self) -> &[CompiledPackage] {
+        &self.packages
+    }
+
     pub fn definitions(&self) -> &DefIndex {
         &self.defs
     }
@@ -735,6 +743,7 @@ impl Std {
             ctor_paths: Default::default(),
             paths: Default::default(),
             declarations: Vec::new(),
+            ir: Default::default(),
         };
         collect_names(
             &pkg.data_decls,
@@ -747,6 +756,13 @@ impl Std {
             a.declarations
                 .extend(meadow_find::collect::package(dep, Default::default()));
         }
+        a.ir = crate::ir::IrSource::of(
+            &pkg,
+            deps.iter()
+                .copied()
+                .chain(sources.deps.iter().map(|(_, p)| p.as_ref())),
+            sources.deps.iter().map(|(_, p)| p.clone()).collect(),
+        );
         for e in &pkg.exports {
             a.binding_names.insert(e.var, e.name.to_string());
             a.schemes.insert(e.var, e.scheme.to_string());
@@ -872,6 +888,7 @@ impl Std {
             ctor_paths: Default::default(),
             paths: Default::default(),
             declarations: Vec::new(),
+            ir: Default::default(),
         };
         collect_names(
             &pkg.data_decls,
@@ -884,6 +901,7 @@ impl Std {
             a.binding_names.insert(e.var, e.name.to_string());
             a.schemes.insert(e.var, e.scheme.to_string());
         }
+        a.ir = crate::ir::IrSource::of(&pkg, deps.iter().copied(), Vec::new());
         gather_candidates(&mut a, &pkg, deps);
         // Every other binding that was generalized -- private top-level ones,
         // and local `let`s -- hovers as its scheme too, rather than as the type
@@ -948,6 +966,7 @@ pub fn of_unit(pkg: &CompiledPackage, text: &str, source: Source) -> Analysis {
         ctor_paths: Default::default(),
         paths: Default::default(),
         declarations: Vec::new(),
+        ir: Default::default(),
     };
     for m in &pkg.modules {
         if m.source.id != source.id {
@@ -2146,6 +2165,7 @@ impl Analysis {
             ctor_paths: Default::default(),
             paths: Default::default(),
             declarations: Vec::new(),
+            ir: Default::default(),
             source_id: 0,
         }
     }

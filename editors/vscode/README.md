@@ -25,6 +25,11 @@ Language support for [Meadow](https://github.com/mcdearman/meadow).
   with the arguments you type.
 - **Testing** — a **▶ Test** link above each `@test` runs that one test with
   `meadow test --exact`, in a terminal, exactly as the command line would.
+- **IRs** — **Meadow: Show IR** opens the definition under the cursor as
+  core, as Cut or as AxCut beside the source, and marks in it the name the
+  cursor is on, following the cursor: where a variable of yours is bound and
+  read in each. The Cut is core lowered for showing; AxCut is what the
+  runtimes are handed.
 
 ## Requirements
 

@@ -1856,3 +1856,84 @@ fn a_name_a_macro_made_still_hovers_and_goes_to_its_definition() {
         def.span
     );
 }
+
+// --- a definition in the compiler's IRs ---------------------------------------
+
+/// The definition around `⟨marker⟩` in the IR called `which`, and the text
+/// of each place the name at the marker is in it.
+fn ir(src: &str, which: &str) -> (meadow_lsp::ir::View, Vec<String>) {
+    let (a, off) = at(src, "@");
+    let view = STD
+        .with(|s| a.ir_at(off, which, s.packages()))
+        .expect("a definition there");
+    let focused = view
+        .focus
+        .iter()
+        .map(|(s, e)| view.text[*s..*e].to_string())
+        .collect();
+    (view, focused)
+}
+
+const SUM_TO: &str = "fun sumTo (m : Int) : Int =
+  let rec go n acc = if n == 0 then acc else go (n - 1) (a@cc + n) in
+  go m 0
+
+def other = 1
+";
+
+#[test]
+fn a_definition_is_shown_as_core() {
+    let (view, focused) = ir(SUM_TO, "core");
+    assert_eq!(view.name, "sumTo");
+    assert!(view.text.starts_with("v0 : (Int -> Int)"), "{}", view.text);
+    assert!(
+        focused.is_empty(),
+        "core's variables are renumbered to be read"
+    );
+}
+
+#[test]
+fn a_local_variable_is_found_in_the_cut_of_its_definition() {
+    let (view, focused) = ir(SUM_TO, "cut");
+    assert_eq!(view.name, "sumTo");
+    // The definition's value, and the definition its local function is.
+    assert!(view.text.starts_with("val meadow:"), "{}", view.text);
+    assert!(view.text.contains("\n\ndef meadow:"), "{}", view.text);
+    assert!(
+        !view.text.contains("other"),
+        "one definition: {}",
+        view.text
+    );
+    // `acc`: where the function takes it, and each place it is read.
+    assert_eq!(focused.len(), 3, "{focused:?}\n{}", view.text);
+    assert!(focused.iter().all(|n| *n == focused[0]), "{focused:?}");
+    // Every segment is what the text there says.
+    for g in &view.segments {
+        if g.kind == "variable" {
+            assert_eq!(&view.text[g.start..g.end], g.name);
+        }
+    }
+    assert!(view.segments.iter().any(|g| g.kind == "declaration"));
+}
+
+#[test]
+fn a_local_variable_is_found_in_the_axcut_of_its_definition() {
+    let (view, focused) = ir(SUM_TO, "axcut");
+    assert_eq!(view.name, "sumTo");
+    assert!(view.text.contains("def #"), "{}", view.text);
+    // A variable of the source keeps its number in the AxCut.
+    assert!(focused.len() >= 2, "{focused:?}\n{}", view.text);
+    assert!(focused.iter().all(|n| *n == focused[0]), "{focused:?}");
+    assert!(focused[0].starts_with('v'));
+}
+
+#[test]
+fn the_name_of_a_definition_called_is_found_by_its_symbol() {
+    let (view, focused) = ir(
+        "fun double (n : Int) : Int = n * 2\ndef four = dou@ble 2\n",
+        "cut",
+    );
+    assert_eq!(view.name, "four");
+    assert_eq!(focused.len(), 1, "{focused:?}\n{}", view.text);
+    assert!(focused[0].ends_with("double"), "{focused:?}");
+}

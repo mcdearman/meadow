@@ -32,6 +32,10 @@ beyond the last release is under _Unreleased_.
 
 ### Added
 
+- The language server answers `meadow/ir`: the definition at a position as
+  core, Cut or AxCut, with what each part of the text is and where the name
+  at the position is in it. The VS Code extension's **Meadow: Show IR** shows
+  it beside the source and follows the cursor.
 - The REPL shows a definition in the compiler's IRs: `:ir NAME` prints it as
   core, as Cut and as the AxCut the runtimes are handed, and `:ir core NAME`,
   `:ir cut NAME` or `:ir axcut NAME` one of them. The Cut is core lowered for

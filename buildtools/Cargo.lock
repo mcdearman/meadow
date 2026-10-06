@@ -1176,8 +1176,10 @@ dependencies = [
  "lsp-types",
  "meadow",
  "meadow-compiler",
+ "meadow-cut",
  "meadow-find",
  "meadow-fmt",
+ "meadow-seq",
  "serde",
  "serde_json",
 ]

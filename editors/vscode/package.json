@@ -97,6 +97,11 @@
 				"command": "meadow.testFunction",
 				"title": "Meadow: Run Test",
 				"enablement": "editorLangId == meadow"
+			},
+			{
+				"command": "meadow.showIr",
+				"title": "Meadow: Show IR (Core, Cut, AxCut)…",
+				"enablement": "editorLangId == meadow"
 			}
 		],
 		"menus": {
@@ -110,6 +115,11 @@
 					"command": "meadow.debugFunction",
 					"when": "editorLangId == meadow",
 					"group": "meadow@1"
+				},
+				{
+					"command": "meadow.showIr",
+					"when": "editorLangId == meadow",
+					"group": "meadow@2"
 				}
 			]
 		},

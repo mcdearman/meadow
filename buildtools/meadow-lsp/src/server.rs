@@ -23,6 +23,49 @@ use meadow_compiler::{CompiledPackage, source::Source, span::Span};
 use std::collections::HashMap;
 use std::error::Error;
 
+/// `meadow/ir`: the definition at a position in one of the compiler's IRs
+/// -- `core`, `cut` or `axcut` -- as text, with what each part of the text
+/// is and where in it the name at the position is. Not of the protocol: an
+/// editor that knows of it shows the IR beside the source, and marks in it
+/// what the cursor is on.
+pub enum IrRequest {}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IrParams {
+    pub text_document: TextDocumentIdentifier,
+    pub position: Position,
+    /// `core`, `cut` or `axcut`.
+    pub ir: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IrResult {
+    pub ir: String,
+    /// The definition shown, as the source spells it.
+    pub name: String,
+    pub text: String,
+    pub segments: Vec<IrSegment>,
+    /// Where in `text` the name at the position is.
+    pub focus: Vec<Range>,
+}
+
+/// A range of an IR's text, and what is written there: a `declaration`, a
+/// `variable` or a `symbol`, by its name in that IR.
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct IrSegment {
+    pub range: Range,
+    pub kind: String,
+    pub name: String,
+}
+
+impl LspRequest for IrRequest {
+    type Params = IrParams;
+    type Result = Option<IrResult>;
+    const METHOD: &'static str = "meadow/ir";
+}
+
 pub fn run(
     std_packages: Vec<CompiledPackage>,
     std_modules: Vec<(String, CompiledPackage)>,
@@ -557,6 +600,31 @@ impl Server {
                     ))
                 })
             }
+            IrRequest::METHOD => self.answer::<IrRequest, _>(req, |s, p| {
+                let doc = s.docs.get(&p.text_document.uri)?;
+                let offset = doc.index.offset(p.position.line, p.position.character);
+                let view = doc.analysis.ir_at(offset, &p.ir, s.std.packages())?;
+                let index = LineIndex::new(&view.text);
+                let range = |start: usize, end: usize| {
+                    let ((l1, c1), (l2, c2)) = index.range(Span::new(start as u32, end as u32));
+                    Range::new(Position::new(l1, c1), Position::new(l2, c2))
+                };
+                Some(IrResult {
+                    ir: p.ir,
+                    name: view.name,
+                    segments: view
+                        .segments
+                        .iter()
+                        .map(|g| IrSegment {
+                            range: range(g.start, g.end),
+                            kind: g.kind.to_string(),
+                            name: g.name.clone(),
+                        })
+                        .collect(),
+                    focus: view.focus.iter().map(|(a, b)| range(*a, *b)).collect(),
+                    text: view.text,
+                })
+            }),
             HoverRequest::METHOD => self.answer::<HoverRequest, _>(req, |s, p| {
                 let (doc, offset) = s.at(&p.text_document_position_params)?;
                 Some(Hover {

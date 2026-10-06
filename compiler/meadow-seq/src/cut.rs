@@ -46,8 +46,52 @@ pub struct Lowered {
     pub names: HashMap<Var, (Symbol, String)>,
 }
 
+/// A definition a program mentions and does not have: another package's,
+/// or one left out of what is being shown.
+#[derive(Clone, Debug)]
+pub struct Outside {
+    pub symbol: Symbol,
+    pub poly: core::Poly,
+}
+
+/// The symbol of the definition called `name` in `module`, package first --
+/// or in no module, as a REPL's entry is.
+pub fn symbol_of(module: &str, name: &str) -> Symbol {
+    let mut path: Vec<String> = module.split('.').map(str::to_string).collect();
+    let package = if path.first().is_some_and(|p| !p.is_empty()) {
+        path.remove(0)
+    } else {
+        path.clear();
+        "main".to_string()
+    };
+    // A package is written plainly in a symbol: a REPL entry's module,
+    // `repl:3`, is `repl-3` there.
+    let package: String = package
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '@') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    path.push(name.to_string());
+    Symbol {
+        lang: "meadow".to_string(),
+        package,
+        path,
+    }
+}
+
 /// `program` as a program of Cut. Nothing is its entry: it is to be read.
 pub fn to_cut(program: &core::Program) -> Lowered {
+    to_cut_in(program, &HashMap::new())
+}
+
+/// The same, of a program that is part of one: a mention of a definition
+/// in `outside` reads that definition's value, by its symbol.
+pub fn to_cut_in(program: &core::Program, outside: &HashMap<Var, Outside>) -> Lowered {
     let mut l = Lower {
         symbols: HashMap::new(),
         names: HashMap::new(),
@@ -59,41 +103,20 @@ pub fn to_cut(program: &core::Program) -> Lowered {
         effects: Vec::new(),
         variants: &program.variants,
     };
-    let mut taken: HashSet<String> = HashSet::new();
+    for (v, o) in outside {
+        l.symbols.insert(*v, o.symbol.clone());
+        l.types.insert(*v, o.poly.ty.clone());
+        l.polys.insert(*v, o.poly.clone());
+    }
+    let mut taken: HashSet<Symbol> = outside.values().map(|o| o.symbol.clone()).collect();
     for d in &program.defs {
-        let mut path: Vec<String> = d.module.split('.').map(str::to_string).collect();
-        let package = if path.first().is_some_and(|p| !p.is_empty()) {
-            path.remove(0)
-        } else {
-            path.clear();
-            "main".to_string()
-        };
-        // A package is written plainly in a symbol: a REPL entry's module,
-        // `repl:3`, is `repl-3` there.
-        let package: String = package
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '@') {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect();
-        let mut name = d.name.to_string();
-        if !taken.insert(format!("{package}/{}.{name}", path.join("."))) {
+        let mut symbol = symbol_of(&d.module, &d.name);
+        if !taken.insert(symbol.clone()) {
             // A name defined again, or a copy a pass made of it.
-            name = format!("{name}#{}", d.var.0);
+            symbol.path.pop();
+            symbol.path.push(format!("{}#{}", d.name, d.var.0));
         }
-        path.push(name);
-        l.symbols.insert(
-            d.var,
-            Symbol {
-                lang: "meadow".to_string(),
-                package,
-                path,
-            },
-        );
+        l.symbols.insert(d.var, symbol);
         l.types.insert(d.var, d.poly.ty.clone());
         l.polys.insert(d.var, d.poly.clone());
     }
@@ -818,7 +841,110 @@ fn spine(t: &Term) -> &Term {
     }
 }
 
-/// The variables `t` mentions and does not bind, after `out`, each once.
+/// The variables `t` mentions and does not bind, after `out`, each once:
+/// the definitions it reads among them.
+pub fn mentioned(t: &Term, out: &mut Vec<Var>) {
+    free(t, &mut Vec::new(), out)
+}
+
+/// Whether `t` binds or mentions `v`.
+pub fn names(t: &Term, v: Var) -> bool {
+    let mut out = Vec::new();
+    all_vars(t, &mut out);
+    out.contains(&v)
+}
+
+/// Every variable `t` binds or mentions.
+pub fn variables(t: &Term) -> Vec<Var> {
+    let mut out = Vec::new();
+    all_vars(t, &mut out);
+    out
+}
+
+fn all_vars(t: &Term, out: &mut Vec<Var>) {
+    fn walk(t: &Term, out: &mut Vec<Var>) {
+        match t {
+            Term::Lam(v, _, body) => {
+                out.push(*v);
+                walk(body, out);
+            }
+            Term::Loc(_, inner) | Term::TyLam(_, inner) | Term::TyApp(inner, _) => walk(inner, out),
+            Term::App(f, a) => {
+                walk(f, out);
+                walk(a, out);
+            }
+            Term::Let(v, _, rhs, body) => {
+                out.push(*v);
+                walk(rhs, out);
+                walk(body, out);
+            }
+            Term::LetRec(binds, body) => {
+                for (v, _, t) in binds {
+                    out.push(*v);
+                    walk(t, out);
+                }
+                walk(body, out);
+            }
+            Term::If(c, a, b) => {
+                walk(c, out);
+                walk(a, out);
+                walk(b, out);
+            }
+            Term::Tuple(xs) | Term::Array(xs, _) | Term::Ctor(_, _, xs) | Term::Prim(_, xs, _) => {
+                xs.iter().for_each(|x| walk(x, out))
+            }
+            Term::Jump(v, xs, _) => {
+                out.push(*v);
+                xs.iter().for_each(|x| walk(x, out));
+            }
+            Term::Proj(x, _) | Term::Sel(x, _, _) | Term::Perform(_, _, x, _) => walk(x, out),
+            Term::Record(fs) => fs.iter().for_each(|(_, x)| walk(x, out)),
+            Term::Extend(r, _, v) => {
+                walk(r, out);
+                walk(v, out);
+            }
+            Term::Case(s, arms, _) => {
+                walk(s, out);
+                for (p, g, b) in arms {
+                    binders(p, out);
+                    if let Some(g) = g {
+                        walk(g, out);
+                    }
+                    walk(b, out);
+                }
+            }
+            Term::Handle {
+                body, clauses, ret, ..
+            } => {
+                walk(body, out);
+                for c in clauses {
+                    out.extend([c.param, c.resume]);
+                    walk(&c.body, out);
+                }
+                if let Some((v, _, r)) = ret {
+                    out.push(*v);
+                    walk(r, out);
+                }
+            }
+            Term::Join {
+                var,
+                params,
+                rhs,
+                body,
+                ..
+            } => {
+                out.push(*var);
+                out.extend(params.iter().map(|(v, _)| *v));
+                walk(rhs, out);
+                walk(body, out);
+            }
+            Term::Var(v) => out.push(*v),
+            Term::Lit(_) | Term::Error => {}
+        }
+    }
+    walk(t, out);
+}
+
 fn free(t: &Term, bound: &mut Vec<Var>, out: &mut Vec<Var>) {
     let mark = bound.len();
     match t {

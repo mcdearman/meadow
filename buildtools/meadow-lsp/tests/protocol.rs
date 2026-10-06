@@ -1006,3 +1006,48 @@ fn a_workspace_symbol_query_that_is_a_type_searches_by_type() {
     drop(c);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_definition_is_answered_in_an_ir_with_where_the_name_at_the_cursor_is() {
+    let mut c = Client::start();
+    c.set("fun twice (n : Int) : Int =\n  let m = n + n in\n  m\n");
+    // On `m`, where it is answered.
+    let ask = |c: &mut Client, ir: &str| {
+        c.request(
+            "meadow/ir",
+            json!({
+                "textDocument": {"uri": URI},
+                "position": {"line": 2, "character": 2},
+                "ir": ir,
+            }),
+        )
+    };
+    let cut = ask(&mut c, "cut");
+    assert_eq!(cut["ir"], "cut");
+    assert_eq!(cut["name"], "twice");
+    let text = cut["text"].as_str().unwrap();
+    assert!(text.starts_with("val meadow:"), "{text}");
+    // Where it is bound and where it is read, each a range of the text that
+    // a segment says is a variable.
+    let focus = cut["focus"].as_array().unwrap();
+    assert_eq!(focus.len(), 2, "{cut}");
+    let segments = cut["segments"].as_array().unwrap();
+    for f in focus {
+        assert!(
+            segments
+                .iter()
+                .any(|g| g["range"] == *f && g["kind"] == "variable"),
+            "{f}"
+        );
+    }
+    assert!(segments.iter().any(|g| g["kind"] == "declaration"));
+    // The other two, and one there is not.
+    assert!(ask(&mut c, "core")["text"].as_str().unwrap().contains("v0"));
+    assert!(
+        ask(&mut c, "axcut")["text"]
+            .as_str()
+            .unwrap()
+            .contains("def #")
+    );
+    assert_eq!(ask(&mut c, "llvm"), Value::Null);
+}

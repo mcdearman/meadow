@@ -12,6 +12,7 @@ const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
 const { pick } = require("./resolve");
 const { registerDebugger } = require("./debug");
 const { registerTesting } = require("./testing");
+const { registerIr } = require("./ir");
 
 let client;
 
@@ -116,6 +117,7 @@ function activate(context) {
   start();
   registerDebugger(context);
   registerTesting(context);
+  registerIr(context, () => (client && client.isRunning && client.isRunning() ? client : undefined));
   // Trusting the workspace is what lets the server fetch: start it again,
   // this time allowed to.
   context.subscriptions.push(

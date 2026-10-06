@@ -205,15 +205,21 @@ type Ty = Type
 -- Core as `meadow_core` has it, before its types are erased: every term and
 -- pattern with its type, a function with its parameter's, and each data
 -- type declared: its name, how many types it takes, and its constructors
--- with their fields' types -- a type it takes written `Bound`, by its place.
+-- with their fields' types -- a type it takes written `Bound`, by its place
+-- -- and each effect, with what each of its operations takes and answers.
 -- What `Elab` makes of a program, and what is lowered to Cut, which needs to
 -- know how each value is represented.
 @pub(pkg) lang! {
   pub Core extends Erased with In
   DataCtor + DataCtor { name : String, fields : [Ty] }
   Data + Data { name : String, arity : Int, ctors : [DataCtor] }
+  Op + Op { name : String, arg : Ty, result : Ty }
+  Effect + Effect { name : String, ops : [Op] }
   File - File
-  File + File { entry : Int, defs : [Def], named : [Named], datas : [Data] }
+  File + File { entry : Int, defs : [Def], named : [Named], datas : [Data], effects : [Effect] }
+  Clause - Clause
+  Clause
+    + Clause { eff : String, op : String, param : Int, paramTy : Ty, resume : Int, body : Term }
   Term - Lam
   Term + Lam { param : Int, paramTy : Ty, body : Term }
   Term * { ty : Ty }
@@ -242,6 +248,8 @@ pass! {
     | Perform { eff, op, arg } -> Perform { eff = eff, op = op, arg = arg }
     | Handle { body, clauses, retId, ret } ->
         Handle { body = body, clauses = clauses, retId = retId, ret = ret }
+    | Clause { eff, op, param, resume, body } ->
+        Clause { eff = eff, op = op, param = param, resume = resume, body = body }
     | Join { id, params, rhs, body } -> Join { id = id, params = params, rhs = rhs, body = body }
     | Jump { id, args } -> Jump { id = id, args = args }
     | Ill {} -> Ill {}

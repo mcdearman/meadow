@@ -121,7 +121,15 @@ pass! {
     | HArm { op, opRef, param, resume, body } ->
         (let binder = binderOf out cx here param body in
          let named = M.unwrapOr ("", op) (H.lookup opRef cx.ops) in
-         newCoreClause out here (fst named) (snd named) (fst binder) resume (snd binder))
+         newCoreClause
+           out
+           here
+           (fst named)
+           (snd named)
+           (fst binder)
+           (tyCorePatIn out param)
+           resume
+           (snd binder))
     | Ret { pat, body } -> binderOf out cx here pat body
     | Pat.Wild { typ } -> newCorePatPWild out here typ
     | Pat.Unit { typ } -> newCorePatPLit out here (newCoreLitLUnit out here) typ
@@ -441,7 +449,8 @@ def nowhere : Meta = spanMeta 0 0
                   newCoreDataCtor out nowhere "List.Cons" [Bound 0, Con "List" [Bound 0]]
                 ]]
            in
-           let root = newCoreFile out nowhere e defs named (V.append lists datas) in
+           let effects = V.concatMap (\p -> moduleEffects out p) bares in
+           let root = newCoreFile out nowhere e defs named (V.append lists datas) effects in
            CoreProgram (freezeCore out) root))
        entryId
 
@@ -601,6 +610,37 @@ fun moduleDatas out (items : [Item]) (p : BareProgram) =
                           (\f -> written a params (bareFieldTy a f))
                           (bareDeclRecordFields a d))]])
               else []))
+        (bareModuleDecls a root)
+
+-- A module's effects, as core declares one: its name, and each operation
+-- with what it takes and what it answers.
+fun moduleEffects out (p : BareProgram) =
+  match p with
+  | BareProgram a root ->
+      V.concatMap
+        (\d0 ->
+          (let d = peeled a d0 in
+           if kindBareDecl a d != BareDeclKind.Effect then []
+           else
+             (let params = V.map (\n -> bareNameText a n) (bareDeclEffectParams a d) in
+              [newCoreEffect
+                 out
+                 nowhere
+                 (bareNameText a (bareDeclEffectName a d))
+                 (V.map
+                    (\f ->
+                      (let t = bareFieldTy a f in
+                       let isFun = kindBareType a t == BareTypeKind.Fun in
+                       let arg =
+                         if isFun then
+                           M.unwrapOr
+                             (Con "Unit" [])
+                             (M.map (written a params) (V.get (bareTypeFunParams a t) 0))
+                         else Con "Unit" []
+                       in
+                       let result = written a params (if isFun then bareTypeFunResult a t else t) in
+                       newCoreOp out nowhere (bareNameText a (bareFieldName a f)) arg result))
+                    (bareDeclEffectOps a d))])))
         (bareModuleDecls a root)
 
 -- A written type as far as how its values are represented goes: a named

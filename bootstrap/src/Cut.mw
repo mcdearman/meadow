@@ -21,6 +21,8 @@ use Std.Char as C
   File + File { entry : String, answer : String, decls : [Decl] }
   DataCtor + DataCtor { name : String, fields : [String] }
   Decl + Data { symbol : String, params : [String], ctors : [DataCtor] }
+  Op + Op { name : String, params : [String], result : String }
+  Decl + Effect { symbol : String, ops : [Op] }
   Decl + Val { symbol : String, rep : String, body : Stmt }
   Decl + Def { symbol : String, params : [Param], conts : [Param], body : Stmt }
   Param + Param { name : String, rep : String }
@@ -47,6 +49,18 @@ use Std.Char as C
   Stmt + Cut { prod : Prod, cons : Cons }
   Stmt + Invoke { symbol : String, args : [Prod], conts : [Cons] }
   Stmt + Prim { op : String, args : [Prod], conts : [Cons] }
+  Stmt + Perform { op : String, args : [Prod], cont : Cons }
+  Clause + Clause { op : String, params : [Param], resume : String, k : String, body : Stmt }
+  Stmt
+    + Handle {
+      clauses : [Clause],
+      ret : Param,
+      retK : String,
+      retBody : Stmt,
+      bodyK : String,
+      body : Stmt,
+      cont : Cons
+    }
   Stmt + Error { message : String }
 }
 
@@ -74,6 +88,13 @@ use Std.Char as C
 
 @pub(pkg) fun ctorDecl out (m : Meta) (name : String) (fields : [String]) =
   newCutDataCtor out m name fields
+
+-- `effect symbol { ops }`, each operation made with `opDecl`: its name, the
+-- representations of what it takes, and that of what it is resumed with.
+@pub(pkg) fun effectDecl out (m : Meta) (symbol : String) ops = newCutDeclEffect out m symbol ops
+
+@pub(pkg) fun opDecl out (m : Meta) (name : String) (params : [String]) (result : String) =
+  newCutOp out m name params result
 
 -- `val symbol : rep = s`: computed once, what `s` gives to `halt`.
 @pub(pkg) fun valDecl out (m : Meta) (symbol : String) (rep : String) body =
@@ -137,6 +158,21 @@ use Std.Char as C
 @pub(pkg) fun prim out (m : Meta) (op : String) args conts = newCutStmtPrim out m op args conts
 
 @pub(pkg) fun fail out (m : Meta) (message : String) = newCutStmtError out m message
+
+-- `perform op(args; k)`: `k` receives what the operation is resumed with.
+@pub(pkg) fun performed out (m : Meta) (op : String) args k = newCutStmtPerform out m op args k
+
+-- A handler's clause for `op`: what it takes, the name of the resumption --
+-- a function -- and the name of where the handler's own value goes.
+@pub(pkg) fun clause out (m : Meta) (op : String) params (resume : String) (k : String) body =
+  newCutClause out m op params resume k body
+
+-- `body` handled, the value of the whole to `k`: `body` is built with the
+-- name of its own continuation, `bodyK`, which gives what it answers to the
+-- `return` clause -- `returned`, with its value as `ret` and the handler's
+-- continuation as `retK`.
+@pub(pkg) fun handled out (m : Meta) clauses ret (retK : String) returned (bodyK : String) body k =
+  newCutStmtHandle out m clauses ret retK returned bodyK body k
 
 @pub(pkg) def nowhere : Meta = spanMeta 0 0
 
@@ -205,6 +241,9 @@ fun decl (a : CutArena) (d : CutDecl) : String =
          (let fs = cutDataCtorFields a c in
           if V.isEmpty fs then cutDataCtorName a c else "${cutDataCtorName a c}(${S.join ", " fs})")
      in "data ${cutDeclDataSymbol a d}${taking} { ${S.join "; " (V.map ctor (cutDeclDataCtors a d))} }\n")
+  else if kindCutDecl a d == CutDeclKind.Effect then
+    (let op = \o -> "${cutOpName a o}(${S.join ", " (cutOpParams a o)}) -> ${cutOpResult a o}" in
+     "effect ${cutDeclEffectSymbol a d} { ${S.join "; " (V.map op (cutDeclEffectOps a d))} }\n")
   else
     "def ${cutDeclDefSymbol a d} ${params a (cutDeclDefParams a d) (cutDeclDefConts a d)} =\n  ${stmt a 1 (cutDeclDefBody a d)}\n"
 
@@ -226,6 +265,21 @@ fun stmt (a : CutArena) (depth : Int) (s : CutStmt) : String =
     cutStmtInvokeSymbol a s ++ call a depth (cutStmtInvokeArgs a s) (cutStmtInvokeConts a s)
   else if k == CutStmtKind.Prim then
     "prim ${cutStmtPrimOp a s}" ++ call a depth (cutStmtPrimArgs a s) (cutStmtPrimConts a s)
+  else if k == CutStmtKind.Perform then
+    "perform ${cutStmtPerformOp a s}"
+      ++ call a depth (cutStmtPerformArgs a s) [cutStmtPerformCont a s]
+  else if k == CutStmtKind.Handle then
+    (let named = \n -> "${n}: ptr" in
+     let clauses =
+       V.map
+         (\c ->
+           "${line (depth + 1)}${cutClauseOp a c}(${S.join ", " (V.map (paramText a) (cutClauseParams a c))}; ${named (cutClauseResume a c)}, ${named (cutClauseK a c)}) =>${line (depth + 2)}${stmt a (depth + 2) (cutClauseBody a c)};")
+         (cutStmtHandleClauses a s)
+     in "handle {"
+          ++ S.join "" clauses
+          ++ "${line (depth + 1)}return(${paramText a (cutStmtHandleRet a s)}; ${named (cutStmtHandleRetK a s)}) =>${line (depth + 2)}${stmt a (depth + 2) (cutStmtHandleRetBody a s)}"
+          ++ "${line depth}} in μ ${cutStmtHandleBodyK a s}.${line (depth + 1)}${stmt a (depth + 1) (cutStmtHandleBody a s)}"
+          ++ "${line depth}; ${cons a depth (cutStmtHandleCont a s)}")
   else "error ${quoted (cutStmtErrorMessage a s)}"
 
 fun prod (a : CutArena) (depth : Int) (p : CutProd) : String =

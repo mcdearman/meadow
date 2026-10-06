@@ -15,9 +15,12 @@
 -- least there is to say, and enough to run; a `def` with every parameter at
 -- once, for a function called with all it takes, is for later.
 --
--- What is not lowered yet answers `error "C.unsupported: …"`: data and `case`,
--- records and arrays, a function defined inside another that calls itself,
--- effects, and anything generic in how a value is represented.
+-- An effect performed is `perform`, and a handler `handle`: its resumption
+-- is a function, as Cut has it, so a clause calls it as it would any other.
+--
+-- What is not lowered yet answers `error "unsupported: …"`: records, local
+-- functions that call each other, joins, and anything generic in how a
+-- value is represented.
 
 use Lingua (pass!)
 use Lingua.Lang (Meta)
@@ -187,15 +190,56 @@ pass! {
           (let inner = { cx | k = k } in
            let s = "s${show node}" in
            named src out inner here s scrutinee (armsFrom src out inner here s arms 0)))
-    | Perform { eff, op, raw arg } -> C.unsupported out here "an effect performed"
-    | Handle { raw body, raw clauses, retId, raw ret } -> C.unsupported out here "a handler"
+    | Perform { eff, op, raw arg } ->
+        (let a = "a${show node}" in
+         named
+           src
+           out
+           cx
+           here
+           a
+           arg
+           (C.performed out here (opSymbol eff op) [C.var out here a] cx.k))
+    | Handle { raw body, raw clauses, retId, raw ret } ->
+        (let h = "h${show node}" in
+         let b = "b${show node}" in
+         let inner = { cx | k = C.cont out here h } in
+         let answered = repOf (tyCoreTerm src body) in
+         let (returned, after) =
+           (match (retId, ret) with
+            | (Just r, Just t) -> ("v${show r}", lowerTerm src out inner t)
+            | _ -> ("r${show node}", C.give out here (C.var out here "r${show node}") inner.k))
+         in C.handled
+              out
+              here
+              (V.map
+                 (\c ->
+                   C.clause
+                     out
+                     here
+                     (opSymbol (coreClauseEff src c) (coreClauseOp src c))
+                     [C.param
+                        out
+                        here
+                        "v${show (coreClauseParam src c)}"
+                        (repOf (coreClauseParamTy src c))]
+                     "v${show (coreClauseResume src c)}"
+                     h
+                     (lowerTerm src out inner (coreClauseBody src c)))
+                 clauses)
+              (C.param out here returned answered)
+              h
+              after
+              b
+              (lowerTerm src out { cx | k = C.cont out here b } body)
+              cx.k)
     | Join { id, params, raw rhs, raw body } -> C.unsupported out here "a join"
     | Jump { id, raw args } -> C.unsupported out here "a jump"
     | Ill {} -> C.fail out here "this did not compile"
     | Bind { id, raw value } -> ()
     | Field { label, raw value } -> ()
     | Arm { raw pat, raw guard, raw body } -> ()
-    | Clause { eff, op, param, resume, raw body } -> ()
+    | Clause { eff, op, param, paramTy, resume, raw body } -> ()
     | PWild {} -> ()
     | PVar { id } -> ()
     | PAs { id, raw pat } -> ()
@@ -492,6 +536,11 @@ fun symbolOf (canon : String) : String =
   if V.getOr "" segs 0 == "List" or V.len segs < 2 then "meadow:Std/${canon}"
   else "meadow:${V.getOr "" segs 0}/${S.join "." (V.drop segs 1)}"
 
+-- An effect's symbol, and an operation's: the effect's, and then its name.
+fun effectSymbol (eff : String) : String = "${package}${eff}"
+
+fun opSymbol (eff : String) (op : String) : String = "${effectSymbol eff}.${op}"
+
 -- A constructor's own name: the last of its path.
 fun bare (canon : String) : String =
   let segs = S.split "." canon in
@@ -548,6 +597,24 @@ fun bare (canon : String) : String =
                       ctors))
            datas
        in
+       let effects =
+         V.map
+           (\e ->
+             C.effectDecl
+               out
+               C.nowhere
+               (effectSymbol (coreEffectName a e))
+               (V.map
+                  (\o ->
+                    C.opDecl
+                      out
+                      C.nowhere
+                      (coreOpName a o)
+                      [fieldRep (coreOpArg a o)]
+                      (fieldRep (coreOpResult a o)))
+                  (coreEffectOps a e)))
+           (coreFileEffects a file)
+       in
        let vals =
          V.map
            (\d ->
@@ -586,7 +653,7 @@ fun bare (canon : String) : String =
            C.nowhere
            "${package}\"#entry\""
            "str"
-           (V.concat [declared, stGetRef lifted, vals, [shown], showers])
+           (V.concat [declared, effects, stGetRef lifted, vals, [shown], showers])
        in C.finished out root)
 
 -- `todo` after what each reads, each once: `done` is what is placed already.

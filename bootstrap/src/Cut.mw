@@ -231,21 +231,20 @@ use Std.Char as C
         ++ S.join "\n" (V.map (\d -> decl a d) (cutFileDecls a root))
 
 fun decl (a : CutArena) (d : CutDecl) : String =
-  if kindCutDecl a d == CutDeclKind.Val then
-    "val ${cutDeclValSymbol a d} : ${cutDeclValRep a d} =\n  ${stmt a 1 (cutDeclValBody a d)}\n"
-  else if kindCutDecl a d == CutDeclKind.Data then
-    (let ps = cutDeclDataParams a d in
-     let taking = if V.isEmpty ps then "" else " <${S.join ", " ps}>" in
-     let ctor =
-       \c ->
-         (let fs = cutDataCtorFields a c in
-          if V.isEmpty fs then cutDataCtorName a c else "${cutDataCtorName a c}(${S.join ", " fs})")
-     in "data ${cutDeclDataSymbol a d}${taking} { ${S.join "; " (V.map ctor (cutDeclDataCtors a d))} }\n")
-  else if kindCutDecl a d == CutDeclKind.Effect then
-    (let op = \o -> "${cutOpName a o}(${S.join ", " (cutOpParams a o)}) -> ${cutOpResult a o}" in
-     "effect ${cutDeclEffectSymbol a d} { ${S.join "; " (V.map op (cutDeclEffectOps a d))} }\n")
-  else
-    "def ${cutDeclDefSymbol a d} ${params a (cutDeclDefParams a d) (cutDeclDefConts a d)} =\n  ${stmt a 1 (cutDeclDefBody a d)}\n"
+  match viewCutDecl a d with
+  | CutDeclView.Val r -> "val ${r.symbol} : ${r.rep} =\n  ${stmt a 1 r.body}\n"
+  | CutDeclView.Data r ->
+      let taking = if V.isEmpty r.params then "" else " <${S.join ", " r.params}>" in
+      let ctor =
+        \c ->
+          (let fs = cutDataCtorFields a c in
+           if V.isEmpty fs then cutDataCtorName a c
+           else "${cutDataCtorName a c}(${S.join ", " fs})")
+      in "data ${r.symbol}${taking} { ${S.join "; " (V.map ctor r.ctors)} }\n"
+  | CutDeclView.Effect r ->
+      let op = \o -> "${cutOpName a o}(${S.join ", " (cutOpParams a o)}) -> ${cutOpResult a o}" in
+      "effect ${r.symbol} { ${S.join "; " (V.map op r.ops)} }\n"
+  | CutDeclView.Def r -> "def ${r.symbol} ${params a r.params r.conts} =\n  ${stmt a 1 r.body}\n"
 
 fun paramText (a : CutArena) (p : CutParam) : String = "${cutParamName a p}: ${cutParamRep a p}"
 
@@ -258,83 +257,73 @@ fun call (a : CutArena) (depth : Int) (args : [CutProd]) (ks : [CutCons]) : Stri
   "(${S.join ", " (V.map (prod a depth) args)}; ${S.join ", " (V.map (cons a depth) ks)})"
 
 fun stmt (a : CutArena) (depth : Int) (s : CutStmt) : String =
-  let k = kindCutStmt a s in
-  if k == CutStmtKind.Cut then
-    "<${prod a depth (cutStmtCutProd a s)} | ${cons a depth (cutStmtCutCons a s)}>"
-  else if k == CutStmtKind.Invoke then
-    cutStmtInvokeSymbol a s ++ call a depth (cutStmtInvokeArgs a s) (cutStmtInvokeConts a s)
-  else if k == CutStmtKind.Prim then
-    "prim ${cutStmtPrimOp a s}" ++ call a depth (cutStmtPrimArgs a s) (cutStmtPrimConts a s)
-  else if k == CutStmtKind.Perform then
-    "perform ${cutStmtPerformOp a s}"
-      ++ call a depth (cutStmtPerformArgs a s) [cutStmtPerformCont a s]
-  else if k == CutStmtKind.Handle then
-    (let named = \n -> "${n}: ptr" in
-     let clauses =
-       V.map
-         (\c ->
-           "${line (depth + 1)}${cutClauseOp a c}(${S.join ", " (V.map (paramText a) (cutClauseParams a c))}; ${named (cutClauseResume a c)}, ${named (cutClauseK a c)}) =>${line (depth + 2)}${stmt a (depth + 2) (cutClauseBody a c)};")
-         (cutStmtHandleClauses a s)
-     in "handle {"
-          ++ S.join "" clauses
-          ++ "${line (depth + 1)}return(${paramText a (cutStmtHandleRet a s)}; ${named (cutStmtHandleRetK a s)}) =>${line (depth + 2)}${stmt a (depth + 2) (cutStmtHandleRetBody a s)}"
-          ++ "${line depth}} in μ ${cutStmtHandleBodyK a s}.${line (depth + 1)}${stmt a (depth + 1) (cutStmtHandleBody a s)}"
-          ++ "${line depth}; ${cons a depth (cutStmtHandleCont a s)}")
-  else "error ${quoted (cutStmtErrorMessage a s)}"
+  match viewCutStmt a s with
+  | CutStmtView.Cut r -> "<${prod a depth r.prod} | ${cons a depth r.cons}>"
+  | CutStmtView.Invoke r -> r.symbol ++ call a depth r.args r.conts
+  | CutStmtView.Prim r -> "prim ${r.op}" ++ call a depth r.args r.conts
+  | CutStmtView.Perform r -> "perform ${r.op}" ++ call a depth r.args [r.cont]
+  | CutStmtView.Handle r ->
+      let named = \n -> "${n}: ptr" in
+      let clauses =
+        V.map
+          (\c ->
+            "${line (depth + 1)}${cutClauseOp a c}(${S.join ", " (V.map (paramText a) (cutClauseParams a c))}; ${named (cutClauseResume a c)}, ${named (cutClauseK a c)}) =>${line (depth + 2)}${stmt a (depth + 2) (cutClauseBody a c)};")
+          r.clauses
+      in "handle {"
+           ++ S.join "" clauses
+           ++ "${line (depth + 1)}return(${paramText a r.ret}; ${named r.retK}) =>${line (depth + 2)}${stmt a (depth + 2) r.retBody}"
+           ++ "${line depth}} in μ ${r.bodyK}.${line (depth + 1)}${stmt a (depth + 1) r.body}"
+           ++ "${line depth}; ${cons a depth r.cont}"
+  | CutStmtView.Error r -> "error ${quoted r.message}"
 
 fun prod (a : CutArena) (depth : Int) (p : CutProd) : String =
-  let k = kindCutProd a p in
-  if k == CutProdKind.Var then cutProdVarName a p
-  else if k == CutProdKind.Sym then cutProdSymSymbol a p
-  else if k == CutProdKind.Int then show (cutProdIntValue a p)
-  else if k == CutProdKind.Float then show (cutProdFloatValue a p)
-  else if k == CutProdKind.Char then "'\\u{${hex (cutProdCharCode a p)}}'"
-  else if k == CutProdKind.Str then quoted (cutProdStrText a p)
-  else if k == CutProdKind.Bool then (if cutProdBoolValue a p then "true" else "false")
-  else if k == CutProdKind.Unit then "unit"
-  else if k == CutProdKind.Con then
-    (let args = cutProdConArgs a p in
-     if V.isEmpty args then cutProdConSymbol a p
-     else "${cutProdConSymbol a p}(${S.join ", " (V.map (prod a depth) args)})")
-  else if k == CutProdKind.Tuple then
-    "#tuple(${S.join ", " (V.map (prod a depth) (cutProdTupleItems a p))})"
-  else if k == CutProdKind.Array then
-    "[${S.join ", " (V.map (prod a depth) (cutProdArrayItems a p))}]"
-  else if k == CutProdKind.Mu then
-    "μ ${cutProdMuK a p}.${line (depth + 1)}${stmt a (depth + 1) (cutProdMuBody a p)}"
-  else
-    "cocase {"
-      ++ S.join
-        ";"
-        (V.map
-           (\m ->
-             "${line (depth + 1)}${cutMethodName a m}${params a (cutMethodParams a m) (cutMethodConts a m)} =>${line (depth + 2)}${stmt a (depth + 2) (cutMethodBody a m)}")
-           (cutProdCocaseMethods a p))
-      ++ line depth
-      ++ "}"
+  match viewCutProd a p with
+  | CutProdView.Var r -> r.name
+  | CutProdView.Sym r -> r.symbol
+  | CutProdView.Int r -> show r.value
+  | CutProdView.Float r -> show r.value
+  | CutProdView.Char r -> "'\\u{${hex r.code}}'"
+  | CutProdView.Str r -> quoted r.text
+  | CutProdView.Bool r -> if r.value then "true" else "false"
+  | CutProdView.Unit _ -> "unit"
+  | CutProdView.Con r ->
+      if V.isEmpty r.args then r.symbol
+      else "${r.symbol}(${S.join ", " (V.map (prod a depth) r.args)})"
+  | CutProdView.Tuple r -> "#tuple(${S.join ", " (V.map (prod a depth) r.items)})"
+  | CutProdView.Array r -> "[${S.join ", " (V.map (prod a depth) r.items)}]"
+  | CutProdView.Mu r -> "μ ${r.k}.${line (depth + 1)}${stmt a (depth + 1) r.body}"
+  | CutProdView.Cocase r ->
+      "cocase {"
+        ++ S.join
+          ";"
+          (V.map
+             (\m ->
+               "${line (depth + 1)}${cutMethodName a m}${params a (cutMethodParams a m) (cutMethodConts a m)} =>${line (depth + 2)}${stmt a (depth + 2) (cutMethodBody a m)}")
+             r.methods)
+        ++ line depth
+        ++ "}"
 
 fun cons (a : CutArena) (depth : Int) (c : CutCons) : String =
-  let k = kindCutCons a c in
-  if k == CutConsKind.KVar then cutConsKVarName a c
-  else if k == CutConsKind.Halt then "halt"
-  else if k == CutConsKind.MuT then
-    "μ̃ ${cutConsMuTName a c}: ${cutConsMuTRep a c}.${line (depth + 1)}${stmt a (depth + 1) (cutConsMuTBody a c)}"
-  else if k == CutConsKind.Case then
-    "case {"
-      ++ S.join
-        ";"
-        (V.map
-           (\arm ->
-             (let pattern = cutCaseArmPattern a arm in
-              let fields = cutCaseArmFields a arm in
-              let taken =
-                if V.isEmpty fields and pattern != "#tuple" then ""
-                else "(${S.join ", " (V.map (paramText a) fields)})"
-              in "${line (depth + 1)}${pattern}${taken} =>${line (depth + 2)}${stmt a (depth + 2) (cutCaseArmBody a arm)}"))
-           (cutConsCaseArms a c))
-      ++ line depth
-      ++ "}"
-  else cutConsCallMethod a c ++ call a depth (cutConsCallArgs a c) (cutConsCallConts a c)
+  match viewCutCons a c with
+  | CutConsView.KVar r -> r.name
+  | CutConsView.Halt _ -> "halt"
+  | CutConsView.MuT r -> "μ̃ ${r.name}: ${r.rep}.${line (depth + 1)}${stmt a (depth + 1) r.body}"
+  | CutConsView.Case r ->
+      "case {"
+        ++ S.join
+          ";"
+          (V.map
+             (\arm ->
+               (let pattern = cutCaseArmPattern a arm in
+                let fields = cutCaseArmFields a arm in
+                let taken =
+                  if V.isEmpty fields and pattern != "#tuple" then ""
+                  else "(${S.join ", " (V.map (paramText a) fields)})"
+                in "${line (depth + 1)}${pattern}${taken} =>${line (depth + 2)}${stmt a (depth + 2) (cutCaseArmBody a arm)}"))
+             r.arms)
+        ++ line depth
+        ++ "}"
+  | CutConsView.Call r -> r.method ++ call a depth r.args r.conts
 
 -- A string as Cut writes one.
 fun quoted (s : String) : String =

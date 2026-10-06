@@ -2503,19 +2503,21 @@ fun brackE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
                    let hm = exprSpan c hi in
                    let hi1 =
                      \k ->
-                       node
-                         k
-                         "Infix"
-                         m
-                         (V.append
-                            (exprIn c hs (k + 1) hi None)
-                            (line
-                               (k + 1)
-                               "rest 1"
-                               (under (k + 2) "Op" [
-                                  ident (k + 3) (named "+" hm),
-                                  node (k + 3) "Lit" hm (leaf (k + 4) "Int 1")
-                                ])))
+                       if not (tokenIs TokenDoublePeriodEq r) then exprIn c hs k hi None
+                       else
+                         node
+                           k
+                           "Infix"
+                           m
+                           (V.append
+                              (exprIn c hs (k + 1) hi None)
+                              (line
+                                 (k + 1)
+                                 "rest 1"
+                                 (under (k + 2) "Op" [
+                                    ident (k + 3) (named "+" hm),
+                                    node (k + 3) "Lit" hm (leaf (k + 4) "Int 1")
+                                  ])))
                    in node
                         d
                         "App"

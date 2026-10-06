@@ -1639,8 +1639,9 @@ where
             .map_with(|es: Vec<LExpr>, e| Located::new(Expr::Tuple(es), e.span()))
             .boxed();
 
-        // `[lo .. hi]` / `[lo ..= hi]` — an inclusive integer range (Haskell-style),
-        // desugared to `range lo (hi + 1)`.
+        // `[lo .. hi]` is the integers from `lo` up to, not including, `hi` --
+        // `range lo hi` -- and `[lo ..= hi]` includes `hi`: `range lo (hi + 1)`.
+        // As Rust's `..` and `..=` are.
         let range_list = expr
             .clone()
             .then(choice((
@@ -1649,16 +1650,20 @@ where
             )))
             .then(expr.clone())
             .delimited_by(just(Token::LBrack), just(Token::RBrack))
-            .map_with(|((lo, _), hi), e| {
+            .map_with(|((lo, kind), hi), e| {
                 let span = e.span();
-                let one = Located::new(Expr::Lit(Lit::Int(1)), hi.span);
-                let plus = Ident::new(InternedString::from("+"), hi.span);
-                let hi1 = Located::new(Expr::Infix(hi, vec![(plus, one)]), span);
+                let end = if kind == Token::DoublePeriodEq {
+                    let one = Located::new(Expr::Lit(Lit::Int(1)), hi.span);
+                    let plus = Ident::new(InternedString::from("+"), hi.span);
+                    Located::new(Expr::Infix(hi, vec![(plus, one)]), span)
+                } else {
+                    hi
+                };
                 let range = Located::new(
                     Expr::Var(Located::new(InternedString::from("range"), span)),
                     span,
                 );
-                Located::new(Expr::App(range, vec![lo, hi1]), span)
+                Located::new(Expr::App(range, vec![lo, end]), span)
             })
             .boxed();
 

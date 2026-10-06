@@ -1723,22 +1723,23 @@ fun main () = println (len vec, List.length list, arrayLen arr)
 
 ### Ranges
 
-`[a..b]` builds an inclusive `Vector` range. Note that the prelude's `range`
-function is **half-open**, which is a genuine trap:
+`[a..b]` builds a `Vector` of the integers from `a` up to, not including,
+`b`, and `[a..=b]` includes `b` -- as Rust's ranges do. The prelude's `range`
+function is the half-open one:
 
 ```meadow
-fun main () = println ([1..5], range 1 5)
+fun main () = println ([1..5], [1..=5], range 1 5)
 ```
 
 ```
-([1, 2, 3, 4, 5], [1, 2, 3, 4])
+([1, 2, 3, 4], [1, 2, 3, 4, 5], [1, 2, 3, 4])
 ```
 
 ### Working with vectors
 
 ```meadow
 fun main () =
-  [1..10]
+  [1..=10]
   |> filter (\n -> n % 2 == 0)
   |> map (\n -> n * n)
   |> foldl (\acc n -> acc + n) 0
@@ -4408,7 +4409,7 @@ a worked example.
   accumulating digits.
 - `+` is for integers and `+.` for floats; two different integer types never mix
   without a conversion.
-- `[1..5]` is **inclusive**; `range 1 5` is **half-open**.
+- `[1..5]` is **half-open**, as `range 1 5` is; `[1..=5]` includes the 5.
 - `@pub` is public, as in Rust; `@pub(pkg)` stops at the package, like `pub(crate)`.
 - A package that marks nothing has no visibility rules at all — mark one thing
   and every module has to say what it shares.

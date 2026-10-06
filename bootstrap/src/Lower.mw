@@ -1831,12 +1831,15 @@ fun brackE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
                    let hi = must NodeExpr r in
                    let hm = exprSpan c hi in
                    let hiE = exprIn c b hs hi None in
-                   -- `[a .. b]` and `[a ..= b]` alike: `range a (b + 1)`.
+                   -- `[a .. b]` stops before `b`, `range a b`; `[a ..= b]`
+                   -- includes it, `range a (b + 1)`.
                    let hi1 =
-                     newAstExprApp b hm (newAstExprVar b hm (nm b (named "+" hm))) [
-                       hiE,
-                       newAstExprLit b hm (newAstLitInt b hm "1")
-                     ]
+                     if tokenIs TokenDoublePeriodEq r then
+                       newAstExprApp b hm (newAstExprVar b hm (nm b (named "+" hm))) [
+                         hiE,
+                         newAstExprLit b hm (newAstLitInt b hm "1")
+                       ]
+                     else hiE
                    in newAstExprApp b m (newAstExprVar b m (nm b (named "range" m))) [lo, hi1]
                | None ->
                    (match childOf NodeListTail body with

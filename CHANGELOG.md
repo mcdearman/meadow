@@ -15,6 +15,9 @@ beyond the last release is under _Unreleased_.
 
 ### Breaking
 
+- `[a..b]` stops before `b`, as Rust's `a..b` does, and `[a..=b]` includes it.
+  Both included `b` before: the parser read the two alike. Write `..=` where
+  a range is to reach its end -- `[1..=10]` for one to ten.
 - An unstable feature is asked for in the source, not in `Meadow.toml`:
   `@!feature(ffi)` at the top of the package's root module, as Rust's
   `#![feature(…)]` is at the top of a crate's. `features = ["ffi"]` under
@@ -152,6 +155,9 @@ published once, and `master` is the nightly channel.
 
 ### Breaking
 
+- `[a..b]` stops before `b`, as Rust's `a..b` does, and `[a..=b]` includes it.
+  Both included `b` before: the parser read the two alike. Write `..=` where
+  a range is to reach its end -- `[1..=10]` for one to ten.
 - `Std.Ffi` is unstable. A package that uses it says so in its `Meadow.toml`,
   `features = ["ffi"]`, and a stable `meadow` refuses it; a nightly accepts it.
 - `Std.Ffi.Arg`'s constructors are `Arg.Int`, `Arg.Float`, `Arg.String` and

@@ -32,6 +32,9 @@ fn lowered_agrees(p: &meadow_cut::Program, out: &Outcome) {
     match Machine::run(&lowered, 100_000_000) {
         Ok(Value::Str(s)) => assert_eq!(&*s, out.output, "what the AxCut machine answers"),
         Ok(v) => panic!("the AxCut machine answered {v}, not a string"),
+        // The machine performs what is printed and nothing else of the world:
+        // a program that asks more of it is one for a runtime.
+        Err(e) if e.msg.starts_with("unhandled effect") => {}
         Err(e) => panic!("the AxCut machine: {e:?}\n{}", lowered.pretty()),
     }
 }
@@ -352,17 +355,24 @@ fn a_reader_refuses_what_it_cannot_read() {
 #[test]
 fn what_is_not_lowered_to_axcut_yet_is_refused_and_says_what() {
     let lowered = |text: &str| meadow_cut::lower::lower(&parse(text).expect("a program"));
-    let effects = lowered(&format!(
+    let effects = lowered(
         "cut 0
 entry idyll:Main/main
 answer none
-{CONSOLE}
+
+effect idyll:Main/Ask { ask(unit) -> i64 }
+
 def idyll:Main/main (; k: ptr) =
-  perform idyll:Prelude/Console.putStr(\"hello\\n\"; k)
-"
-    ));
+  handle {
+    idyll:Main/Ask.ask(u: unit; r: ptr, h: ptr) => <r | apply(1; h)>;
+    return(x: i64; h: ptr) => <x | h>
+  } in μ b.
+    perform idyll:Main/Ask.ask(unit; b)
+  ; k
+",
+    );
     assert!(
-        effects.as_ref().is_err_and(|e| e.contains("effects")),
+        effects.as_ref().is_err_and(|e| e.contains("handles")),
         "{effects:?}"
     );
     let generic = lowered(
@@ -407,4 +417,57 @@ def idyll:Main/main (; k: ptr) =
 ",
     );
     assert_eq!(out.output, "x");
+}
+
+#[test]
+fn an_operation_the_runtime_performs_is_lowered_and_an_executable_prints_its_answer() {
+    use meadow_axcut::{Extern, Statement};
+    let p = parse(&format!(
+        "cut 0
+entry idyll:Main/main
+answer str
+{CONSOLE}
+def idyll:Main/main (; k: ptr) =
+  perform idyll:Prelude/Console.putStr(\"said\\n\"; μ̃ u: unit. <\"answered\" | k>)
+"
+    ))
+    .expect("a program");
+    // Every native operation of the program, by the runtime's names.
+    fn natives(s: &Statement, out: &mut Vec<String>) {
+        match s {
+            Statement::Extern { op, blocks, .. } => {
+                if let Extern::Native(effect, name) = op {
+                    out.push(format!("{effect}.{name}"));
+                }
+                blocks.iter().for_each(|b| natives(&b.body, out));
+            }
+            Statement::Substitute(_, b) => natives(&b.body, out),
+            Statement::Let { rest, .. } => natives(rest, out),
+            Statement::New { methods, rest, .. } => {
+                methods.iter().for_each(|b| natives(&b.body, out));
+                natives(rest, out);
+            }
+            Statement::Switch { arms, default, .. } => {
+                arms.iter().for_each(|(_, b)| natives(&b.body, out));
+                natives(&default.body, out);
+            }
+            _ => {}
+        }
+    }
+    let performed = |program: &meadow_axcut::Program| {
+        let mut out = Vec::new();
+        program
+            .defs
+            .iter()
+            .for_each(|d| natives(&d.block.body, &mut out));
+        out
+    };
+    let answering = meadow_cut::lower::lower(&p).expect("lowered");
+    assert_eq!(performed(&answering), ["Console.writeOutput"]);
+    // An executable writes its answer too, after what it said.
+    let printing = meadow_cut::lower::executable(&p).expect("lowered");
+    assert_eq!(
+        performed(&printing),
+        ["Console.writeOutput", "Console.writeOutput"]
+    );
 }

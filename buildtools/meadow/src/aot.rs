@@ -208,6 +208,30 @@ pub fn build_native(
     target: Target,
     inputs: Option<u64>,
 ) -> Result<PathBuf, String> {
+    build_native_of(root, profile, opt, name, target, inputs, || {
+        let lowered = meadow_seq::lower_program(program, opt);
+        if !lowered.unsupported.is_empty() {
+            return Err(format!(
+                "the back end cannot translate {:?} yet",
+                lowered.unsupported
+            ));
+        }
+        Ok(lowered.program)
+    })
+}
+
+/// [`build_native`] of a program that is AxCut already -- what `lowered`
+/// answers, asked for only if the executable there is not this one's: a
+/// program of Cut, which a front end other than this compiler's wrote.
+pub fn build_native_of(
+    root: &Path,
+    profile: Profile,
+    opt: meadow_compiler::OptLevel,
+    name: &str,
+    target: Target,
+    inputs: Option<u64>,
+    lowered: impl FnOnce() -> Result<meadow_seq::Program, String>,
+) -> Result<PathBuf, String> {
     let dir = native_dir(root, profile, target);
     let exe = dir.join(format!("{name}{}", target.format.exe_suffix()));
     let runtime = runtimes(target)?
@@ -251,14 +275,8 @@ pub fn build_native(
     // program the longest part of it: said, so that it is not taken for a
     // hang.
     crate::status::status("Lowering", format!("`{name}` for Silo"));
-    let lowered = meadow_seq::lower_program(program, opt);
-    if !lowered.unsupported.is_empty() {
-        return Err(format!(
-            "the back end cannot translate {:?} yet",
-            lowered.unsupported
-        ));
-    }
-    let units = meadow_llvm::compile_split(&lowered.program, meadow_llvm::UNIT, target.call_conv())
+    let lowered = lowered()?;
+    let units = meadow_llvm::compile_split(&lowered, meadow_llvm::UNIT, target.call_conv())
         .map_err(|e| e.msg)?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("could not create {}: {e}", dir.display()))?;

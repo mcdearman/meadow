@@ -32,6 +32,9 @@ beyond the last release is under _Unreleased_.
 
 ### Added
 
+- `meadow cut FILE` runs a program written in Cut, the IR a front end hands
+  the back end (`docs/CUT.md`): on Glade, or with `--runtime silo` as a native
+  executable. It takes programs that handle no effects of their own so far.
 - A trait can have associated effects: `effect Reading r` in the trait, a row
   in each `impl` (`effect Reading Done = {}`, `effect Reading (Writing s) = {
 St s }`), and `! Reading r` where a method's type says what it performs. A

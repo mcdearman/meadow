@@ -13,6 +13,7 @@ meadow-compiler.workspace = true
 meadow-eval.workspace = true
 meadow-glade.workspace = true
 meadow-seq.workspace = true
+meadow-cut.workspace = true
 meadow-codegen.workspace = true
 meadow-llvm.workspace = true
 meadow-bytecode.workspace = true
@@ -40,8 +41,6 @@ find-msvc-tools = "0.1"
 
 [dev-dependencies]
 insta = "1.47.2"
-# The reference interpreter of Cut, which what MeadowBoot lowers is run on.
-meadow-cut.workspace = true
 meadow-axcut.workspace = true
 
 [features]

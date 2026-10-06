@@ -11,8 +11,8 @@
 //!   <K(x, ..) | μ̃ y. s>          let y = K#t(x, ..); s
 //!   <cocase { .. } | μ̃ f. s>     new f [what it mentions] { .. }; s
 //!   <x | case { K(..) => s }>     switch x { #t (fields, env) => s }
-//!   <f | m(x, ..; k, ..)>         substitute [x, .., k, .., f]; invoke f#m
-//!   <x | k>                       substitute [x, k]; invoke k#0
+//!   <f | m(x, ..; k, ..)>         substitute [f, x, .., k, ..]; invoke f#m
+//!   <x | k>                       substitute [k, x]; invoke k#0
 //!   f(x, ..; k, ..)               substitute [x, .., k, ..]; jump f
 //!   prim op(x, ..; c)             extern op(x, ..) -> (r, env); r to c
 //! ```
@@ -26,10 +26,13 @@
 //! program's: the block a program starts at computes each in turn and then
 //! calls the entry.
 //!
-//! **Not lowered yet**: `handle` and `perform`, a definition generic in a
-//! representation, a descriptor, and a `μ` that is an argument, whose
-//! representation nothing says. A program with one of them is refused, with
-//! which.
+//! An operation the `native` table binds is the runtime's to perform, and
+//! is an `extern` too.
+//!
+//! **Not lowered yet**: `handle`, and a `perform` of anything but a native
+//! operation; a definition generic in a representation; a descriptor; and a
+//! `μ` that is an argument, whose representation nothing says. A program
+//! with one of them is refused, with which.
 
 use std::collections::{HashMap, HashSet};
 
@@ -42,9 +45,24 @@ use crate::{Answer, Arm, Consumer, Pattern, Producer, Program, Rep, Statement, S
 
 type R<T> = Result<T, String>;
 
-/// `p` as a program of AxCut, or why it is not one yet.
+/// `p` as a program of AxCut, or why it is not one yet. What its entry
+/// answers is what the program answers: a machine that runs it has it back.
 pub fn lower(p: &Program) -> R<ax::Program> {
+    lowered(p, false)
+}
+
+/// The same, as a program to run for what it does: one whose answer is a
+/// string writes it to standard output, as `answer str` says, and answers
+/// `unit`.
+pub fn executable(p: &Program) -> R<ax::Program> {
+    lowered(p, true)
+}
+
+fn lowered(p: &Program, prints: bool) -> R<ax::Program> {
     let mut l = Lower {
+        prints,
+        natives: HashMap::new(),
+        answers: HashMap::new(),
         out: ax::Program::default(),
         next: 0,
         next_tag: 0,
@@ -96,6 +114,13 @@ struct Lower {
     /// Every method any object of the program has, by name: a method's tag
     /// is its place here, so that a call need not know which object it has.
     methods: Vec<String>,
+    /// Whether an answer that is a string is written out.
+    prints: bool,
+    /// Each operation the runtime performs, and the runtime's name for it:
+    /// its effect and its operation.
+    natives: HashMap<Symbol, (InternedString, InternedString)>,
+    /// How what each declared operation is resumed with is represented.
+    answers: HashMap<Symbol, ax::Rep>,
 }
 
 /// What is in scope: the environment, in order, and what each name of Cut's
@@ -216,6 +241,21 @@ impl Lower {
             self.vals
                 .insert(v.symbol.clone(), (i as i64, rep_of(&v.rep)?));
         }
+        for (op, runtime) in &p.natives {
+            let Some((effect, name)) = runtime.split_once('.') else {
+                return Err(format!("`{runtime}` is not an operation of a runtime's"));
+            };
+            self.natives.insert(
+                op.clone(),
+                (InternedString::from(effect), InternedString::from(name)),
+            );
+        }
+        for e in &p.effects {
+            for op in &e.ops {
+                self.answers
+                    .insert(e.symbol.child(&op.name), rep_of(&op.result)?);
+            }
+        }
         let mut names = HashSet::new();
         for d in &p.defs {
             methods_of(&d.body, &mut names);
@@ -302,6 +342,46 @@ impl Lower {
                 body: S::Jump(label),
             }),
         );
+        let printed = self.prints && p.answer == Answer::Str;
+        if printed {
+            // The entry answers a continuation that writes the string out
+            // and answers the program's own with `unit`.
+            let write = self.fresh(ax::Rep::Ref);
+            self.out.continuations.insert(write);
+            let text = self.fresh(ax::Rep::Ref);
+            let done = self.fresh(ax::Rep::Bits(desc::UNIT));
+            rest = S::New {
+                name: write,
+                captures: vec![k],
+                methods: vec![Block {
+                    params: vec![k, text],
+                    body: S::Extern {
+                        op: Extern::Native(
+                            InternedString::from("Console"),
+                            InternedString::from("writeOutput"),
+                        ),
+                        args: vec![text],
+                        blocks: vec![Block {
+                            params: vec![done, k, text],
+                            body: S::Substitute(
+                                vec![k, done],
+                                Box::new(Block {
+                                    params: vec![k, done],
+                                    body: S::Invoke(k, 0),
+                                }),
+                            ),
+                        }],
+                    },
+                }],
+                rest: Box::new(S::Substitute(
+                    vec![write],
+                    Box::new(Block {
+                        params: vec![write],
+                        body: S::Jump(label),
+                    }),
+                )),
+            };
+        }
         for (i, t) in turns.into_iter().enumerate().rev() {
             let kept = S::Extern {
                 op: Extern::Lit(Lit::Int(i as i64)),
@@ -341,9 +421,10 @@ impl Lower {
         self.out.entry = Some(label);
         self.out.results.insert(
             label,
-            match p.answer {
-                Answer::Str => ax::Rep::Str,
-                Answer::None => ax::Rep::Ref,
+            if printed {
+                ax::Rep::Bits(desc::UNIT)
+            } else {
+                ax::Rep::Ref
             },
         );
         Ok(())
@@ -384,7 +465,7 @@ impl Lower {
                 for c in conts {
                     sel.push(self.reify(c, &mut sc, &mut steps)?);
                 }
-                let params = self.distinct(&sel, None);
+                let params = self.distinct(&sel);
                 S::Substitute(
                     sel,
                     Box::new(Block {
@@ -401,32 +482,56 @@ impl Lower {
                 self.prim(op, names, conts, &sc)?
             }
             Statement::Error(msg) => S::Error(Box::leak(msg.clone().into_boxed_str())),
-            Statement::Handle(_) | Statement::Perform(..) => {
-                return Err("effects are not lowered to AxCut yet".to_string());
+            // An operation the runtime performs: its arguments, one, or
+            // packed into the tuple the runtime's operation takes.
+            Statement::Perform(op, args, c) => {
+                let Some(&(effect, name)) = self.natives.get(op) else {
+                    return Err(format!(
+                        "`{op}` is performed, and effects a program handles are not lowered to AxCut yet"
+                    ));
+                };
+                let arg = match &args[..] {
+                    [one] => self.atom(one, &mut sc, &mut steps)?,
+                    [] => self.atom(&Producer::Unit, &mut sc, &mut steps)?,
+                    several => self.data(meadow_rt::roles::TUPLE, several, &mut sc, &mut steps)?,
+                };
+                let rep = match c {
+                    Consumer::MuTilde(b, _) => rep_of(&b.rep)?,
+                    _ => self.answers.get(op).copied().unwrap_or(ax::Rep::Ref),
+                };
+                let r = self.fresh(rep);
+                let mut inner = sc.clone();
+                inner.push(r);
+                let body = self.give(r, c, &inner)?;
+                S::Extern {
+                    op: Extern::Native(effect, name),
+                    args: vec![arg],
+                    blocks: vec![Block {
+                        params: inner.env,
+                        body,
+                    }],
+                }
+            }
+            Statement::Handle(_) => {
+                return Err("effects a program handles are not lowered to AxCut yet".to_string());
             }
         };
         Ok(wrap(steps, last))
     }
 
     /// `sel` as a block's parameters: each name once, a second mention under
-    /// a name of its own -- and any mention of `target` but the last, which
-    /// is the one an `invoke` consumes.
-    fn distinct(&mut self, sel: &[Name], target: Option<Name>) -> Vec<Name> {
+    /// a name of its own. What an `invoke` enters is first, and so keeps its
+    /// name.
+    fn distinct(&mut self, sel: &[Name]) -> Vec<Name> {
         let mut seen = HashSet::new();
-        let last = sel.len().saturating_sub(1);
         let mut out = Vec::with_capacity(sel.len());
-        for (i, &n) in sel.iter().enumerate() {
-            let is_target = target == Some(n) && i != last;
-            if is_target || !seen.insert(n) {
+        for &n in sel {
+            if seen.insert(n) {
+                out.push(n);
+            } else {
                 let rep = self.out.reps.get(&n).copied().unwrap_or(ax::Rep::Ref);
                 out.push(self.fresh(rep));
-            } else {
-                out.push(n);
             }
-        }
-        // The target is last: an earlier parameter may not have taken its name.
-        if let (Some(t), Some(slot)) = (target, out.last_mut()) {
-            *slot = t;
         }
         out
     }
@@ -483,8 +588,6 @@ impl Lower {
             Eq | Ne | Lt | Gt | Le | Ge | LtF | GtF | LeF | GeF => ax::Rep::Bits(desc::BOOL),
             ArrayLen | StringByteLength | StringCompare | CharCode | Hash | PopCount | BitWidth
             | ToInt | StArrayLen | CompactSize => ax::Rep::Int,
-            ConcatStrings | StringSlice | Show | Display | BytesToString | BytesToHex
-            | CharsToString => ax::Rep::Str,
             ToWord(w) => ax::Rep::Bits(desc::word(w)),
             ToFloat32 => ax::Rep::Bits(desc::FLOAT32),
             CharFromCode => ax::Rep::Bits(desc::CHAR),
@@ -531,8 +634,8 @@ impl Lower {
         match c {
             Consumer::Var(_) | Consumer::Halt => {
                 let k = self.named(c, sc)?;
-                let sel = vec![v, k];
-                let params = self.distinct(&sel, Some(k));
+                let sel = vec![k, v];
+                let params = self.distinct(&sel);
                 Ok(S::Substitute(
                     sel,
                     Box::new(Block {
@@ -551,15 +654,14 @@ impl Lower {
                 let tag = self.method(m)?;
                 let mut sc = sc.clone();
                 let mut steps = Vec::new();
-                let mut sel = Vec::new();
+                let mut sel = vec![v];
                 for a in args {
                     sel.push(self.atom(a, &mut sc, &mut steps)?);
                 }
                 for k in conts {
                     sel.push(self.reify(k, &mut sc, &mut steps)?);
                 }
-                sel.push(v);
-                let params = self.distinct(&sel, Some(v));
+                let params = self.distinct(&sel);
                 Ok(wrap(
                     steps,
                     S::Substitute(
@@ -686,7 +788,7 @@ impl Lower {
                 sc,
                 steps,
                 Lit::Str(InternedString::from(s.as_str())),
-                ax::Rep::Str,
+                ax::Rep::Ref,
             ),
             Producer::Val(v) => {
                 let Some(&(place, rep)) = self.vals.get(v) else {
@@ -816,9 +918,11 @@ fn rep_of(r: &Rep) -> R<ax::Rep> {
         Rep::Bool => ax::Rep::Bits(desc::BOOL),
         Rep::Char => ax::Rep::Bits(desc::CHAR),
         Rep::Unit => ax::Rep::Bits(desc::UNIT),
-        Rep::Str => ax::Rep::Str,
-        Rep::Ptr | Rep::Any => ax::Rep::Ref,
-        Rep::Sym | Rep::Desc | Rep::Var(_) => {
+        // A string is an object on the heap. AxCut's `Str` is a symbol's: an
+        // interned name, whose word is its key.
+        Rep::Str | Rep::Ptr | Rep::Any => ax::Rep::Ref,
+        Rep::Sym => ax::Rep::Str,
+        Rep::Desc | Rep::Var(_) => {
             return Err(format!("a value represented as `{r}` is not lowered yet"));
         }
     })

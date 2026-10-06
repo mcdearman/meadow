@@ -277,6 +277,20 @@ enum Cmd {
         #[arg(long, default_value = ".", value_name = "DIR")]
         path: PathBuf,
     },
+    /// Run a program of Cut, the IR a front end hands the back end
+    /// (`docs/CUT.md`): lowered to AxCut and run on Glade, or built for Silo
+    /// and run as an executable.
+    ///
+    /// For whoever writes a front end, Meadow's own in Meadow among them.
+    /// Effects a program handles are not lowered yet.
+    Cut {
+        /// The program, as the text `docs/CUT.md` describes.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// `glade`, on its bytecode, or `silo`, as native code.
+        #[arg(long, default_value = "glade", value_name = "NAME")]
+        runtime: String,
+    },
     /// Remove what a build wrote: the package's `target` directory, with the
     /// images, executables and incremental cache in it.
     ///
@@ -974,6 +988,30 @@ fn command() {
                 std::process::exit(1);
             }
         },
+        Some(Cmd::Cut { file, runtime }) => {
+            let ran = match aot::Runtime::named(&runtime) {
+                Some(aot::Runtime::Glade) => meadow::cut::run_on_glade(&file).map(|()| 0),
+                Some(aot::Runtime::Silo) => {
+                    meadow::cut::build_for_silo(&file, meadow_compiler::OptLevel::O2).and_then(
+                        |exe| {
+                            std::process::Command::new(&exe)
+                                .status()
+                                .map(|s| s.code().unwrap_or(1))
+                                .map_err(|e| format!("{}: {e}", exe.display()))
+                        },
+                    )
+                }
+                None => Err(format!("`{runtime}` is not a runtime: `glade` or `silo`")),
+            };
+            match ran {
+                Ok(0) => {}
+                Ok(code) => std::process::exit(code),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some(Cmd::Clean {
             path,
             profile,

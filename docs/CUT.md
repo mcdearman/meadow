@@ -43,9 +43,15 @@ emit it while Cut is being built, but must not depend on it afterwards.
 | -------------- | ------------------------------------------------------------------------------------------------------- |
 | `meadow-rt`    | the runtime interface: primitives, descriptors, the numeric tower, text and hash rules, roles, evidence |
 | `meadow-axcut` | AxCut, its abstract machine, and (to come) its text format                                              |
-| `meadow-cut`   | (to come) Cut, its text format, its reference interpreter, and its lowering to AxCut                    |
+| `meadow-cut`   | Cut, its text format, its reference interpreter, and its lowering to AxCut                              |
 
 None of them depends on any front end.
+
+`meadow cut FILE` runs a program of Cut's text: lowered to AxCut and run on
+Glade, or, with `--runtime silo`, built as an executable and run. The lowering
+takes a program that handles no effects of its own -- data, objects,
+definitions, top-level values, primitives, and the operations the `native`
+table hands the runtime -- and refuses any other, saying what it met.
 
 ## Representations
 

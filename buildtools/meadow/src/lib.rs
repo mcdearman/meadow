@@ -15,6 +15,7 @@ pub mod artifacts;
 pub mod channel;
 pub mod clean;
 pub mod complete;
+pub mod cut;
 pub mod dap;
 pub mod editor;
 pub mod expanded;

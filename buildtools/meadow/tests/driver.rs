@@ -305,3 +305,64 @@ fn a_macro_a_hundred_calls_deep_compiles() {
     );
     assert_eq!(runs("deep_macro", &src), "7260");
 }
+
+/// A program as a front end hands one to the back end: data taken apart, an
+/// object called, a top-level value, a loop, text printed by the runtime as
+/// it goes and a string for an answer.
+const CUT: &str = r#"cut 0
+entry t:Main/main
+answer str
+
+native {
+  t:Main/Console.say = Console.writeOutput
+}
+
+effect t:Main/Console { say(str) -> unit }
+
+data t:Main/Nat { Z; S(ptr) }
+
+val t:Main/two : ptr =
+  <t:Main/Nat.S(t:Main/Nat.S(t:Main/Nat.Z)) | halt>
+
+def t:Main/count (n: ptr, acc: i64; k: ptr) =
+  <n | case {
+    t:Main/Nat.Z => <acc | k>;
+    t:Main/Nat.S(m: ptr) => prim add(acc, 1; μ̃ a: i64. t:Main/count(m, a; k))
+  }>
+
+def t:Main/down (n: i64, acc: i64; k: ptr) =
+  prim eq(n, 0;
+    μ̃ u: unit. prim sub(n, 1; μ̃ m: i64. prim add(acc, 2; μ̃ a: i64. t:Main/down(m, a; k))),
+    μ̃ u: unit. <acc | k>)
+
+def t:Main/main (; k: ptr) =
+  perform t:Main/Console.say("counting\n"; μ̃ u: unit.
+    t:Main/count(t:Main/two, 0; μ̃ c: i64.
+      <cocase { apply(x: i64; k1: ptr) => t:Main/down(100000, x; k1) } | apply(c; μ̃ r: i64.
+        prim eq(r, 200002; μ̃ w: unit. <"wrong" | k>, μ̃ w: unit. <"200002" | k>))>))
+"#;
+
+#[test]
+fn a_program_of_cut_runs_on_glade_and_as_an_executable_of_silos() {
+    let dir = scratch("cut");
+    std::fs::write(dir.join("count.cut"), CUT).unwrap();
+    for runtime in [&[][..], &["--runtime", "silo"]] {
+        let mut args = vec!["cut", "count.cut"];
+        args.extend_from_slice(runtime);
+        let (ok, out, err) = meadow(&dir, &args);
+        assert!(ok, "{runtime:?}: {err}");
+        assert_eq!(out, "counting\n200002", "{runtime:?}");
+    }
+    // What is not lowered yet is said, and nothing runs.
+    std::fs::write(
+        dir.join("handles.cut"),
+        "cut 0\nentry t:Main/main\nanswer none\n\neffect t:Main/Ask { ask(unit) -> i64 }\n\n\
+         def t:Main/main (; k: ptr) =\n  handle {\n    t:Main/Ask.ask(u: unit; r: ptr, h: ptr) => <r | apply(1; h)>;\n    \
+         return(x: i64; h: ptr) => <x | h>\n  } in μ b.\n    perform t:Main/Ask.ask(unit; b)\n  ; k\n",
+    )
+    .unwrap();
+    let (ok, out, err) = meadow(&dir, &["cut", "handles.cut"]);
+    assert!(!ok && out.is_empty(), "{out}");
+    assert!(err.contains("not lowered to AxCut yet"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -69,10 +69,13 @@ use Std.Macro (Reflect)
 -- requires, each of which of its parameters; its associated types, its own
 -- and those it inherits, each with the parameters it is of; how many of them
 -- are its own; its methods' names; its dictionary's constructor, and the
--- labels of its fields.
+-- labels of its fields. `effectParams` says which of its parameters are
+-- effects -- one a method's type performs, `trait Rows r e { fun slot : r ->
+-- Int ! e }` -- which an `impl` is not found by, and says.
 @derive(Debug, PartialEq, Reflect)
 @pub record TraitShape = {
   params : Int,
+  effectParams : [Bool],
   supers : [Super],
   assocs : [String],
   assocParams : [[Int]],
@@ -121,11 +124,13 @@ use Std.Macro (Reflect)
   value : a
 }
 
--- An associated type's trait, and its place among the trait's.
+-- An associated type's trait, and its place among the trait's; `effect`
+-- for an associated effect, which is a row where the rest are types.
 @derive(Debug, PartialEq, Reflect)
 @pub record AssocOwner = {
   tr : String,
-  at : Int
+  at : Int,
+  isEffect : Bool
 }
 
 @pub def noTypes : TypeEnv =
@@ -213,6 +218,12 @@ use Sol.*
   overloads : HashMap String [Meaning],
   pending : StRef s [Pending],
   subsumptions : StRef s [(Type, Type)],
+  -- The variables that stand for a trait's associated effect at types whose
+  -- `impl` is not found yet: what a call of a method of it performs.
+  assocEffectVars : StRef s [Int],
+  -- Joining what was left to wait: an associated effect that is still a
+  -- variable now is tied to its region after all.
+  settlingJoins : StRef s Bool,
   errors : StRef s [String],
   runSt : Int,
   stLevels : StRef s [Int],
@@ -411,6 +422,15 @@ fun varsOf (q : Quantified) : [Int] =
   | HirTypeView.Tuple r -> V.foldl (\acc x -> collectTyvars a x acc) out r.items
   | HirTypeView.Vector r -> collectTyvars a r.item out
   | HirTypeView.List r -> collectTyvars a r.item out
+  | HirTypeView.Row r ->
+      let labels =
+        V.foldl
+          (\acc l -> V.foldl (\o x -> collectTyvars a x o) acc (hirLabelArgs a l))
+          out
+          (hirRowLabels a r.row)
+      in (match hirRowTail a r.row with
+          | Just tl -> addVar labels (hirNameText a tl)
+          | None -> labels)
   | HirTypeView.Record r ->
       let fs = V.foldl (\acc f -> collectTyvars a (hirTypeFieldTy a f) acc) out r.fields in
       (match r.tail with
@@ -445,6 +465,7 @@ fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out e
   | HirTypeView.Tuple r -> Tuple (V.map (\x -> tyOf i a x params) r.items)
   | HirTypeView.Vector r -> vectorT (tyOf i a r.item params)
   | HirTypeView.List r -> listT (tyOf i a r.item params)
+  | HirTypeView.Row r -> effOf i a r.row params
   | HirTypeView.Record r ->
       let rest =
         (match r.tail with
@@ -481,22 +502,37 @@ fun addVar (out : [String]) (n : String) : [String] = if V.elem n out then out e
     | Just (d : AliasDef) -> (if d.params == V.len args then substBound d.body args else Error)
     | None -> Con name args
 
+-- Whether `name`, canonical, is a trait's associated effect.
+@pub fun isAssocEffect (i : Inf s) (name : String) : Bool ! { St s | e } =
+  match H.lookup name (stGetRef i.assocOf) with
+  | Just (o : AssocOwner) -> o.isEffect
+  | None -> False
+
+-- What kind of variable stands for the associated `name`: an effect's, for
+-- an associated effect.
+@pub fun assocKind (i : Inf s) (name : String) : VarKind ! { St s | e } =
+  if isAssocEffect i name then Effect else Plain
+
 -- A written effect row as a type.
 @pub fun effOf (i : Inf s) (a : HirArena) (row : HirRow) (params : HashMap String Int)
     : Type ! { St s | e } =
+  let named = \l -> canonOf i (hirRefId a (hirLabelRef a l)) (hirNameText a (hirLabelName a l)) in
+  -- A trait's associated effect is not a label: it is whatever row its
+  -- implementation says, and so the rest of this one -- a type by its name
+  -- for now, which `liftAssocs` makes the variable its trait settles.
+  let assoc = V.find (\l -> isAssocEffect i (named l)) (hirRowLabels a row) in
   let tail =
-    (match hirRowTail a row with
-     | Just tl -> M.unwrapOr RowEmpty (M.map (\k -> Bound k) (H.lookup (hirNameText a tl) params))
-     | None -> RowEmpty)
+    (match (hirRowTail a row, assoc) with
+     | (Just tl, _) ->
+         M.unwrapOr RowEmpty (M.map (\k -> Bound k) (H.lookup (hirNameText a tl) params))
+     | (None, Just l) -> Con (named l) (V.map (\x -> tyOf i a x params) (hirLabelArgs a l))
+     | (None, None) -> RowEmpty)
   in
   let labels =
     V.foldl
       (\acc l ->
-        spliceLabel
-          i
-          acc
-          (canonOf i (hirRefId a (hirLabelRef a l)) (hirNameText a (hirLabelName a l)))
-          (V.map (\x -> tyOf i a x params) (hirLabelArgs a l)))
+        if isAssocEffect i (named l) then acc
+        else spliceLabel i acc (named l) (V.map (\x -> tyOf i a x params) (hirLabelArgs a l)))
       []
       (hirRowLabels a row)
   in V.foldl

@@ -66,6 +66,7 @@ use Std.Sort (sortOn)
       tys : [Type],
       context : [Bound],
       assocs : [AssocDef],
+      effects : [AssocEffDef],
       methods : [Bind]
     }
 }
@@ -428,7 +429,7 @@ pass! {
            ref = hidden out (nameMeta out tr) (typeOf env (textOf out tr)),
            tys = tys
          })
-    | Decl.Trait { name, params, supers, assocs, sigs, later defaults } ->
+    | Decl.Trait { name, params, supers, assocs, effects, sigs, later defaults } ->
         (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in
          let w =
            V.foldl
@@ -442,10 +443,11 @@ pass! {
               params = params,
               supers = supers,
               assocs = assocs,
+              effects = effects,
               sigs = sigs,
               defaults = V.map (\d -> d (asMethods env)) defaults
             })
-    | Decl.Impl { tr, tys, context, later assocs, later methods } ->
+    | Decl.Impl { tr, tys, context, later assocs, effects, later methods } ->
         (let t = typeOf env (textOf out tr) in
          let u = mention env t (nameMeta out tr) in
          let inImpl = { env | assocs = M.unwrapOr H.empty (H.lookup t env.scope.traitAssocs) } in
@@ -455,6 +457,7 @@ pass! {
            tys = tys,
            context = context,
            assocs = V.map (\a -> a inImpl) assocs,
+           effects = effects,
            methods = V.map (\m -> m (asMethods env)) methods
          })
     | AssocDef { name, later args, ty } ->
@@ -462,6 +465,9 @@ pass! {
          let u =
            mention env (M.unwrapOr (typeOf env n) (H.lookup n env.assocs)) (nameMeta out name)
          in AssocDef { name = name, args = [], ty = ty })
+    -- What an associated effect is: its row; nobody's use of its name, nor of
+    -- the types it is written at again.
+    | AssocEffDef { name, later args, row } -> AssocEffDef { name = name, args = [], row = row }
 }
 
 fun textOf out (n : HirName) = hirNameTextIn out n

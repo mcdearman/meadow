@@ -381,7 +381,8 @@ fun traitDecl
     (items : [GTree]) =
   let members = V.concatMap (\x -> match firstNode x with | Just y -> [y] | None -> []) items in
   let assocs = V.filter (\x -> R.kindOf x == NodeAssocDecl) members in
-  let rest = V.filter (\x -> R.kindOf x != NodeAssocDecl) members in
+  let effects = V.filter (\x -> R.kindOf x == NodeAssocEff) members in
+  let rest = V.filter (\x -> R.kindOf x != NodeAssocDecl and R.kindOf x != NodeAssocEff) members in
   let sigs = V.filter (\x -> not (has NodeBody x)) rest in
   -- The defaults: each binding written as one, and each signature's clauses,
   -- in the order they were written.
@@ -423,6 +424,19 @@ fun traitDecl
                    | None -> [])
                  (childrenOf NodeTAtom a)))
           assocs)
+       (V.map
+          (\a ->
+            newAstAssoc
+              b
+              (spanOf a)
+              (nm b (nameOf (must TokenUpperIdent a)))
+              (V.concatMap
+                 (\t ->
+                   match childOf TokenLowerIdent t with
+                   | Just x -> [nm b (nameOf x)]
+                   | None -> [])
+                 (childrenOf NodeTAtom a)))
+          effects)
        (V.map
           (\x ->
             newAstMethodSig
@@ -466,7 +480,18 @@ fun implDecl
            (V.map (tatom c b) (childrenOf NodeTAtom a))
            (ty c b (must NodeType (must NodeAssocValue a))))
        assocs)
-    (V.map (bindOf c b) (V.filter (\x -> R.kindOf x != NodeAssocDecl) members))
+    (V.map
+       (\a ->
+         newAstAssocEffDef
+           b
+           (spanOf a)
+           (nm b (nameOf (must TokenUpperIdent a)))
+           (V.map (tatom c b) (childrenOf NodeTAtom a))
+           (row c b (must NodeEffRow (must NodeAssocEffValue a))))
+       (V.filter (\x -> R.kindOf x == NodeAssocEff) members))
+    (V.map
+       (bindOf c b)
+       (V.filter (\x -> R.kindOf x != NodeAssocDecl and R.kindOf x != NodeAssocEff) members))
 
 fun bound (c : Lc) b (s : GTree) =
   newAstBound
@@ -742,9 +767,18 @@ pass! {
         (match V.get (V.concatMap asList [paren, array, brack, recTy]) 0 with
          | Just t -> t
          | _ -> named_ out node)
-    | HeadTy { paren, array, brack } ->
-        (match V.get (V.concatMap asList [paren, array, brack]) 0 with
-         | Just t -> t
+    | HeadTy { paren, array, brack, raw row } ->
+        (match (row, V.get (V.concatMap asList [paren, array, brack]) 0) with
+         | (Just br, _) ->
+             newAstTypeRow
+               out
+               (spanOf br)
+               (newAstRow
+                  out
+                  (spanOf br)
+                  (V.map (\l -> lowerTyRowLabel () out l) (childrenOf NodeRowLabel br))
+                  (M.map (\r -> nm out (lastName r)) (childOf NodeRowTail br)))
+         | (_, Just t) -> t
          | _ -> named_ out node)
     | TParen { tys } ->
         (match V.len tys with
@@ -2204,8 +2238,9 @@ fun jDecl (c : Lc) b (j : Json) =
       (jns b (f 1))
       (V.map (jBound c b) (jarr (f 2)))
       (V.map (\x -> newAstAssoc b (jmeta x) (jn b (jf x 0)) (jns b (jf x 1))) (jarr (f 3)))
-      (V.map (\x -> newAstMethodSig b (jmeta x) (jn b (jf x 0)) (jType c b (jf x 1))) (jarr (f 4)))
-      (V.map (jBind c b) (jarr (f 5)))
+      (V.map (\x -> newAstAssoc b (jmeta x) (jn b (jf x 0)) (jns b (jf x 1))) (jarr (f 4)))
+      (V.map (\x -> newAstMethodSig b (jmeta x) (jn b (jf x 0)) (jType c b (jf x 1))) (jarr (f 5)))
+      (V.map (jBind c b) (jarr (f 6)))
   else if t == "ImplDecl" then
     newAstDeclImpl
       b
@@ -2222,7 +2257,16 @@ fun jDecl (c : Lc) b (j : Json) =
              (V.map (jType c b) (jarr (jf x 1)))
              (jType c b (jf x 2)))
          (jarr (f 3)))
-      (V.map (jBind c b) (jarr (f 4)))
+      (V.map
+         (\x ->
+           newAstAssocEffDef
+             b
+             (jmeta x)
+             (jn b (jf x 0))
+             (V.map (jType c b) (jarr (jf x 1)))
+             (jRow c b (jf x 2)))
+         (jarr (f 4)))
+      (V.map (jBind c b) (jarr (f 5)))
   else if t == "FixityDecl" then newAstDeclFixity b m (jns b (f 0))
   else if t == "Attributed" then
     newAstDeclAttributed b m (V.map (jAttr b) (jarr (f 0))) (jDecl c b (f 1))
@@ -2269,6 +2313,7 @@ fun jType (c : Lc) b (j : Json) =
   else if t == "TTuple" then newAstTypeTuple b m (ts (f 0))
   else if t == "TVector" then newAstTypeVector b m (jType c b (f 0))
   else if t == "TList" then newAstTypeList b m (jType c b (f 0))
+  else if t == "TRow" then newAstTypeRow b m (jRow c b (f 0))
   else
     newAstTypeRecord
       b

@@ -277,6 +277,7 @@ fun declItems (src : Source) (a : AstArena) (vis : Vis) (d : AstDecl)
      V.concat [
        [one (astDeclTraitName a d) "t" "trait"],
        V.map (\x -> one (astAssocName a x) "t" ("assoc:" ++ t)) (astDeclTraitAssocs a d),
+       V.map (\x -> one (astAssocName a x) "t" ("assocEffect:" ++ t)) (astDeclTraitEffects a d),
        V.map (\s -> one (astMethodSigName a s) "v" t) (astDeclTraitSigs a d)
      ])
   else []

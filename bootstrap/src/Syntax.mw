@@ -188,7 +188,9 @@ use Std.Result.Result.*
     Bound = tr:"upper" tys:HeadTy*
     ImplDecl = "impl" tr:"upper" tys:HeadTy* context:WhereBounds? "{" items:Member* "}"
     WhereBounds = "where" bounds:(Bound ("," Bound)*)
-    Member = assoc:AssocDecl | funItem:FunItem | defItem:DefItem
+    Member = assoc:AssocDecl | assocEff:AssocEff | funItem:FunItem | defItem:DefItem
+    AssocEff = "effect" name:"upper" args:TAtom* value:AssocEffValue?
+    AssocEffValue = "=" row:EffRow
     AssocDecl = "type" name:"upper" args:TAtom* value:AssocValue?
     AssocValue = "=" ty:Type
 
@@ -320,6 +322,7 @@ use Std.Result.Result.*
     HeadTy = paren:TParen
       | array:TArray
       | brack:TBrack
+      | row:HeadRow
       | var:("lower" | "mac_lower")
       | name:("upper" | "mac_upper")
     TParen = "(" tys:(Type ("," Type)*)? ")"
@@ -331,6 +334,10 @@ use Std.Result.Result.*
     EffRow = braces:RowBraces | var:("lower" | "mac_lower") | label:RowLabel
     RowBraces = "{" labels:(RowLabel ("," RowLabel)* ","?)? tail:RowTail? "}"
     RowLabel = name:("upper" | "mac_upper") args:TAtom*
+    -- A row where a trait is given one for a parameter that is an effect,
+    -- `impl Rows (Writing s) { St s | e }`: one that names an effect, since
+    -- `{}` there is the `impl`'s empty body.
+    HeadRow = "{" labels:(RowLabel ("," RowLabel)* ","?) tail:RowTail? "}"
 
     -- --- patterns ---
 

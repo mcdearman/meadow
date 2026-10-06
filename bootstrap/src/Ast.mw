@@ -30,10 +30,19 @@ use Lingua (lang!)
       params : [Name],
       supers : [Bound],
       assocs : [Assoc],
+      effects : [Assoc],
       sigs : [MethodSig],
       defaults : [Bind]
     }
-  Decl + Impl { tr : Name, tys : [Type], context : [Bound], assocs : [AssocDef], methods : [Bind] }
+  Decl
+    + Impl {
+      tr : Name,
+      tys : [Type],
+      context : [Bound],
+      assocs : [AssocDef],
+      effects : [AssocEffDef],
+      methods : [Bind]
+    }
   Decl + Fixity { ops : [Name] }
   Decl + Attributed { attrs : [Attr], decl : Decl }
   Decl + MacCall { call : MacCall }
@@ -50,6 +59,7 @@ use Lingua (lang!)
   Bound + Bound { tr : Name, tys : [Type] }
   Assoc + Assoc { name : Name, params : [Name] }
   AssocDef + AssocDef { name : Name, args : [Type], ty : Type }
+  AssocEffDef + AssocEffDef { name : Name, args : [Type], row : Row }
   MethodSig + MethodSig { name : Name, ty : Type }
   Type + Var { name : Name }
   Type + Con { name : Name, args : [Type] }
@@ -57,6 +67,7 @@ use Lingua (lang!)
   Type + Tuple { items : [Type] }
   Type + Vector { item : Type }
   Type + List { item : Type }
+  Type + Row { row : Row }
   Type + Record { fields : [TypeField], tail : Maybe Name }
   TypeField + TypeField { name : Name, ty : Type }
   Row + Row { labels : [Label], tail : Maybe Name }

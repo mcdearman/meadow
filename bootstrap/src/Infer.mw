@@ -83,22 +83,99 @@ fun joinEffect (i : Inf s) (phi : Type) : () ! { St s | e } =
 -- `runSt`s `phi` is older than, and waiting, as a subsumption, while a region
 -- inside a newer `runSt` has not taken shape.
 fun joinEffectInto (i : Inf s) (region : Type) (phi0 : Type) : () ! { St s | e } =
-  let phi = openRowEnd i phi0 in
-  if joinsWithin i region phi then ()
+  let settling = stGetRef i.settlingJoins in
+  let assoc = waitsOnImpl i phi0 in
+  -- A trait's associated effect, of types whose `impl` has not been found:
+  -- what it is, that `impl` will say. Unified with the region now it would
+  -- *be* the region -- everything else performed here -- and the `impl`
+  -- would then be refused for saying less. So the join waits until the
+  -- binding's wanted are answered.
+  if assoc and not settling then
+    stSetRef i.subsumptions (V.pushBack (stGetRef i.subsumptions) (phi0, region))
+  else if assoc then
+    -- One that is still a variable when its binding is done is generic
+    -- there: the function performs it, whatever it is, *and* what else its
+    -- region names. So it is the region's end -- `{ St s | Reading r }` --
+    -- and not the whole of it, which would have every `impl` say it
+    -- performs the `St s` too.
+    (match splitRow (zonk i.ar phi0) with
+     | (named, last) ->
+         -- What it names before its end is joined as any row is, with an
+         -- end of its own; then the end.
+         let u =
+           if V.isEmpty named then ()
+           else
+             joinEffectInto
+               i
+               region
+               (V.foldl
+                  (\rest (lab : (String, Type)) -> RowExtend (fst lab) (snd lab) rest)
+                  (freshEffect i.ar)
+                  (V.reverse named))
+         in match rowEnd (zonk i.ar region) with
+            | Var open -> unifyAt i (Var open) last
+            | _ -> unifyAt i region last)
+  else joinSettled i region (onceEach i phi0)
+
+-- A row's labels each once: an effect named twice is performed once -- `{ St
+-- s, St s }`, what a function that writes a state and reads rows of that
+-- same state comes to once the rows' `impl` is known.
+fun onceEach (i : Inf s) (phi : Type) : Type ! { St s | e } =
+  match splitRow (zonk i.ar phi) with
+  | (labels, last) ->
+      let seen =
+        V.foldl
+          (\acc (lab : (String, Type)) ->
+            (let f = zonk i.ar (snd lab) in
+             if V.any (\(x : (String, Type)) -> fst x == fst lab and snd x == f) acc then acc
+             else V.pushBack acc (fst lab, f)))
+          []
+          labels
+      in V.foldl
+           (\rest (lab : (String, Type)) -> RowExtend (fst lab) (snd lab) rest)
+           last
+           (V.reverse seen)
+
+-- Whether `phi` is, for now, a variable standing for a trait's associated
+-- effect -- alone, or at the end of a row that names effects before it: the
+-- one remembered, or one it was unified with.
+fun waitsOnImpl (i : Inf s) (phi : Type) : Bool ! { St s | e } =
+  match rowEnd (zonk i.ar phi) with
+  | Var id ->
+      -- What an `impl` has settled is a variable no longer, and is dropped.
+      let still =
+        V.concatMap
+          (\v ->
+            match zonk i.ar (Var v) with
+            | Var now -> [(v, now)]
+            | _ -> [])
+          (stGetRef i.assocEffectVars)
+      in
+      let u = stSetRef i.assocEffectVars (V.map fst still) in
+      V.any (\x -> snd x == id) still
+  | _ -> False
+
+fun joinSettled (i : Inf s) (region : Type) (phi0 : Type) : () ! { St s | e } =
+  -- Performing nothing asks nothing of the region: what an associated
+  -- effect turned out to be, where its `impl` is pure.
+  if zonk i.ar phi0 == RowEmpty then ()
   else
-    match zonk i.ar phi with
-    | Var id ->
-        let level = slotLevel i.ar id in
-        let levels = stGetRef i.stLevels in
-        let newer = V.any (\l -> l > level) levels in
-        let waits =
-          (match zonk i.ar region with
-           | Var rid -> newer and rid != id and slotLevel i.ar rid >= M.unwrapOr 0 (V.last levels)
-           | _ -> False)
-        in if waits then
-             stSetRef i.subsumptions (V.pushBack (stGetRef i.subsumptions) (phi, region))
-           else unifyAt i (withoutInnerState i.ar region level) phi
-    | _ -> unifyAt i region phi
+    let phi = openRowEnd i phi0 in
+    if joinsWithin i region phi then ()
+    else
+      match zonk i.ar phi with
+      | Var id ->
+          let level = slotLevel i.ar id in
+          let levels = stGetRef i.stLevels in
+          let newer = V.any (\l -> l > level) levels in
+          let waits =
+            (match zonk i.ar region with
+             | Var rid -> newer and rid != id and slotLevel i.ar rid >= M.unwrapOr 0 (V.last levels)
+             | _ -> False)
+          in if waits then
+               stSetRef i.subsumptions (V.pushBack (stGetRef i.subsumptions) (phi, region))
+             else unifyAt i (withoutInnerState i.ar region level) phi
+      | _ -> unifyAt i region phi
 
 -- Whether `phi` is part of `region` already: the two end in one variable and
 -- every effect `phi` names is in `region`, whose arguments are then unified.
@@ -162,9 +239,17 @@ fun loosenParameter (i : Inf s) (t : Type) : Type ! { St s | e } =
 -- Tie each argument effect recorded since `mark` into what its parameter
 -- allowed.
 fun solveSubsumptions (i : Inf s) (mark : Int) : () ! { St s | e } =
+  -- What waits on an `impl` is joined once that is found, which is asked
+  -- for first; one still a variable after that is generic here, and is the
+  -- region's own.
+  let waits = V.any (\p -> waitsOnImpl i (fst p)) (V.drop (stGetRef i.subsumptions) mark) in
+  let t = if waits then solveWanted i else () in
   let all = stGetRef i.subsumptions in
   let u = stSetRef i.subsumptions (V.take all mark) in
-  V.foldl (\w p -> joinEffectInto i (snd p) (fst p)) () (V.drop all mark)
+  let was = stGetRef i.settlingJoins in
+  let v = stSetRef i.settlingJoins True in
+  let w = V.foldl (\x p -> joinEffectInto i (snd p) (fst p)) () (V.drop all mark) in
+  stSetRef i.settlingJoins was
 
 -- --- overloaded names --------------------------------------------------------
 
@@ -941,6 +1026,11 @@ fun runStArg (cx : Cx s) (src : HirArena) out (body : HirExpr) =
   let x = inferExpr src out (if lam then { pl | seed = Just state } else pl) body in
   let bodyRow = RowExtend "St" (Tuple [state]) outside in
   let w = unifyAt i (typInferringExprIn out x) (funcEff [unitT ()] result bodyRow) in
+  -- What the body asked of a trait at a type that names `s` is answered in
+  -- here too: the `impl` found for it is over variables of its own, which
+  -- made out there could not stand for `s` -- that would be the state
+  -- escaping -- though nothing of it gets out.
+  let w2 = solveWanted i in
   let x2 = solveSubsumptions i mark in
   let levels = stGetRef i.stLevels in
   let y = stSetRef i.stLevels (V.take levels (V.len levels - 1)) in
@@ -1854,7 +1944,17 @@ fun registerTypes (i : Inf s) (here : Here) (items : [Item]) (decls : [HirDecl])
       (\w d ->
         match viewHirDecl a d with
         | HirDeclView.Trait r ->
-            registerTraitDecl i a items r.name r.params r.supers r.assocs r.sigs r.defaults
+            registerTraitDecl
+              i
+              a
+              items
+              r.name
+              r.params
+              r.supers
+              r.assocs
+              r.effects
+              r.sigs
+              r.defaults
         | _ -> ())
       ()
       decls
@@ -2027,6 +2127,7 @@ fun registerTraitDecl
     (paramNodes : [HirName])
     (superBounds : [HirBound])
     (assocNodes : [HirAssoc])
+    (effectNodes : [HirAssoc])
     (sigs : [HirMethodSig])
     (defaults : [HirBind])
     : () ! { St s | e } =
@@ -2065,6 +2166,18 @@ fun registerTraitDecl
              (itemNamed items "t" ("assoc:" ++ tname) (hirNameText a (hirAssocName a x)))))
       assocNodes
   in
+  -- An associated effect is one of them, after the types: a row the
+  -- implementation chooses, where those are types.
+  let effects =
+    V.map
+      (\x ->
+        M.unwrapOr
+          (hirNameText a (hirAssocName a x))
+          (M.map
+             (\(it : Item) -> it.canon)
+             (itemNamed items "t" ("assocEffect:" ++ tname) (hirNameText a (hirAssocName a x)))))
+      effectNodes
+  in
   let methods =
     V.map
       (\ms ->
@@ -2076,7 +2189,16 @@ fun registerTraitDecl
           V.find (\id -> V.getOr "" i.names id == mname) (V.concatMap (\b -> boundBy a b) defaults)
         in (mname, var, hirMethodSigTy a ms, dflt))
       sigs
-  in registerTrait i a canon params supers assocs methods (canon ++ ".#dict")
+  in registerTrait
+       i
+       a
+       canon
+       params
+       supers
+       (V.append assocs effects)
+       (V.len effects)
+       methods
+       (canon ++ ".#dict")
 
 -- A module's `impl`s, each after those of the traits its trait requires.
 fun registerImpls (i : Inf s) (here : Here) (decls : [HirDecl]) (dicts : HashMap String Int)
@@ -2105,6 +2227,15 @@ fun registerImpls (i : Inf s) (here : Here) (decls : [HirDecl]) (dicts : HashMap
                  (\ad ->
                    (assocCanon shape (hirNameText a (hirAssocDefName a ad)), hirAssocDefTy a ad))
                  r.assocs
+             in
+             let effects =
+               V.map
+                 (\ed ->
+                   (
+                     assocCanon shape (hirNameText a (hirAssocEffDefName a ed)),
+                     hirAssocEffDefRow a ed
+                   ))
+                 r.effects
              in registerImpl
                   i
                   a
@@ -2112,6 +2243,7 @@ fun registerImpls (i : Inf s) (here : Here) (decls : [HirDecl]) (dicts : HashMap
                   r.tys
                   r.context
                   assocs
+                  effects
                   (M.unwrapOr 0 (H.lookup "${show here.m}:${show d}" dicts)))
        ()
        sorted
@@ -2451,6 +2583,7 @@ fun writtenDecl (cx : Cx s) (src : HirArena) out (done : HashMap String Int) (d 
            (V.map (\n -> inferName src out pl n) r.params)
            (V.map (\x -> inferBound src out pl x) r.supers)
            (V.map (\x -> inferAssoc src out pl x) r.assocs)
+           (V.map (\x -> inferAssoc src out pl x) r.effects)
            (V.map (\x -> inferMethodSig src out pl x) r.sigs)
            (V.map (\b -> writtenBind cx src out done b) r.defaults))
   | HirDeclView.Impl r ->
@@ -2463,6 +2596,7 @@ fun writtenDecl (cx : Cx s) (src : HirArena) out (done : HashMap String Int) (d 
            (V.map (\t -> inferType src out pl t) r.tys)
            (V.map (\x -> inferBound src out pl x) r.context)
            (V.map (\x -> inferAssocDef src out pl x) r.assocs)
+           (V.map (\x -> inferAssocEffDef src out pl x) r.effects)
            (V.map (\b -> writtenBind cx src out done b) r.methods))
   | _ -> Just (inferDecl src out pl d)
 
@@ -2587,6 +2721,8 @@ fun newInf (r : Renamed) : Inf s ! { St s | e } =
     overloads = H.empty,
     pending = stNewRef [],
     subsumptions = stNewRef [],
+    assocEffectVars = stNewRef [],
+    settlingJoins = stNewRef False,
     errors = stNewRef [],
     runSt = M.unwrapOr (0 - 1) (M.map snd (V.find (\p -> fst p == "runSt") r.prims)),
     stLevels = stNewRef [],

@@ -656,6 +656,12 @@ impl Tree<'_> {
                         w.idents("params", ps);
                     })
                 });
+                w.list("effects", &t.effects, |w, (n, ps)| {
+                    w.under("Effect", |w| {
+                        w.ident(n);
+                        w.idents("params", ps);
+                    })
+                });
                 w.list("sigs", &t.sigs, |w, (n, ty)| {
                     w.under("Sig", |w| {
                         w.ident(n);
@@ -675,6 +681,13 @@ impl Tree<'_> {
                         w.ident(n);
                         w.list("args", args, |w, t| w.ty(t));
                         w.ty(ty);
+                    })
+                });
+                w.list("effects", &i.effects, |w, (n, args, is)| {
+                    w.under("Effect", |w| {
+                        w.ident(n);
+                        w.list("args", args, |w, t| w.ty(t));
+                        w.row(is);
                     })
                 });
                 w.list("methods", &i.methods, |w, b| {

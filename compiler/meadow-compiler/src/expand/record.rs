@@ -304,6 +304,11 @@ fn decl(d: &ast::LDecl) -> String {
                         .map(|(n, ps)| node("Assoc", n.span, &[name(n), names(ps)])),
                 ),
                 list(
+                    td.effects
+                        .iter()
+                        .map(|(n, ps)| node("AssocEff", n.span, &[name(n), names(ps)])),
+                ),
+                list(
                     td.sigs
                         .iter()
                         .map(|(n, t)| node("MethodSig", join(n.span, t.span), &[name(n), ty(t)])),
@@ -323,6 +328,13 @@ fn decl(d: &ast::LDecl) -> String {
                         "AssocDef",
                         join(n.span, t.span),
                         &[name(n), list(args.iter().map(ty)), ty(t)],
+                    )
+                })),
+                list(id.effects.iter().map(|(n, args, r)| {
+                    node(
+                        "AssocEffDef",
+                        n.span,
+                        &[name(n), list(args.iter().map(ty)), row(r, n.span)],
                     )
                 })),
                 list(id.methods.iter().map(bind)),

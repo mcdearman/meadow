@@ -513,7 +513,8 @@ fun traitDecl (c : Cx) (e : Int) (name : Syn) (params : [Syn]) (supers : Maybe S
     : [String] =
   let members = V.concatMap (\m -> match firstNode m with | Just x -> [x] | None -> []) items in
   let assocs = V.filter (\x -> R.kindOf x == NodeAssocDecl) members in
-  let rest = V.filter (\x -> R.kindOf x != NodeAssocDecl) members in
+  let effects = V.filter (\x -> R.kindOf x == NodeAssocEff) members in
+  let rest = V.filter (\x -> R.kindOf x != NodeAssocDecl and R.kindOf x != NodeAssocEff) members in
   let sigs = V.filter (\x -> not (has NodeBody x)) rest in
   -- The defaults: each binding written as one, and each signature's clauses,
   -- in the order they were written.
@@ -562,6 +563,24 @@ fun traitDecl (c : Cx) (e : Int) (name : Syn) (params : [Syn]) (supers : Maybe S
             assocs),
        many
          e
+         "effects"
+         (each
+            (\k a ->
+              under k "Effect" [
+                ident (k + 1) (nameOf (must TokenUpperIdent a)),
+                idents
+                  (k + 1)
+                  "params"
+                  (V.concatMap
+                     (\t ->
+                       match childOf TokenLowerIdent t with
+                       | Just x -> [nameOf x]
+                       | None -> [])
+                     (childrenOf NodeTAtom a))
+              ])
+            effects),
+       many
+         e
          "sigs"
          (each
             (\k x ->
@@ -605,10 +624,21 @@ fun implDecl (c : Cx) (e : Int) (tr : Syn) (tys : [Syn]) (context : Maybe Syn) (
          assocs),
     many
       e
+      "effects"
+      (each
+         (\k a ->
+           under k "Effect" [
+             ident (k + 1) (nameOf (must TokenUpperIdent a)),
+             many (k + 1) "args" (each (tatom c) (childrenOf NodeTAtom a)),
+             row c (k + 1) (must NodeEffRow (must NodeAssocEffValue a))
+           ])
+         (V.filter (\x -> R.kindOf x == NodeAssocEff) members)),
+    many
+      e
       "methods"
       (each
          (\k x -> under k "Method" [bindOf c (k + 1) x])
-         (V.filter (\x -> R.kindOf x != NodeAssocDecl) members))
+         (V.filter (\x -> R.kindOf x != NodeAssocDecl and R.kindOf x != NodeAssocEff) members))
   ]
 
 fun bound (c : Cx) (d : Int) (s : Syn) : [String] =
@@ -1033,6 +1063,15 @@ fun tatom (c : Cx) (d : Int) (s : Syn) : [String] =
           (spanOf n)
           (ty c (d + 1) (must NodeType n))
       else if k == NodeRecTy then recTy c d n
+      else if k == NodeHeadRow then
+        node
+          d
+          "TRow"
+          (spanOf n)
+          (under (d + 1) "Row" [
+             many (d + 2) "labels" (each (rowLabel c) (childrenOf NodeRowLabel n)),
+             opt (d + 2) "tail" (M.map (\r -> \j -> ident j (lastName r)) (childOf NodeRowTail n))
+           ])
       else node d "TVar" m (ident (d + 1) (firstName s))
   | None ->
       (match V.get (tokenKids s) 0 with

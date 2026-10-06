@@ -345,6 +345,8 @@ struct Printer<'a> {
     /// What is read is the head of a declaration: its name and what it
     /// takes, which are one line or a line each.
     heading: bool,
+    /// Whether what is being read is in a trait's or an `impl`'s block.
+    member: bool,
 }
 
 /// `src` laid out within `width` columns, or nothing where its brackets do
@@ -363,6 +365,7 @@ pub fn pretty(src: &str, width: usize) -> Option<String> {
         macros: 0,
         alone: false,
         heading: false,
+        member: false,
     };
     let mut doc = p.file(&after);
     Some(crate::doc::print(&mut doc, width))
@@ -611,8 +614,16 @@ impl<'a> Printer<'a> {
         let body = match word {
             "fun" | "def" | "type" => self.binding(),
             "data" => self.data(),
+            // In a trait or an `impl`, what an associated effect is: a row,
+            // not a block of fields.
+            "effect" if self.member && self.find(self.i, "=").is_some() => self.binding(),
             "record" | "effect" => self.block(true),
-            "trait" | "impl" | "mod" => self.block(false),
+            "trait" | "impl" | "mod" => {
+                let was = std::mem::replace(&mut self.member, word != "mod");
+                let d = self.block(false);
+                self.member = was;
+                d
+            }
             "macro" => {
                 self.macros += 1;
                 let d = self.seq(2);
@@ -2012,6 +2023,16 @@ use Maybe.*
         check(
             "def text = \"one\ntwo\"\n        -- tests\n\n        use\n        Std.Test\n        (assertEq)\n        @test\n        fun\n        works\n        () =\n        assertEq 1 1 \"one\"\n",
             "def text = \"one\ntwo\"\n-- tests\n\nuse Std.Test (assertEq)\n@test fun works () = assertEq 1 1 \"one\"\n",
+        );
+    }
+
+    // What an associated effect is, in an `impl`, is a row on its line; an
+    // effect's alias at the top is a label a line, as it was.
+    #[test]
+    fn an_associated_effect_is_a_row_on_its_line() {
+        check(
+            "impl Rows (Writing s) {\n  effect Reading (Writing s) = {\n    St s\n  }\n  fun slot r i = get r i\n}\n\neffect Eff = { Console, Fs }\n",
+            "impl Rows (Writing s) {\n  effect Reading (Writing s) = { St s }\n  fun slot r i = get r i\n}\n\neffect Eff = {\n  Console,\n  Fs\n}\n",
         );
     }
 

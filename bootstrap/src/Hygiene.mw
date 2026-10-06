@@ -65,6 +65,11 @@ fun decl b (d : Int) =
           (\a -> (let y = unmark b (astAssocNameIn b a) in each (unmark b) (astAssocParamsIn b a)))
           r.assocs
       in
+      let x2 =
+        each
+          (\a -> (let y = unmark b (astAssocNameIn b a) in each (unmark b) (astAssocParamsIn b a)))
+          r.effects
+      in
       let y =
         each
           (\s -> (let z = unmark b (astMethodSigNameIn b s) in ty b (astMethodSigTyIn b s)))
@@ -81,6 +86,14 @@ fun decl b (d : Int) =
              let z = each (ty b) (astAssocDefArgsIn b a) in
              ty b (astAssocDefTyIn b a)))
           r.assocs
+      in
+      let x2 =
+        each
+          (\a ->
+            (let y = unmark b (astAssocEffDefNameIn b a) in
+             let z = each (ty b) (astAssocEffDefArgsIn b a) in
+             row b (astAssocEffDefRowIn b a)))
+          r.effects
       in each (\m -> (let z = itemBinder b m in bind b m)) r.methods
   | AstDeclView.Data r ->
       let u = unmark b r.name in
@@ -158,23 +171,25 @@ fun ty b (t : Int) =
   | AstTypeView.Fun r ->
       let u = each (ty b) r.params in
       let v = ty b r.result in
-      maybe
-        (\w ->
-          (let x =
-             each
-               (\l -> (let y = unmark b (astLabelNameIn b l) in each (ty b) (astLabelArgsIn b l)))
-               (astRowLabelsIn b w)
-           in maybe (unmark b) (astRowTailIn b w)))
-        r.row
+      maybe (row b) r.row
   | AstTypeView.Tuple r -> each (ty b) r.items
   | AstTypeView.Vector r -> ty b r.item
   | AstTypeView.List r -> ty b r.item
+  | AstTypeView.Row r -> row b r.row
   | AstTypeView.Record r ->
       (let u =
          each
            (\f -> (let v = unmark b (astTypeFieldNameIn b f) in ty b (astTypeFieldTyIn b f)))
            r.fields
        in maybe (unmark b) r.tail)
+
+-- An effect row: its labels, what each is given, and its tail.
+fun row b (w : Int) =
+  let x =
+    each
+      (\l -> (let y = unmark b (astLabelNameIn b l) in each (ty b) (astLabelArgsIn b l)))
+      (astRowLabelsIn b w)
+  in maybe (unmark b) (astRowTailIn b w)
 
 -- --- terms -------------------------------------------------------------------
 

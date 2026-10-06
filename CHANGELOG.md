@@ -82,6 +82,9 @@ St s }`), and `! Reading r` where a method's type says what it performs. A
 
 ### Fixed
 
+- `meadow fmt` keeps what an associated effect is on its line in an `impl`,
+  `effect Reading (Writing s) = { St s }`. It laid the row out as the fields
+  of an `effect` declaration, a label a line.
 - A trait used at a type with the caller's own type variables in it -- an
   `impl` for `Builder s`, inside a function generic in `s`, as everything run
   under a `runSt` is -- is compiled away in a release build as it is at a

@@ -49,6 +49,23 @@ fun headKey (t : Type) : Maybe String =
 
 @pub fun blanketKey (n : Int) : String = S.join " " (V.replicate n "_")
 
+-- Which of trait `tr`'s parameters are effects.
+fun effectParamsOf (i : Inf s) (tr : String) : [Bool] ! { St s | e } =
+  match H.lookup tr (stGetRef i.shapes) with
+  | Just (sh : TraitShape) -> sh.effectParams
+  | None -> []
+
+-- What an `impl` of `tr` for `tys` is found by: the outermost constructor of
+-- each, all of them known -- but for a parameter that is an effect, which is
+-- the `impl`'s to say and so is not looked at.
+fun implHeadsKey (i : Inf s) (tr : String) (tys : [Type]) : Maybe String ! { St s | e } =
+  let effects = effectParamsOf i tr in
+  let heads =
+    V.map
+      (\k -> if V.getOr False effects k then Just "!" else headKey (V.getOr Error tys k))
+      (V.range 0 (V.len tys))
+  in if V.all M.isSome heads then Just (S.join " " (V.map (M.unwrapOr "") heads)) else None
+
 fun implKey (tr : String) (key : String) : String = tr ++ "\n" ++ key
 
 @pub fun methodKey (tr : String) (name : String) : String = tr ++ "\n" ++ name
@@ -63,8 +80,23 @@ fun wantedAt (i : Inf s) (k : Int) : Wanted ! { St s | e } = B.at i.wanted k
 fun setSol (i : Inf s) (k : Int) (sol : Maybe Sol) : () ! { St s | e } =
   B.put i.wanted k { (wantedAt i k) | sol = sol }
 
+-- Ask for `p`. An associated effect of what it asks for is a variable until
+-- an `impl` says what it is, and is remembered as one: a call that performs
+-- it has to wait for that, and not be tied to wherever it is made first
+-- (`joinEffectInto`).
 fun want (i : Inf s) (p : Pred) (owner : Maybe Int) : Int ! { St s | e } =
-  B.push i.wanted (Wanted { pred = p, owner = owner, sol = None })
+  let u =
+    V.foldl
+      (\w x ->
+        match zonk i.ar x with
+        | Var id ->
+            if slotKind i.ar id == Effect then
+              stSetRef i.assocEffectVars (V.pushBack (stGetRef i.assocEffectVars) id)
+            else ()
+        | _ -> ())
+      ()
+      p.assocs
+  in B.push i.wanted (Wanted { pred = p, owner = owner, sol = None })
 
 -- The scheme of a name mentioned, instantiated, wanting what its `where`
 -- asks for.
@@ -94,7 +126,7 @@ fun solveOne (i : Inf s) (k : Int) : Bool ! { St s | e } =
     let tys = V.map (zonk i.ar) w.pred.tys in
     if V.any referencesError tys then (let u = setSol i k (Just Failed) in False)
     else
-      match headsKey tys with
+      match implHeadsKey i w.pred.tr tys with
       | None -> (let u = agree i k tys in False)
       | Just key ->
           (let scrutinee =
@@ -129,7 +161,7 @@ fun defaultWanted (i : Inf s) (k : Int) : Bool ! { St s | e } =
   let w = wantedAt i k in
   let tr = w.pred.tr in
   let tys = V.map (zonk i.ar) w.pred.tys in
-  match M.andThen (\key -> findImpl i tr key) (headsKey tys) with
+  match M.andThen (\key -> findImpl i tr key) (implHeadsKey i tr tys) with
   | Just found -> (let u = answerWith i k tys found in True)
   | None ->
       (match findImpl i tr (blanketKey (V.len tys)) with
@@ -466,7 +498,7 @@ fun finishFrom (i : Inf s) (k : Int) : () ! { St s | e } =
   quant : [VarKind]
 }
 
-fun assocVar (assoc : String) (over : [Type]) (st : AssocVars) : (Int, AssocVars) =
+fun assocVar (assoc : String) (over : [Type]) (st : AssocVars) (kind : VarKind) : (Int, AssocVars) =
   let scrutinee = V.find (\x -> match x with | (a, t, _) -> a == assoc and t == over) st.table in
   match scrutinee with
   | Just (_, _, k) -> (k, st)
@@ -474,10 +506,7 @@ fun assocVar (assoc : String) (over : [Type]) (st : AssocVars) : (Int, AssocVars
       let k = V.len st.quant in
       (
         k,
-        AssocVars {
-          table = V.pushBack st.table (assoc, over, k),
-          quant = V.pushBack st.quant Plain
-        }
+        AssocVars { table = V.pushBack st.table (assoc, over, k), quant = V.pushBack st.quant kind }
       )
 
 -- `t` with every `Elem τ` a quantifier.
@@ -487,7 +516,8 @@ fun assocVar (assoc : String) (over : [Type]) (st : AssocVars) : (Int, AssocVars
       (match liftEach i args st with
        | (xs, st2) ->
            (if M.isSome (H.lookup name (stGetRef i.assocOf)) then
-              (match assocVar name xs st2 with | (k, st3) -> (Bound k, st3))
+              (match assocVar name xs st2 (assocKind i name) with
+               | (k, st3) -> (Bound k, st3))
             else (Con name xs, st2)))
   | Tuple items ->
       (match liftEach i items st with
@@ -531,7 +561,11 @@ fun liftEach (i : Inf s) (ts : [Type]) (st : AssocVars) : ([Type], AssocVars) ! 
                     V.concatMap
                       (\p -> match V.get tys p with | Just x -> [x] | None -> [])
                       (V.getOr [] sh.assocParams k)
-                  in match assocVar (V.getOr "" sh.assocs k) over s1 with
+                  in match assocVar
+                       (V.getOr "" sh.assocs k)
+                       over
+                       s1
+                       (assocKind i (V.getOr "" sh.assocs k)) with
                      | (q, s2) -> (V.pushBack xs (Bound q), s2)))
            ([], st)
            (V.range 0 (V.len sh.assocs))
@@ -672,8 +706,9 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int)
 -- A `trait`: its shape, its dictionary's constructor, and its methods'
 -- schemes -- `name` its canonical name, `params` its parameters' names,
 -- `supers` the traits it requires, each with the parameters it is of,
--- `assocs` its associated types' canonical names, and `methods` each method's
--- name, binder, written type, and default's binder.
+-- `assocs` its associated types' canonical names and then its associated
+-- effects', which the last `effects` of them are, and `methods` each
+-- method's name, binder, written type, and default's binder.
 @pub fun registerTrait
     (i : Inf s)
     (a : HirArena)
@@ -681,6 +716,7 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int)
     (params : [String])
     (supers : [Super])
     (assocs : [String])
+    (effects : Int)
     (methods : [(String, Int, HirType, Maybe Int)])
     (dict : String)
     : () ! { St s | e } =
@@ -714,6 +750,7 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int)
   let shape =
     TraitShape {
       params = np,
+      effectParams = V.replicate np False,
       supers = supers,
       assocs = allAssocs,
       assocParams = assocParams,
@@ -731,7 +768,10 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int)
       (\x k ->
         stSetRef
           i.assocOf
-          (H.insert (V.getOr "" assocs k) (AssocOwner { tr = name, at = k }) (stGetRef i.assocOf)))
+          (H.insert
+             (V.getOr "" assocs k)
+             (AssocOwner { tr = name, at = k, isEffect = k >= V.len assocs - effects })
+             (stGetRef i.assocOf)))
       ()
       (V.range 0 (V.len assocs))
   in
@@ -751,14 +791,28 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int)
         ))
       supers
   in
-  let methodFields =
+  let registered =
     V.map (\m -> registerMethod i a name params allAssocs assocParams headArgs m) methods
   in
-  let quant = V.replicate (np + n) Plain in
-  recordCtorIn i name dict quant head (V.append superFields methodFields)
+  let methodFields = V.map fst registered in
+  -- A parameter of the trait a method performs is an effect.
+  let effectParams =
+    V.map (\p -> V.any (\r -> V.getOr Plain (snd r) p == Effect) registered) (V.range 0 np)
+  in
+  let w =
+    stSetRef i.shapes (H.insert name { shape | effectParams = effectParams } (stGetRef i.shapes))
+  in
+  let quant =
+    V.map
+      (\k ->
+        if k < np then (if V.getOr False effectParams k then Effect else Plain)
+        else assocKind i (V.getOr "" allAssocs (k - np)))
+      (V.range 0 (np + n))
+  in recordCtorIn i name dict quant head (V.append superFields methodFields)
 
 -- One method: its scheme over the trait's parameters and associated types,
--- and its field in the dictionary.
+-- and its field in the dictionary; and what kind each quantifier of its
+-- scheme is, the trait's parameters first.
 fun registerMethod
     (i : Inf s)
     (a : HirArena)
@@ -768,7 +822,7 @@ fun registerMethod
     (assocParams : [[Int]])
     (headArgs : [Type])
     (m : (String, Int, HirType, Maybe Int))
-    : (Maybe String, Type) ! { St s | e } =
+    : ((Maybe String, Type), [VarKind]) ! { St s | e } =
   match m with
   | (mname, var, mty, dflt) ->
       let np = V.len params in
@@ -781,7 +835,15 @@ fun registerMethod
           (V.range 0 (V.len others))
       in
       let raw = tyOf i a mty vars in
-      let quant = markEffectVars raw (V.replicate (np + n + V.len others) Plain) in
+      -- An associated effect's quantifier is an effect's.
+      let quant =
+        markEffectVars
+          raw
+          (V.map
+             (\k ->
+               if k >= np and k < np + n then assocKind i (V.getOr "" assocs (k - np)) else Plain)
+             (V.range 0 (np + n + V.len others)))
+      in
       let table =
         V.map
           (\k -> (V.getOr "" assocs k, V.map (\p -> Bound p) (V.getOr [] assocParams k), np + k))
@@ -812,7 +874,7 @@ fun registerMethod
                 | None -> ())
              in
              let w = setScheme i var sc in
-             (Just mname, field)
+             ((Just mname, field), quant)
 
 -- A constructor `ctor` of type `tyname`, with the scheme `quant => head`
 -- over its fields -- named or not -- and its fields' accessors.
@@ -864,7 +926,8 @@ fun registerMethod
 
 -- An `impl`: the scheme of its dictionary, found from here on by its trait
 -- and its types' constructors. `tr` the trait, `tys` the types it is for,
--- `context` its `where`, `assocs` its associated types, `dict` its binder.
+-- `context` its `where`, `assocs` its associated types, `effects` its
+-- associated effects, `dict` its binder.
 @pub fun registerImpl
     (i : Inf s)
     (a : HirArena)
@@ -872,6 +935,7 @@ fun registerMethod
     (tys : [HirType])
     (context : [HirBound])
     (assocs : [(String, HirType)])
+    (effects : [(String, HirRow)])
     (dict : Int)
     : () ! { St s | e } =
   match H.lookup tr (stGetRef i.shapes) with
@@ -887,25 +951,46 @@ fun registerMethod
       let heads = V.map (\t -> tyOf i a t vars) tys in
       if V.any referencesError heads then ()
       else
+        -- A parameter that is an effect is not what an `impl` is found by: it
+        -- is whatever row the `impl` says, a variable or not.
+        let isEffect = \k -> V.getOr False sh.effectParams k in
         let blanket =
           V.all
             (\k ->
-              (match V.getOr Error heads k with
-               | Bound _ -> not (V.elem (V.getOr Error heads k) (V.take heads k))
-               | _ -> False))
+              isEffect k
+                or (match V.getOr Error heads k with
+                 | Bound _ -> not (V.elem (V.getOr Error heads k) (V.take heads k))
+                 | _ -> False))
             (V.range 0 (V.len heads))
         in
-        let plain = V.all distinctParams heads in
+        let plain =
+          V.all
+            (\k -> isEffect k or distinctParams (V.getOr Error heads k))
+            (V.range 0 (V.len heads))
+        in
         let key =
           (if blanket then Just (blanketKey (V.len heads))
-           else (if plain then headsKey heads else None))
+           else (if plain then implHeadsKey i tr heads else None))
+        in
+        -- What it is given for a parameter that is an effect is a row: its
+        -- variable, alone or at its end, is an effect's.
+        let kinds =
+          V.foldl
+            (\ks k ->
+              if not (isEffect k) then ks
+              else
+                (match rowTail (V.getOr Error heads k) with
+                 | Bound v -> (if v < V.len ks then V.set ks v Effect else ks)
+                 | _ -> ks))
+            (V.replicate (V.len names) Plain)
+            (V.range 0 (V.len heads))
         in match key with
            | None ->
                report
                  i
                  "`impl ${spelling tr}`: an `impl` is for a type constructor applied to distinct variables"
            | Just k ->
-               let st0 = AssocVars { table = [], quant = V.replicate (V.len names) Plain } in
+               let st0 = AssocVars { table = [], quant = kinds } in
                let scrutinee =
                  V.foldl
                    (\acc b ->
@@ -935,7 +1020,12 @@ fun registerMethod
                                 (let is =
                                    (match V.find (\x -> fst x == V.getOr "" sh.assocs j) assocs with
                                     | Just (_, t) -> tyOf i a t vars
-                                    | None -> Error)
+                                    | None ->
+                                        (match V.find
+                                           (\x -> fst x == V.getOr "" sh.assocs j)
+                                           effects with
+                                         | Just (_, row) -> effOf i a row vars
+                                         | None -> Error))
                                  in match liftAssocs i is s1 with
                                     | (x, s2) -> (V.pushBack xs x, s2)))
                           (heads, st1)
@@ -990,7 +1080,7 @@ fun inheritedAssoc
       match M.andThen (\o -> knownAssoc i o x over) owner with
       | Just known -> (V.pushBack args known, st, preds)
       | None ->
-          (match assocVar x over st with
+          (match assocVar x over st (assocKind i x) with
            | (q, st2) ->
                (match owner with
                 | Just o ->
@@ -1000,6 +1090,12 @@ fun inheritedAssoc
                       (match predOver i o over st2 with
                        | (p, st3) -> (V.pushBack args (Bound q), st3, V.pushBack preds p))
                 | None -> (V.pushBack args (Bound q), st2, preds)))
+
+-- Where a row ends.
+fun rowTail (t : Type) : Type =
+  match t with
+  | RowExtend _ _ rest -> rowTail rest
+  | other -> other
 
 -- A constructor or tuple applied to distinct variables.
 fun distinctParams (head : Type) : Bool =

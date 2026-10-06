@@ -110,6 +110,53 @@ fun greeter () =
   | None -> println "Nobody there."
   | Just name -> println (S.concatAll ["Hello, ", name, "!"])
 
+-- --- an effect each implementation chooses -----------------------------------
+--
+-- What a trait's method performs need not be the same for every type that
+-- implements it. `Reading r` is an *associated effect*: each `impl` says what
+-- it is, as it would say what an associated type is. Reading a finished table
+-- performs nothing; reading one still being written performs the `St` it is
+-- written in. `second` is written once, over both, and performs whichever
+-- its argument's reading does.
+
+data Finished = Finished #[Int]
+
+data Writing s = Writing (StArray s Int)
+
+trait Rows r {
+  effect Reading r
+  fun slot : r -> Int -> Int ! Reading r
+}
+
+impl Rows Finished {
+  effect Reading Finished = {}
+  fun slot r i = match r with | Finished a -> arrayGet a i
+}
+
+impl Rows (Writing s) {
+  effect Reading (Writing s) = { St s }
+  fun slot r i = match r with | Writing a -> stGetArray a i
+}
+
+fun second rows = slot rows 1
+
+-- The same choice can be a parameter of the trait instead: the effect is
+-- then part of what an `impl` is for, written as a row where a type would be.
+
+trait Cells r e {
+  fun cell : r -> Int -> Int ! e
+}
+
+impl Cells Finished e {
+  fun cell r i = match r with | Finished a -> arrayGet a i
+}
+
+impl Cells (Writing s) { St s | e } {
+  fun cell r i = match r with | Writing a -> stGetArray a i
+}
+
+fun third rows = cell rows 2
+
 -- --- main --------------------------------------------------------------------
 
 def settings = [("taxPercent", toInt 20), ("limit", 100)]
@@ -161,3 +208,13 @@ use Std.Test (assertEq)
 @test fun theGreeterCopesWithNoInput () =
   let (u, printed) = withOutput (\() -> withInput [] (\() -> greeter ())) in
   assertEq printed "What is your name?\nNobody there.\n" "end of input is not an error"
+
+@test fun aTableIsReadFinishedOrBeingWritten () =
+  let table = Finished #[10, 20, 30] in
+  let written =
+    runSt (\() ->
+      let a = stThaw #[1, 2, 3] in
+      (second (Writing a), third (Writing a)))
+  in
+  let _ = assertEq (second table, third table) (20, 30) "nothing performed" in
+  assertEq written (2, 3) "the state it is written in"

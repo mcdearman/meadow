@@ -69,6 +69,12 @@ pub fn format_within(src: &str, width: usize) -> String {
     pretty::pretty(src, width).unwrap_or_else(|| format(src))
 }
 
+/// Whether [`format_within`] prints `src`, rather than only indenting it: its
+/// brackets match and its strings end.
+pub fn prints(src: &str) -> bool {
+    pretty::pretty(src.strip_prefix('\u{feff}').unwrap_or(src), WIDTH).is_some()
+}
+
 /// `src` indented, and nothing else: every token stays on the line it is on.
 ///
 /// Re-indents every line, strips trailing whitespace, collapses runs of blank

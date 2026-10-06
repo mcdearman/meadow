@@ -30,35 +30,36 @@ use Std.Maybe.Maybe.*
 use Std.Sort (sortOn)
 
 @pub(pkg) lang! {
-  pub Hir extends Ast with In Ref
-    + Ref { id : Int, alts : [Int] } Expr
-    - Var Expr
-    + Var { ref : Ref } Expr
-    - Qual Expr
-    - Neg Expr
-    - And Expr
-    - Or Expr
-    - Interp Expr
-    - Cons Expr
-    + Cons { ref : Ref, args : [Expr] } Pat
-    - Var Pat
-    + Var { id : Int } Pat
-    - As Pat
-    + As { id : Int, pat : Pat } Pat
-    - Cons Pat
-    + Cons { ref : Ref, args : [Pat] } Pat
-    - QualCons Type
-    - Con Type
-    + Con { name : Name, ref : Ref, args : [Type] } Bind
-    - Fun Bind
-    + Fun { id : Int, params : [Pat], ret : Maybe Type, body : Expr } HArm
-    - HArm HArm
-    + HArm { op : Name, opRef : Ref, param : Pat, resume : Int, body : Expr } Label
-    - Label Label
-    + Label { name : Name, ref : Ref, args : [Type] } Bound
-    - Bound Bound
-    + Bound { tr : Name, ref : Ref, tys : [Type] } Decl
-    - Impl Decl
+  pub Hir extends Ast with In
+  Ref + Ref { id : Int, alts : [Int] }
+  Expr - Var
+  Expr + Var { ref : Ref }
+  Expr - Qual
+  Expr - Neg
+  Expr - And
+  Expr - Or
+  Expr - Interp
+  Expr - Cons
+  Expr + Cons { ref : Ref, args : [Expr] }
+  Pat - Var
+  Pat + Var { id : Int }
+  Pat - As
+  Pat + As { id : Int, pat : Pat }
+  Pat - Cons
+  Pat + Cons { ref : Ref, args : [Pat] }
+  Pat - QualCons
+  Type - Con
+  Type + Con { name : Name, ref : Ref, args : [Type] }
+  Bind - Fun
+  Bind + Fun { id : Int, params : [Pat], ret : Maybe Type, body : Expr }
+  HArm - HArm
+  HArm + HArm { op : Name, opRef : Ref, param : Pat, resume : Int, body : Expr }
+  Label - Label
+  Label + Label { name : Name, ref : Ref, args : [Type] }
+  Bound - Bound
+  Bound + Bound { tr : Name, ref : Ref, tys : [Type] }
+  Decl - Impl
+  Decl
     + Impl {
       tr : Name,
       trRef : Ref,

@@ -74,6 +74,12 @@ beyond the last release is under _Unreleased_.
 
 ### Fixed
 
+- `meadow fmt` keeps the lines of a macro call's body when one of them has a
+  comma in it: `lang! { pub Core extends Base with In, set` and a rule to a
+  line after it came out with each line ending in the first word of the next.
+- `meadow fmt` puts a declaration back at the margin that an earlier version
+  had pushed in from it -- after a string that ran over lines, everything
+  that followed was set out as more of the expression before.
 - Formatting on save does not wait for the language server to finish
   analysing: it is answered from the text at once, on a thread of its own, and
   of several changes to a document waiting to be analysed only the last is.

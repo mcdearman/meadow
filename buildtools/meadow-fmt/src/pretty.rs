@@ -491,7 +491,26 @@ impl<'a> Printer<'a> {
             let continues = t.kind == Kind::Close
                 || (t.kind == Kind::Op && !t.text.starts_with('@'))
                 || matches!(t.text, "in" | "then" | "else" | "with");
-            if j == 0 || (t.first && t.col == 0 && !continues) {
+            // What can only begin a declaration begins one wherever its line
+            // starts: a file whose declarations were pushed in from the
+            // margin -- as they were after a string that ran over lines --
+            // gets them back.
+            let declares = (t.kind == Kind::Word
+                && matches!(
+                    t.text,
+                    "use"
+                        | "data"
+                        | "record"
+                        | "effect"
+                        | "trait"
+                        | "impl"
+                        | "mod"
+                        | "infix"
+                        | "infixl"
+                        | "infixr"
+                ))
+                || (self.attr_at(j) && self.toks.get(j + 1).is_some_and(|n| n.kind == Kind::Word));
+            if j == 0 || (t.first && ((t.col == 0 && !continues) || declares)) {
                 starts.push(j);
             }
             j = if t.kind == Kind::Open {
@@ -1080,8 +1099,12 @@ impl<'a> Printer<'a> {
         } else {
             Vec::new()
         };
+        // A macro's own body is its lines, commas in them or not: `lang! {
+        // pub Core with In, set` and a rule to a line after it. Brackets
+        // inside one are a list where they have commas, unless arms say
+        // otherwise.
         let barred = entries.iter().any(|&e| self.toks[e].text == "|");
-        let out = if entries.len() > 1 && (seps.is_empty() || barred) {
+        let out = if entries.len() > 1 && (called || seps.is_empty() || barred) {
             (self.entries(open_doc, &entries, close), true)
         } else if seps.is_empty() {
             self.single(open_doc, j, close)
@@ -1972,6 +1995,24 @@ use Maybe.*
         let want =
             format!("fun f x = x\n\n{table}\n@fmt(skip) def  g  =  [ 1,\n  2 ]\n\nfun h y = y\n");
         check(&src, &want);
+    }
+
+    #[test]
+    fn a_macros_own_body_keeps_its_lines_though_one_has_a_comma() {
+        check(
+            "lang! {\n  pub Core extends Resolved with In, modules\n  Expr - Atom\n  Expr + Int { value : Int }\n}\n",
+            "lang! {\n  pub Core extends Resolved with In, modules\n  Expr - Atom\n  Expr + Int { value : Int }\n}\n",
+        );
+    }
+
+    // Left in from the margin by an earlier formatter, after a string that
+    // ran over lines: what can only begin a declaration begins one.
+    #[test]
+    fn a_declaration_pushed_in_from_the_margin_comes_back() {
+        check(
+            "def text = \"one\ntwo\"\n        -- tests\n\n        use\n        Std.Test\n        (assertEq)\n        @test\n        fun\n        works\n        () =\n        assertEq 1 1 \"one\"\n",
+            "def text = \"one\ntwo\"\n-- tests\n\nuse Std.Test (assertEq)\n@test fun works () = assertEq 1 1 \"one\"\n",
+        );
     }
 
     const SAMPLES: &[&str] = &[

@@ -1,40 +1,18 @@
 -- Cut: the upper IR every front end hands Meadow's back end (`docs/CUT.md`),
--- as a Lingua language, and the lowering of `Core` to it.
+-- as a Lingua language, with what a front end builds a program of it with
+-- and the text `meadow_cut` reads. Nothing here knows any front end: what
+-- lowers Meadow's `Core` to it is `Seq`.
 --
 -- Cut is a sequent calculus: a producer makes a value, a consumer receives
--- one, and a statement is one meeting the other. So lowering a term is
--- saying where its value goes: `lower` carries the consumer down the tree,
--- and each case answers the statement that gives its term's value to it. A
--- term another needs the value of is lowered with a consumer that names the
--- value and goes on -- `μ̃ x: rep. s` -- which is the whole of how
--- evaluation order is said.
---
--- Every binder says how its value is represented, which is what `Core`'s
--- types are kept for: `repOf`.
---
--- A function is codata with one method, `apply`, of one argument, and a
--- top-level binding is a `val`: the closure, or the value. That is the
--- least there is to say, and enough to run; a `def` with every parameter at
--- once, for a function called with all it takes, is for later.
---
--- What is not lowered yet answers `error "unsupported: …"`, so a program
--- with one in it still reads, and says so when it runs: data and `case`,
--- records and arrays, a function defined inside another that calls itself,
--- effects, and anything generic in how a value is represented.
+-- one, and a statement is one meeting the other. A program of it is a tree,
+-- not a graph of blocks, so what builds one is not a cursor to write at but
+-- a function of where a value goes: `shared`, `branch`, `applied`.
 
-use Lingua (lang!, pass!)
+use Lingua (lang!)
 use Lingua.Lang (Meta, spanMeta)
-use MeadowBoot.Core
-use MeadowBoot.Core (Core!)
-use MeadowBoot.Types
-use MeadowBoot.Types.Type.*
 use Std.Collections.Vector as V
-use Std.Collections.HashMap as H
-use Std.Collections.HashMap (HashMap)
 use Std.String as S
 use Std.Char as C
-use Std.Maybe as M
-use Std.Maybe.Maybe.*
 
 -- --- the language ------------------------------------------------------------
 
@@ -68,249 +46,45 @@ use Std.Maybe.Maybe.*
   Stmt + Error { message : String }
 }
 
--- --- what lowering carries ---------------------------------------------------
+-- --- building ----------------------------------------------------------------
 
--- What `lower` carries is a record of two things: `k`, where the value of
--- the term being lowered goes, and `tops`, which binders are top-level
--- definitions -- a mention of one reads a `val`.
+@pub(pkg) def nowhere : Meta = spanMeta 0 0
 
--- How a value of type `t` is represented.
-fun repOf (t : Type) : String =
-  match t with
-  | Con "Int" [] -> "i64"
-  | Con "Float" [] -> "f64"
-  | Con "Float32" [] -> "f32"
-  | Con "Bool" [] -> "bool"
-  | Con "Char" [] -> "char"
-  | Con "String" [] -> "str"
-  | Con "Unit" [] -> "unit"
-  | Con "Int8" [] -> "i8"
-  | Con "Int16" [] -> "i16"
-  | Con "Int32" [] -> "i32"
-  | Con "UInt8" [] -> "u8"
-  | Con "UInt16" [] -> "u16"
-  | Con "UInt32" [] -> "u32"
-  | Con "UInt64" [] -> "u64"
-  | _ -> "ptr"
+-- What a lowering has no words for yet: a statement that says so when it
+-- runs, so that a program with one in it still reads.
+@pub(pkg) fun unsupported out (m : Meta) (what : String) =
+  newCutStmtError out m "unsupported: ${what}"
 
-def nowhere : Meta = spanMeta 0 0
+-- What `build` makes with somewhere to send a value more than once: `k`
+-- itself, if that is a name already, and otherwise a name for it -- `μ j. s`
+-- given to `k` -- so that a consumer written once is not written again in
+-- every branch.
+@pub(pkg) fun shared out k (m : Meta) (name : String) build =
+  let kind = kindCutConsIn out k in
+  if kind == CutConsKind.KVar or kind == CutConsKind.Halt then build k
+  else newCutStmtCut out m (newCutProdMu out m name (build (newCutConsKVar out m name))) k
 
--- The package every symbol here is in: one program, built with no library.
-def package : String = "meadow:boot/"
+-- `no` or `yes`, by the truth `cond` is: a test's branches each receive
+-- `unit`, which `name` is bound to, false first.
+@pub(pkg) fun branch out (m : Meta) (name : String) cond no yes =
+  newCutStmtPrim out m "if" [cond] [
+    newCutConsMuT out m name "unit" no,
+    newCutConsMuT out m name "unit" yes
+  ]
 
-fun topSymbol (id : Int) : String = "${package}d${show id}"
-
--- A primitive's name in Cut: `meadow_rt::Prim`'s, its first letter small.
-fun primName (op : String) : String =
-  if stringByteLength op == 0 then op
-  else S.toLower (stringSlice op 0 1) ++ stringSlice op 1 (stringByteLength op)
-
--- --- the lowering ------------------------------------------------------------
-
-pass! {
-  lower : Core -> Cut with cx from Term
-    | LInt { value } -> newCutProdInt out here value
-    | LBig { value } -> newCutProdInt out here value
-    | LF64 { value } -> newCutProdFloat out here value
-    | LF32 { value } -> newCutProdFloat out here value
-    | LWord { ty, bits } -> newCutProdInt out here bits
-    | LStr { text } -> newCutProdStr out here text
-    | LChar { code } -> newCutProdChar out here code
-    | LBool { value } -> newCutProdBool out here value
-    | LUnit {} -> newCutProdUnit out here
-    | Const { lit } -> newCutStmtCut out here lit cx.k
-    | Var { id } ->
-        (if M.isSome (H.lookup id cx.tops) then
-           newCutStmtCut out here (newCutProdSym out here (topSymbol id)) cx.k
-         else newCutStmtCut out here (newCutProdVar out here "v${show id}") cx.k)
-    | Lam { param, paramTy, raw body } ->
-        (let k = "k${show node}" in
-         let inner = lowerTerm src out { cx | k = newCutConsKVar out here k } body in
-         let method =
-           newCutMethod
-             out
-             here
-             "apply"
-             [newCutParam out here "v${show param}" (repOf paramTy)]
-             [newCutParam out here k "ptr"]
-             inner
-         in newCutStmtCut out here (newCutProdCocase out here [method]) cx.k)
-    | App { raw func, raw arg } ->
-        (let f = "f${show node}" in
-         let a = "a${show node}" in
-         let call =
-           newCutStmtCut
-             out
-             here
-             (newCutProdVar out here f)
-             (newCutConsCall out here "apply" [newCutProdVar out here a] [cx.k])
-         in
-         let given = named src out cx here a arg call in
-         named src out cx here f func given)
-    | Let { id, raw value, raw body } ->
-        named src out cx here "v${show id}" value (lowerTerm src out cx body)
-    | If { raw cond, raw yes, raw no } ->
-        joined out cx here "j${show node}" (\inner ->
-          (let c = "c${show node}" in
-           let branch =
-             \t -> newCutConsMuT out here "u${show node}" "unit" (lowerTerm src out inner t)
-           in named
-                src
-                out
-                inner
-                here
-                c
-                cond
-                (newCutStmtPrim out here "if" [newCutProdVar out here c] [branch no, branch yes])))
-    | Prim { op, raw args } ->
-        (let names = V.map (\i -> "p${show node}_${show i}") (V.range 0 (V.len args)) in
-         let done =
-           newCutStmtPrim
-             out
-             here
-             (primName op)
-             (V.map (\n -> newCutProdVar out here n) names)
-             [cx.k]
-         in V.foldr
-              (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
-              done
-              (V.zip names args))
-    | Tuple { raw items } ->
-        (let names = V.map (\i -> "t${show node}_${show i}") (V.range 0 (V.len items)) in
-         let done =
-           newCutStmtCut
-             out
-             here
-             (newCutProdTuple out here (V.map (\n -> newCutProdVar out here n) names))
-             cx.k
-         in V.foldr
-              (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
-              done
-              (V.zip names items))
-    | LetRec { raw binds, raw body } -> unsupported out here "a local function that calls itself"
-    | Array { raw items } -> unsupported out here "an array"
-    | Proj { raw tuple, index } -> unsupported out here "a tuple's item"
-    | Record { raw fields } -> unsupported out here "a record"
-    | Sel { raw target, label } -> unsupported out here "a field"
-    | Extend { raw target, label, raw value } -> unsupported out here "a record extended"
-    | Ctor { name, raw args } -> unsupported out here "a constructor"
-    | Case { raw scrutinee, raw arms } -> unsupported out here "a case"
-    | Perform { eff, op, raw arg } -> unsupported out here "an effect performed"
-    | Handle { raw body, raw clauses, retId, raw ret } -> unsupported out here "a handler"
-    | Join { id, params, raw rhs, raw body } -> unsupported out here "a join"
-    | Jump { id, raw args } -> unsupported out here "a jump"
-    | Ill {} -> newCutStmtError out here "this did not compile"
-    | Bind { id, raw value } -> ()
-    | Field { label, raw value } -> ()
-    | Arm { raw pat, raw guard, raw body } -> ()
-    | Clause { eff, op, param, resume, raw body } -> ()
-    | PWild {} -> ()
-    | PVar { id } -> ()
-    | PAs { id, raw pat } -> ()
-    | PLit { raw lit } -> ()
-    | PTuple { raw items } -> ()
-    | PArray { raw items } -> ()
-    | PCtor { name, raw args } -> ()
-    | PRecord { raw fields } -> ()
-    | PField { label, raw pat } -> ()
-}
-
-fun unsupported out (m : Meta) (what : String) = newCutStmtError out m "unsupported: ${what}"
-
--- `term` lowered so that its value is `name` in `rest`.
-fun named src out cx (m : Meta) (name : String) term rest =
-  lowerTerm src out { cx | k = newCutConsMuT out m name (repOf (tyCoreTerm src term)) rest } term
-
--- What `build` makes with somewhere to send a value twice: where the value
--- goes already, if that is a name, and otherwise a name for it -- `μ j. s`
--- given to where it goes -- so that a consumer written once is not written
--- in both branches.
-fun joined out cx (m : Meta) (name : String) build =
-  let kind = kindCutConsIn out cx.k in
-  if kind == CutConsKind.KVar or kind == CutConsKind.Halt then build cx
-  else
-    newCutStmtCut
-      out
-      m
-      (newCutProdMu out m name (build { cx | k = newCutConsKVar out m name }))
-      cx.k
-
--- --- a program ---------------------------------------------------------------
-
--- `p` as a program of Cut that answers its entry's value as text: a `val` to
--- each definition -- the functions first, which read nothing when they are
--- made -- and an entry that turns the value into the text the CEK machine
--- would display.
-@pub fun program (p : CoreProgram) : CutProgram =
-  let a = coreArena p in
-  let file = coreRoot p in
-  let defs = coreFileDefs a file in
-  let tops = V.foldl (\h d -> H.insert (coreDefId a d) True h) H.empty defs in
-  let isFun = \d -> kindCoreTerm a (coreDefBody a d) == CoreTermKind.Lam in
-  let ordered = V.append (V.filter isFun defs) (V.filter (\d -> not (isFun d)) defs) in
-  runSt (\() ->
-    let out = newCutBuilder () in
-    let halt = newCutConsHalt out nowhere in
-    let vals =
-      V.map
-        (\d ->
-          newCutDeclVal
-            out
-            nowhere
-            (topSymbol (coreDefId a d))
-            (repOf (tyCoreTerm a (coreDefBody a d)))
-            (lowerTerm a out { k = halt, tops = tops } (coreDefBody a d)))
-        ordered
-    in
-    let entry = coreFileEntry a file in
-    let answerTy =
-      M.unwrapOr
-        Error
-        (M.map (\d -> tyCoreTerm a (coreDefBody a d)) (V.find (\d -> coreDefId a d == entry) defs))
-    in
-    let shown =
-      newCutDeclDef
-        out
-        nowhere
-        "${package}\"#entry\""
-        []
-        [newCutParam out nowhere "k" "ptr"]
-        (shownTo out (newCutProdSym out nowhere (topSymbol entry)) answerTy)
-    in
-    let root = newCutFile out nowhere "${package}\"#entry\"" "str" (V.pushBack vals shown) in
-    CutProgram (freezeCut out) root)
-
--- The statement that gives `k` the text of `value`, a value of type `t`, as
--- the CEK machine displays one.
-fun shownTo out value (t : Type) =
-  let k = newCutConsKVar out nowhere "k" in
-  let text = \s -> newCutProdStr out nowhere s in
-  match t with
-  | Con "Int" [] -> newCutStmtInvoke out nowhere "${package}\"#showInt\"" [value] [k]
-  | Con "Bool" [] ->
-      newCutStmtPrim out nowhere "if" [value] [
-        newCutConsMuT out nowhere "u" "unit" (newCutStmtCut out nowhere (text "False") k),
-        newCutConsMuT out nowhere "u" "unit" (newCutStmtCut out nowhere (text "True") k)
-      ]
-  | Con "String" [] ->
-      newCutStmtPrim
-        out
-        nowhere
-        "concatStrings"
-        [newCutProdArray out nowhere [text "\"", value, text "\""]]
-        [k]
-  | Con "Unit" [] -> newCutStmtCut out nowhere (text "()") k
-  | _ -> newCutStmtError out nowhere "unsupported: showing a value of this type"
+-- The function `f` given `arg`, its answer to `k`: a function is codata
+-- with one method, `apply`.
+@pub(pkg) fun applied out (m : Meta) f arg k =
+  newCutStmtCut out m f (newCutConsCall out m "apply" [arg] [k])
 
 -- --- the text ----------------------------------------------------------------
 
 -- A program as `meadow_cut::parse` reads it.
-@pub fun text (p : CutProgram) : String =
+@pub(pkg) fun text (p : CutProgram) : String =
   match p with
   | CutProgram a root ->
       "cut 0\nentry ${cutFileEntry a root}\nanswer ${cutFileAnswer a root}\n\n"
         ++ S.join "\n" (V.map (\d -> decl a d) (cutFileDecls a root))
-        ++ showInt
 
 fun decl (a : CutArena) (d : CutDecl) : String =
   if kindCutDecl a d == CutDeclKind.Val then
@@ -396,15 +170,16 @@ fun quoted (s : String) : String =
 fun hex (n : Int) : String =
   if n < 16 then stringSlice "0123456789abcdef" n (n + 1) else hex (n / 16) ++ hex (n % 16)
 
--- An `i64` as its digits: what `answer str` needs of a whole number, since a
--- runtime turns nothing into text but text.
-def showInt : String = "
-def meadow:boot/\"#showInt\" (n: i64; k: ptr) =
-  prim lt(n, 0; μ̃ u: unit. meadow:boot/\"#showNat\"(n; k), μ̃ u: unit. prim sub(0, n; μ̃ m: i64. meadow:boot/\"#showNat\"(m; μ̃ s: str. prim concatStrings([\"-\", s]; k))))
+-- Definitions that make an `i64` its digits, in `package`: what `answer str`
+-- needs of a whole number, since a runtime turns nothing into text but text.
+-- Text, to follow a program's, until there is a way to say them as nodes.
+@pub(pkg) fun showInt (package : String) : String = "
+def ${package}\"#showInt\" (n: i64; k: ptr) =
+  prim lt(n, 0; μ̃ u: unit. ${package}\"#showNat\"(n; k), μ̃ u: unit. prim sub(0, n; μ̃ m: i64. ${package}\"#showNat\"(m; μ̃ s: str. prim concatStrings([\"-\", s]; k))))
 
-def meadow:boot/\"#showNat\" (n: i64; k: ptr) =
-  prim lt(n, 10; μ̃ u: unit. prim div(n, 10; μ̃ q: i64. meadow:boot/\"#showNat\"(q; μ̃ hi: str. prim mod(n, 10; μ̃ r: i64. meadow:boot/\"#digit\"(r; μ̃ d: str. prim concatStrings([hi, d]; k))))), μ̃ u: unit. meadow:boot/\"#digit\"(n; k))
+def ${package}\"#showNat\" (n: i64; k: ptr) =
+  prim lt(n, 10; μ̃ u: unit. prim div(n, 10; μ̃ q: i64. ${package}\"#showNat\"(q; μ̃ hi: str. prim mod(n, 10; μ̃ r: i64. ${package}\"#digit\"(r; μ̃ d: str. prim concatStrings([hi, d]; k))))), μ̃ u: unit. ${package}\"#digit\"(n; k))
 
-def meadow:boot/\"#digit\" (d: i64; k: ptr) =
+def ${package}\"#digit\" (d: i64; k: ptr) =
   prim add(d, 1; μ̃ e: i64. prim stringSlice(\"0123456789\", d, e; k))
 "

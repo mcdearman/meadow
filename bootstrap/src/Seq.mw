@@ -1,0 +1,255 @@
+-- Seq: `Core` lowered to Cut -- what `meadow-seq` is to the Rust compiler,
+-- to the upper of the two IRs.
+--
+-- Lowering a term is saying where its value goes: `lower` carries the
+-- consumer down the tree, and each case answers the statement that gives its
+-- term's value to it. A term another needs the value of is lowered with a
+-- consumer that names the value and goes on -- `μ̃ x: rep. s` -- which is
+-- the whole of how evaluation order is said.
+--
+-- Every binder says how its value is represented, which is what `Core`'s
+-- types are kept for: `repOf`.
+--
+-- A function is codata with one method, `apply`, of one argument, and a
+-- top-level binding is a `val`: the closure, or the value. That is the
+-- least there is to say, and enough to run; a `def` with every parameter at
+-- once, for a function called with all it takes, is for later.
+--
+-- What is not lowered yet answers `error "unsupported: …"`: data and `case`,
+-- records and arrays, a function defined inside another that calls itself,
+-- effects, and anything generic in how a value is represented.
+
+use Lingua (pass!)
+use Lingua.Lang (Meta)
+use Lingua.Lang as LinguaL
+use MeadowBoot.Core
+use MeadowBoot.Core (Core!)
+use MeadowBoot.Cut
+use MeadowBoot.Cut (Cut!)
+use MeadowBoot.Types
+use MeadowBoot.Types.Type.*
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- --- what lowering carries ---------------------------------------------------
+
+-- What `lower` carries is a record of two things: `k`, where the value of
+-- the term being lowered goes, and `tops`, which binders are top-level
+-- definitions -- a mention of one reads a `val`.
+
+-- How a value of type `t` is represented.
+fun repOf (t : Type) : String =
+  match t with
+  | Con "Int" [] -> "i64"
+  | Con "Float" [] -> "f64"
+  | Con "Float32" [] -> "f32"
+  | Con "Bool" [] -> "bool"
+  | Con "Char" [] -> "char"
+  | Con "String" [] -> "str"
+  | Con "Unit" [] -> "unit"
+  | Con "Int8" [] -> "i8"
+  | Con "Int16" [] -> "i16"
+  | Con "Int32" [] -> "i32"
+  | Con "UInt8" [] -> "u8"
+  | Con "UInt16" [] -> "u16"
+  | Con "UInt32" [] -> "u32"
+  | Con "UInt64" [] -> "u64"
+  | _ -> "ptr"
+
+-- The package every symbol here is in: one program, built with no library.
+def package : String = "meadow:boot/"
+
+fun topSymbol (id : Int) : String = "${package}d${show id}"
+
+-- A primitive's name in Cut: `meadow_rt::Prim`'s, its first letter small.
+fun primName (op : String) : String =
+  if stringByteLength op == 0 then op
+  else S.toLower (stringSlice op 0 1) ++ stringSlice op 1 (stringByteLength op)
+
+-- --- the lowering ------------------------------------------------------------
+
+pass! {
+  lower : Core -> Cut with cx from Term
+    | LInt { value } -> newCutProdInt out here value
+    | LBig { value } -> newCutProdInt out here value
+    | LF64 { value } -> newCutProdFloat out here value
+    | LF32 { value } -> newCutProdFloat out here value
+    | LWord { ty, bits } -> newCutProdInt out here bits
+    | LStr { text } -> newCutProdStr out here text
+    | LChar { code } -> newCutProdChar out here code
+    | LBool { value } -> newCutProdBool out here value
+    | LUnit {} -> newCutProdUnit out here
+    | Const { lit } -> newCutStmtCut out here lit cx.k
+    | Var { id } ->
+        (if M.isSome (H.lookup id cx.tops) then
+           newCutStmtCut out here (newCutProdSym out here (topSymbol id)) cx.k
+         else newCutStmtCut out here (newCutProdVar out here "v${show id}") cx.k)
+    | Lam { param, paramTy, raw body } ->
+        (let k = "k${show node}" in
+         let inner = lowerTerm src out { cx | k = newCutConsKVar out here k } body in
+         let method =
+           newCutMethod
+             out
+             here
+             "apply"
+             [newCutParam out here "v${show param}" (repOf paramTy)]
+             [newCutParam out here k "ptr"]
+             inner
+         in newCutStmtCut out here (newCutProdCocase out here [method]) cx.k)
+    | App { raw func, raw arg } ->
+        (let f = "f${show node}" in
+         let a = "a${show node}" in
+         let call = applied out here (newCutProdVar out here f) (newCutProdVar out here a) cx.k in
+         let given = named src out cx here a arg call in
+         named src out cx here f func given)
+    | Let { id, raw value, raw body } ->
+        named src out cx here "v${show id}" value (lowerTerm src out cx body)
+    | If { raw cond, raw yes, raw no } ->
+        shared out cx.k here "j${show node}" (\k ->
+          (let inner = { cx | k = k } in
+           let c = "c${show node}" in
+           named
+             src
+             out
+             inner
+             here
+             c
+             cond
+             (branch
+                out
+                here
+                "u${show node}"
+                (newCutProdVar out here c)
+                (lowerTerm src out inner no)
+                (lowerTerm src out inner yes))))
+    | Prim { op, raw args } ->
+        (let names = V.map (\i -> "p${show node}_${show i}") (V.range 0 (V.len args)) in
+         let done =
+           newCutStmtPrim
+             out
+             here
+             (primName op)
+             (V.map (\n -> newCutProdVar out here n) names)
+             [cx.k]
+         in V.foldr
+              (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
+              done
+              (V.zip names args))
+    | Tuple { raw items } ->
+        (let names = V.map (\i -> "t${show node}_${show i}") (V.range 0 (V.len items)) in
+         let done =
+           newCutStmtCut
+             out
+             here
+             (newCutProdTuple out here (V.map (\n -> newCutProdVar out here n) names))
+             cx.k
+         in V.foldr
+              (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
+              done
+              (V.zip names items))
+    | LetRec { raw binds, raw body } -> unsupported out here "a local function that calls itself"
+    | Array { raw items } -> unsupported out here "an array"
+    | Proj { raw tuple, index } -> unsupported out here "a tuple's item"
+    | Record { raw fields } -> unsupported out here "a record"
+    | Sel { raw target, label } -> unsupported out here "a field"
+    | Extend { raw target, label, raw value } -> unsupported out here "a record extended"
+    | Ctor { name, raw args } -> unsupported out here "a constructor"
+    | Case { raw scrutinee, raw arms } -> unsupported out here "a case"
+    | Perform { eff, op, raw arg } -> unsupported out here "an effect performed"
+    | Handle { raw body, raw clauses, retId, raw ret } -> unsupported out here "a handler"
+    | Join { id, params, raw rhs, raw body } -> unsupported out here "a join"
+    | Jump { id, raw args } -> unsupported out here "a jump"
+    | Ill {} -> newCutStmtError out here "this did not compile"
+    | Bind { id, raw value } -> ()
+    | Field { label, raw value } -> ()
+    | Arm { raw pat, raw guard, raw body } -> ()
+    | Clause { eff, op, param, resume, raw body } -> ()
+    | PWild {} -> ()
+    | PVar { id } -> ()
+    | PAs { id, raw pat } -> ()
+    | PLit { raw lit } -> ()
+    | PTuple { raw items } -> ()
+    | PArray { raw items } -> ()
+    | PCtor { name, raw args } -> ()
+    | PRecord { raw fields } -> ()
+    | PField { label, raw pat } -> ()
+}
+
+-- `term` lowered so that its value is `name` in `rest`.
+fun named src out cx (m : Meta) (name : String) term rest =
+  lowerTerm src out { cx | k = newCutConsMuT out m name (repOf (tyCoreTerm src term)) rest } term
+
+-- --- a program ---------------------------------------------------------------
+
+-- `p` as a program of Cut that answers its entry's value as text: a `val` to
+-- each definition -- the functions first, which read nothing when they are
+-- made -- and an entry that turns the value into the text the CEK machine
+-- would display.
+@pub fun program (p : CoreProgram) : CutProgram =
+  let a = coreArena p in
+  let file = coreRoot p in
+  let defs = coreFileDefs a file in
+  let tops = V.foldl (\h d -> H.insert (coreDefId a d) True h) H.empty defs in
+  let isFun = \d -> kindCoreTerm a (coreDefBody a d) == CoreTermKind.Lam in
+  let ordered = V.append (V.filter isFun defs) (V.filter (\d -> not (isFun d)) defs) in
+  runSt (\() ->
+    let out = newCutBuilder () in
+    let halt = newCutConsHalt out nowhere in
+    let vals =
+      V.map
+        (\d ->
+          newCutDeclVal
+            out
+            nowhere
+            (topSymbol (coreDefId a d))
+            (repOf (tyCoreTerm a (coreDefBody a d)))
+            (lowerTerm a out { k = halt, tops = tops } (coreDefBody a d)))
+        ordered
+    in
+    let entry = coreFileEntry a file in
+    let answerTy =
+      M.unwrapOr
+        Error
+        (M.map (\d -> tyCoreTerm a (coreDefBody a d)) (V.find (\d -> coreDefId a d == entry) defs))
+    in
+    let shown =
+      newCutDeclDef
+        out
+        nowhere
+        "${package}\"#entry\""
+        []
+        [newCutParam out nowhere "k" "ptr"]
+        (shownTo out (newCutProdSym out nowhere (topSymbol entry)) answerTy)
+    in
+    let root = newCutFile out nowhere "${package}\"#entry\"" "str" (V.pushBack vals shown) in
+    CutProgram (freezeCut out) root)
+
+-- The statement that gives `k` the text of `value`, a value of type `t`, as
+-- the CEK machine displays one.
+fun shownTo out value (t : Type) =
+  let k = newCutConsKVar out nowhere "k" in
+  let text = \s -> newCutProdStr out nowhere s in
+  match t with
+  | Con "Int" [] -> newCutStmtInvoke out nowhere "${package}\"#showInt\"" [value] [k]
+  | Con "Bool" [] ->
+      newCutStmtPrim out nowhere "if" [value] [
+        newCutConsMuT out nowhere "u" "unit" (newCutStmtCut out nowhere (text "False") k),
+        newCutConsMuT out nowhere "u" "unit" (newCutStmtCut out nowhere (text "True") k)
+      ]
+  | Con "String" [] ->
+      newCutStmtPrim
+        out
+        nowhere
+        "concatStrings"
+        [newCutProdArray out nowhere [text "\"", value, text "\""]]
+        [k]
+  | Con "Unit" [] -> newCutStmtCut out nowhere (text "()") k
+  | _ -> newCutStmtError out nowhere "unsupported: showing a value of this type"
+
+-- `p` as the text of a program of Cut: `program`'s, and the definitions its
+-- entry shows a number with.
+@pub fun written (p : CoreProgram) : String = text (program p) ++ showInt package

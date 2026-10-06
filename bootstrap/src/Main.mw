@@ -7,6 +7,7 @@
 mod Lex
 mod Core
 mod Cut
+mod Seq
 mod Cek
 mod Syntax
 mod Parse
@@ -22,7 +23,7 @@ use Lingua (cli!)
 use MeadowBoot.Lex (lex, dump)
 use MeadowBoot.Core (program, erase)
 use MeadowBoot.Cek as Cek
-use MeadowBoot.Cut as Cut
+use MeadowBoot.Seq as Seq
 use MeadowBoot.Parse (parsed, checked)
 use MeadowBoot.Fixity (chainsOf)
 use MeadowBoot.Unit (packageOf, absolute)
@@ -206,7 +207,7 @@ fun cutFile (path : String) =
       (packageOf file)
   in match core with
      | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in True)
-     | Just p -> (let u = writeOutput "== ${path}\n${Cut.text (Cut.program p)}" in True)
+     | Just p -> (let u = writeOutput "== ${path}\n${Seq.written p}" in True)
 
 fun runFile (path : String) =
   let file = absolute path in

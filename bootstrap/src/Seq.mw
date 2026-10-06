@@ -156,8 +156,23 @@ pass! {
     | Record { raw fields } -> unsupported out here "a record"
     | Sel { raw target, label } -> unsupported out here "a field"
     | Extend { raw target, label, raw value } -> unsupported out here "a record extended"
-    | Ctor { name, raw args } -> unsupported out here "a constructor"
-    | Case { raw scrutinee, raw arms } -> unsupported out here "a case"
+    | Ctor { name, raw args } ->
+        (let names = V.map (\i -> "x${show node}_${show i}") (V.range 0 (V.len args)) in
+         let done =
+           newCutStmtCut
+             out
+             here
+             (newCutProdCon out here (symbolOf name) (V.map (\n -> newCutProdVar out here n) names))
+             cx.k
+         in V.foldr
+              (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
+              done
+              (V.zip names args))
+    | Case { raw scrutinee, raw arms } ->
+        shared out cx.k here "j${show node}" (\k ->
+          (let inner = { cx | k = k } in
+           let s = "s${show node}" in
+           named src out inner here s scrutinee (armsFrom src out inner here s arms 0)))
     | Perform { eff, op, raw arg } -> unsupported out here "an effect performed"
     | Handle { raw body, raw clauses, retId, raw ret } -> unsupported out here "a handler"
     | Join { id, params, raw rhs, raw body } -> unsupported out here "a join"
@@ -182,12 +197,147 @@ pass! {
 fun named src out cx (m : Meta) (name : String) term rest =
   lowerTerm src out { cx | k = newCutConsMuT out m name (repOf (tyCoreTerm src term)) rest } term
 
+-- --- matching ----------------------------------------------------------------
+--
+-- A `case` of Cut takes one constructor apart and no more, so a pattern is
+-- matched a layer at a time: what is under a constructor is named, and
+-- matched in turn. An arm that does not match gives up -- `unit` to a
+-- continuation the arm is built with the name of -- and the arms after it
+-- are what that continuation does.
+
+-- Arms `i` and after, of a match on the value named `s`.
+fun armsFrom src out cx (m : Meta) (s : String) arms (i : Int) =
+  match V.get arms i with
+  | None -> newCutStmtError out m "non-exhaustive pattern match"
+  | Just arm ->
+      orElse
+        out
+        m
+        "n${show arm}"
+        (\fail ->
+          matched src out cx m s (coreArmPat src arm) fail (\() ->
+            (match coreArmGuard src arm with
+             | None -> lowerTerm src out cx (coreArmBody src arm)
+             | Just g ->
+                 (let name = "g${show arm}" in
+                  named
+                    src
+                    out
+                    cx
+                    m
+                    name
+                    g
+                    (branch
+                       out
+                       m
+                       "u${show arm}"
+                       (newCutProdVar out m name)
+                       (gaveUp out m fail)
+                       (lowerTerm src out cx (coreArmBody src arm)))))))
+        (armsFrom src out cx m s arms (i + 1))
+
+-- The value named `x` matched against `p`: what `success` builds where it
+-- matches, with what `p` binds bound, and giving up to `fail` where it does
+-- not.
+fun matched src out cx (m : Meta) (x : String) p (fail : String) success =
+  let kind = kindCorePat src p in
+  let var = newCutProdVar out m x in
+  if kind == CorePatKind.PWild then success ()
+  else if kind == CorePatKind.PVar then
+    newCutStmtCut
+      out
+      m
+      var
+      (binding out m "v${show (corePatPVarId src p)}" (repOf (tyCorePat src p)) (success ()))
+  else if kind == CorePatKind.PAs then
+    newCutStmtCut
+      out
+      m
+      var
+      (binding
+         out
+         m
+         "v${show (corePatPAsId src p)}"
+         (repOf (tyCorePat src p))
+         (matched src out cx m x (corePatPAsPat src p) fail success))
+  else if kind == CorePatKind.PLit then
+    (let l = corePatPLitLit src p in
+     let lk = kindCoreLit src l in
+     if lk == CoreLitKind.LUnit then success ()
+     else if lk == CoreLitKind.LBool then
+       (if coreLitLBoolValue src l then
+          branch out m "u${show p}" var (gaveUp out m fail) (success ())
+        else branch out m "u${show p}" var (success ()) (gaveUp out m fail))
+     else
+       newCutStmtPrim out m "eq" [var, lowerLit src out cx l] [
+         binding out m "u${show p}" "unit" (gaveUp out m fail),
+         binding out m "u${show p}" "unit" (success ())
+       ])
+  else if kind == CorePatKind.PTuple then
+    (let items = corePatPTupleItems src p in
+     let names = V.map (\i -> "m${show p}_${show i}") (V.range 0 (V.len items)) in
+     let pairs = V.zip names items in
+     newCutStmtCut
+       out
+       m
+       var
+       (newCutConsCase
+          out
+          m
+          [newCutCaseArm
+             out
+             m
+             "#tuple"
+             (V.map (\q -> newCutParam out m (fst q) (repOf (tyCorePat src (snd q)))) pairs)
+             (matchedAll src out cx m pairs fail success)]))
+  else if kind == CorePatKind.PCtor then
+    (let args = corePatPCtorArgs src p in
+     let names = V.map (\i -> "m${show p}_${show i}") (V.range 0 (V.len args)) in
+     let pairs = V.zip names args in
+     newCutStmtCut
+       out
+       m
+       var
+       (newCutConsCase out m [
+          newCutCaseArm
+            out
+            m
+            (symbolOf (corePatPCtorName src p))
+            (V.map (\q -> newCutParam out m (fst q) (repOf (tyCorePat src (snd q)))) pairs)
+            (matchedAll src out cx m pairs fail success),
+          newCutCaseArm out m "_" [] (gaveUp out m fail)
+        ]))
+  else unsupported out m "a pattern of this kind"
+
+-- Each named value matched against its pattern, in turn.
+fun matchedAll src out cx (m : Meta) pairs (fail : String) success =
+  match V.get pairs 0 with
+  | None -> success ()
+  | Just (name, q) ->
+      matched src out cx m name q fail (\() ->
+        matchedAll src out cx m (V.drop pairs 1) fail success)
+
+-- --- names ---------------------------------------------------------------------
+
+-- The symbol of the type or constructor core names `canon`: its package,
+-- and then its path. The list every program has is the standard library's.
+fun symbolOf (canon : String) : String =
+  let segs = S.split "." canon in
+  if V.getOr "" segs 0 == "List" or V.len segs < 2 then "meadow:Std/${canon}"
+  else "meadow:${V.getOr "" segs 0}/${S.join "." (V.drop segs 1)}"
+
+-- A constructor's own name: the last of its path.
+fun bare (canon : String) : String =
+  let segs = S.split "." canon in
+  V.getOr canon segs (V.len segs - 1)
+
 -- --- a program ---------------------------------------------------------------
 
--- `p` as a program of Cut that answers its entry's value as text: a `val` to
--- each definition -- the functions first, which read nothing when they are
--- made -- and an entry that turns the value into the text the CEK machine
--- would display.
+-- `p` as a program of Cut that answers its entry's value as text: its data
+-- declared, a `val` to each definition -- the functions first, which read
+-- nothing when they are made -- an entry that turns the value into the text
+-- the CEK machine would display, and a definition that does that for each
+-- type the entry's value is made of.
 @pub fun program (p : CoreProgram) : CutProgram =
   let a = coreArena p in
   let file = coreRoot p in
@@ -195,59 +345,345 @@ fun named src out cx (m : Meta) (name : String) term rest =
   let tops = V.foldl (\h d -> H.insert (coreDefId a d) True h) H.empty defs in
   let isFun = \d -> kindCoreTerm a (coreDefBody a d) == CoreTermKind.Lam in
   let ordered = V.append (V.filter isFun defs) (V.filter (\d -> not (isFun d)) defs) in
-  runSt (\() ->
-    let out = newCutBuilder () in
-    let halt = newCutConsHalt out nowhere in
-    let vals =
-      V.map
-        (\d ->
-          newCutDeclVal
-            out
-            nowhere
-            (topSymbol (coreDefId a d))
-            (repOf (tyCoreTerm a (coreDefBody a d)))
-            (lowerTerm a out { k = halt, tops = tops } (coreDefBody a d)))
-        ordered
-    in
-    let entry = coreFileEntry a file in
-    let answerTy =
-      M.unwrapOr
-        Error
-        (M.map (\d -> tyCoreTerm a (coreDefBody a d)) (V.find (\d -> coreDefId a d == entry) defs))
-    in
-    let shown =
-      newCutDeclDef
-        out
-        nowhere
-        "${package}\"#entry\""
-        []
-        [newCutParam out nowhere "k" "ptr"]
-        (shownTo out (newCutProdSym out nowhere (topSymbol entry)) answerTy)
-    in
-    let root = newCutFile out nowhere "${package}\"#entry\"" "str" (V.pushBack vals shown) in
-    CutProgram (freezeCut out) root)
+  let datas =
+    V.map
+      (\d ->
+        (
+          coreDataName a d,
+          coreDataArity a d,
+          V.map (\c -> (coreDataCtorName a c, coreDataCtorFields a c)) (coreDataCtors a d)
+        ))
+      (coreFileDatas a file)
+  in runSt (\() ->
+       let out = newCutBuilder () in
+       let halt = newCutConsHalt out nowhere in
+       let declared =
+         V.map
+           (\d ->
+             match d with
+             | (name, arity, ctors) ->
+                 newCutDeclData
+                   out
+                   nowhere
+                   (symbolOf name)
+                   (V.map (\i -> "'a${show i}") (V.range 0 arity))
+                   (V.map
+                      (\c -> newCutDataCtor out nowhere (bare (fst c)) (V.map fieldRep (snd c)))
+                      ctors))
+           datas
+       in
+       let vals =
+         V.map
+           (\d ->
+             newCutDeclVal
+               out
+               nowhere
+               (topSymbol (coreDefId a d))
+               (repOf (tyCoreTerm a (coreDefBody a d)))
+               (lowerTerm a out { k = halt, tops = tops } (coreDefBody a d)))
+           ordered
+       in
+       let entry = coreFileEntry a file in
+       let answerTy =
+         M.unwrapOr
+           Error
+           (M.map
+              (\d -> tyCoreTerm a (coreDefBody a d))
+              (V.find (\d -> coreDefId a d == entry) defs))
+       in
+       let sh =
+         { out = out, datas = datas, wanted = stNewRef [], seen = stNewRef [], next = stNewRef 0 }
+       in
+       let shown =
+         newCutDeclDef
+           out
+           nowhere
+           "${package}\"#entry\""
+           []
+           [newCutParam out nowhere "k" "ptr"]
+           (shownTo
+              sh
+              (newCutProdSym out nowhere (topSymbol entry))
+              answerTy
+              (newCutConsKVar out nowhere "k"))
+       in
+       let showers = showersOf sh [] in
+       let root =
+         newCutFile
+           out
+           nowhere
+           "${package}\"#entry\""
+           "str"
+           (V.concat [declared, vals, [shown], showers])
+       in CutProgram (freezeCut out) root)
 
--- The statement that gives `k` the text of `value`, a value of type `t`, as
--- the CEK machine displays one.
-fun shownTo out value (t : Type) =
-  let k = newCutConsKVar out nowhere "k" in
+-- How a field of a declared type is represented: one of the type's own
+-- parameters as that parameter.
+fun fieldRep (t : Type) : String = match t with | Bound i -> "'a${show i}" | _ -> repOf t
+
+-- --- showing -------------------------------------------------------------------
+--
+-- A runtime turns nothing into text but text, so what the entry answers is
+-- made text here, as the CEK machine displays a value: a definition to each
+-- data type the value is made of, written when the type is first met.
+
+fun freshName sh =
+  let n = stGetRef sh.next in
+  let u = stSetRef sh.next (n + 1) in
+  "w${show n}"
+
+-- A type as part of a name.
+fun keyOf (t : Type) : String =
+  match t with
+  | Con name args -> if V.isEmpty args then name else "${name}<${S.join "," (V.map keyOf args)}>"
+  | Tuple items -> "(${S.join "," (V.map keyOf items)})"
+  | _ -> "?"
+
+fun showSymbol (key : String) : String = "${package}\"#show:${key}\""
+
+-- The declaration of the type core names `name`, if the program has one.
+fun dataNamed datas (name : String) =
+  V.find
+    (\d ->
+      match d with
+      | (n, _, _) -> n == name or S.endsWith ".${name}" n)
+    datas
+
+-- `t`, a field's type, with the types its declaration was given.
+fun given (args : [Type]) (t : Type) : Type =
+  match t with
+  | Bound i -> V.getOr Error args i
+  | Con name inner -> Con name (V.map (given args) inner)
+  | other -> other
+
+-- The statement that gives `k` the text of `value`, a value of type `t`.
+fun shownTo sh value (t : Type) k =
+  let out = sh.out in
   let text = \s -> newCutProdStr out nowhere s in
   match t with
   | Con "Int" [] -> newCutStmtInvoke out nowhere "${package}\"#showInt\"" [value] [k]
   | Con "Bool" [] ->
-      newCutStmtPrim out nowhere "if" [value] [
-        newCutConsMuT out nowhere "u" "unit" (newCutStmtCut out nowhere (text "False") k),
-        newCutConsMuT out nowhere "u" "unit" (newCutStmtCut out nowhere (text "True") k)
-      ]
-  | Con "String" [] ->
-      newCutStmtPrim
-        out
-        nowhere
-        "concatStrings"
-        [newCutProdArray out nowhere [text "\"", value, text "\""]]
-        [k]
+      shared out k nowhere (freshName sh) (\j ->
+        branch
+          out
+          nowhere
+          (freshName sh)
+          value
+          (newCutStmtCut out nowhere (text "False") j)
+          (newCutStmtCut out nowhere (text "True") j))
+  | Con "String" [] -> joinedTo out [text "\"", value, text "\""] k
   | Con "Unit" [] -> newCutStmtCut out nowhere (text "()") k
-  | _ -> newCutStmtError out nowhere "unsupported: showing a value of this type"
+  | Tuple items ->
+      (let names = V.map (\i -> freshName sh) items in
+       newCutStmtCut
+         out
+         nowhere
+         value
+         (newCutConsCase
+            out
+            nowhere
+            [newCutCaseArm
+               out
+               nowhere
+               "#tuple"
+               (V.map (\q -> newCutParam out nowhere (fst q) (repOf (snd q))) (V.zip names items))
+               (shownAll
+                  sh
+                  (V.map (\q -> (newCutProdVar out nowhere (fst q), snd q)) (V.zip names items))
+                  []
+                  "("
+                  ", "
+                  ")"
+                  k)]))
+  | Con name args ->
+      (match dataNamed sh.datas name with
+       | Just _ ->
+           (let key = keyOf t in
+            let u =
+              if V.elem key (stGetRef sh.seen) then ()
+              else
+                (let v = stSetRef sh.seen (V.pushBack (stGetRef sh.seen) key) in
+                 stSetRef sh.wanted (V.pushBack (stGetRef sh.wanted) (key, t)))
+            in newCutStmtInvoke out nowhere (showSymbol key) [value] [k])
+       | None -> unsupported out nowhere "showing a value of this type")
+  | _ -> unsupported out nowhere "showing a value of this type"
+
+-- `parts` joined into one string, to `k`.
+fun joinedTo out parts k =
+  newCutStmtPrim out nowhere "concatStrings" [newCutProdArray out nowhere parts] [k]
+
+-- Each of `parts` -- a value and its type -- made text, and the texts
+-- between `opening` and `closing` with `sep` between them, to `k`.
+fun shownAll sh parts texts (opening : String) (sep : String) (closing : String) k =
+  let out = sh.out in
+  let text = \s -> newCutProdStr out nowhere s in
+  match V.get parts 0 with
+  | None ->
+      (let between =
+         V.concatMap
+           (\i ->
+             if i == 0 then [V.getOr (text "") texts i] else [text sep, V.getOr (text "") texts i])
+           (V.range 0 (V.len texts))
+       in joinedTo out (V.concat [[text opening], between, [text closing]]) k)
+  | Just (value, t) ->
+      (let s = freshName sh in
+       shownTo
+         sh
+         value
+         t
+         (binding
+            out
+            nowhere
+            s
+            "str"
+            (shownAll
+               sh
+               (V.drop parts 1)
+               (V.pushBack texts (newCutProdVar out nowhere s))
+               opening
+               sep
+               closing
+               k)))
+
+-- The definitions that show each type wanted, and each those want in turn.
+fun showersOf sh made =
+  match V.get (stGetRef sh.wanted) 0 with
+  | None -> made
+  | Just (key, t) ->
+      (let u = stSetRef sh.wanted (V.drop (stGetRef sh.wanted) 1) in
+       showersOf sh (V.append made (shower sh key t)))
+
+-- The definitions that show a value of the data type `t`: a list as its
+-- items between brackets, anything else as its constructor and what it
+-- holds.
+fun shower sh (key : String) (t : Type) =
+  let out = sh.out in
+  let text = \s -> newCutProdStr out nowhere s in
+  let k = newCutConsKVar out nowhere "k" in
+  let x = newCutProdVar out nowhere "x" in
+  let taking = [newCutParam out nowhere "x" "ptr"] in
+  let to = [newCutParam out nowhere "k" "ptr"] in
+  match t with
+  | Con "List" inner ->
+      (let item = V.getOr Error inner 0 in
+       let items = "${package}\"#items:${key}\"" in
+       let h = freshName sh in
+       let rest = freshName sh in
+       let shownH = freshName sh in
+       let shownRest = freshName sh in
+       let each =
+         newCutStmtCut
+           out
+           nowhere
+           x
+           (newCutConsCase out nowhere [
+              newCutCaseArm
+                out
+                nowhere
+                (symbolOf "List.Nil")
+                []
+                (newCutStmtCut out nowhere (text "") k),
+              newCutCaseArm
+                out
+                nowhere
+                (symbolOf "List.Cons")
+                [newCutParam out nowhere h (repOf item), newCutParam out nowhere rest "ptr"]
+                (shownTo
+                   sh
+                   (newCutProdVar out nowhere h)
+                   item
+                   (binding
+                      out
+                      nowhere
+                      shownH
+                      "str"
+                      (newCutStmtInvoke
+                         out
+                         nowhere
+                         items
+                         [newCutProdVar out nowhere rest, text "; "]
+                         [binding
+                            out
+                            nowhere
+                            shownRest
+                            "str"
+                            (joinedTo
+                               out
+                               [
+                                 newCutProdVar out nowhere "sep",
+                                 newCutProdVar out nowhere shownH,
+                                 newCutProdVar out nowhere shownRest
+                               ]
+                               k)])))
+            ])
+       in
+       let whole = freshName sh in
+       [
+         newCutDeclDef
+           out
+           nowhere
+           items
+           [newCutParam out nowhere "x" "ptr", newCutParam out nowhere "sep" "str"]
+           to
+           each,
+         newCutDeclDef
+           out
+           nowhere
+           (showSymbol key)
+           taking
+           to
+           (newCutStmtInvoke
+              out
+              nowhere
+              items
+              [x, text ""]
+              [binding
+                 out
+                 nowhere
+                 whole
+                 "str"
+                 (joinedTo out [text "[", newCutProdVar out nowhere whole, text "]"] k)])
+       ])
+  | Con name args ->
+      (match dataNamed sh.datas name with
+       | Just (_, _, ctors) ->
+           [newCutDeclDef
+              out
+              nowhere
+              (showSymbol key)
+              taking
+              to
+              (newCutStmtCut
+                 out
+                 nowhere
+                 x
+                 (newCutConsCase
+                    out
+                    nowhere
+                    (V.map
+                       (\c ->
+                         (let fields = V.map (given args) (snd c) in
+                          let names = V.map (\f -> freshName sh) fields in
+                          let pairs = V.zip names fields in
+                          newCutCaseArm
+                            out
+                            nowhere
+                            (symbolOf (fst c))
+                            (V.map (\q -> newCutParam out nowhere (fst q) (repOf (snd q))) pairs)
+                            (if V.isEmpty fields then
+                               newCutStmtCut out nowhere (text (bare (fst c))) k
+                             else
+                               shownAll
+                                 sh
+                                 (V.map (\q -> (newCutProdVar out nowhere (fst q), snd q)) pairs)
+                                 []
+                                 "${bare (fst c)}("
+                                 ", "
+                                 ")"
+                                 k)))
+                       ctors)))]
+       | None -> [])
+  | _ -> []
 
 -- `p` as the text of a program of Cut: `program`'s, and the definitions its
 -- entry shows a number with.

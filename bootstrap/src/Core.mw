@@ -203,11 +203,17 @@ lang! { Printed from CoreText }
 type Ty = Type
 
 -- Core as `meadow_core` has it, before its types are erased: every term and
--- pattern with its type, and a function with its parameter's. What `Elab`
--- makes of a program, and what is lowered to Cut, which needs to know how
--- each value is represented.
+-- pattern with its type, a function with its parameter's, and each data
+-- type declared: its name, how many types it takes, and its constructors
+-- with their fields' types -- a type it takes written `Bound`, by its place.
+-- What `Elab` makes of a program, and what is lowered to Cut, which needs to
+-- know how each value is represented.
 @pub(pkg) lang! {
   pub Core extends Erased with In
+  DataCtor + DataCtor { name : String, fields : [Ty] }
+  Data + Data { name : String, arity : Int, ctors : [DataCtor] }
+  File - File
+  File + File { entry : Int, defs : [Def], named : [Named], datas : [Data] }
   Term - Lam
   Term + Lam { param : Int, paramTy : Ty, body : Term }
   Term * { ty : Ty }
@@ -217,6 +223,7 @@ type Ty = Type
 -- The types taken off: what the CEK machine runs.
 pass! {
   pub erase : Core -> Erased
+    | File { entry, defs, named } -> File { entry = entry, defs = defs, named = named }
     | Var { id } -> Var { id = id }
     | Lam { param, body } -> Lam { param = param, body = body }
     | App { func, arg } -> App { func = func, arg = arg }

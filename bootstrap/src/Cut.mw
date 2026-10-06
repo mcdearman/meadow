@@ -19,6 +19,8 @@ use Std.Char as C
 @pub(pkg) lang! {
   pub Cut with In
   File + File { entry : String, answer : String, decls : [Decl] }
+  DataCtor + DataCtor { name : String, fields : [String] }
+  Decl + Data { symbol : String, params : [String], ctors : [DataCtor] }
   Decl + Val { symbol : String, rep : String, body : Stmt }
   Decl + Def { symbol : String, params : [Param], conts : [Param], body : Stmt }
   Param + Param { name : String, rep : String }
@@ -40,6 +42,8 @@ use Std.Char as C
   Cons + Halt {}
   Cons + MuT { name : String, rep : String, body : Stmt }
   Cons + Call { method : String, args : [Prod], conts : [Cons] }
+  CaseArm + CaseArm { pattern : String, fields : [Param], body : Stmt }
+  Cons + Case { arms : [CaseArm] }
   Stmt + Cut { prod : Prod, cons : Cons }
   Stmt + Invoke { symbol : String, args : [Prod], conts : [Cons] }
   Stmt + Prim { op : String, args : [Prod], conts : [Cons] }
@@ -77,6 +81,24 @@ use Std.Char as C
 @pub(pkg) fun applied out (m : Meta) f arg k =
   newCutStmtCut out m f (newCutConsCall out m "apply" [arg] [k])
 
+-- A value named `name`, of representation `rep`, for `rest`.
+@pub(pkg) fun binding out (m : Meta) (name : String) (rep : String) rest =
+  newCutConsMuT out m name rep rest
+
+-- `unit` given to the continuation `name`: how one arm of a match says it
+-- did not, to whatever tries the next.
+@pub(pkg) fun gaveUp out (m : Meta) (name : String) =
+  newCutStmtCut out m (newCutProdUnit out m) (newCutConsKVar out m name)
+
+-- `first`, and `next` if it gives up: `first` is built with the name of the
+-- continuation that giving up goes to.
+@pub(pkg) fun orElse out (m : Meta) (name : String) first next =
+  newCutStmtCut
+    out
+    m
+    (newCutProdMu out m name (first name))
+    (newCutConsMuT out m "u_${name}" "unit" next)
+
 -- --- the text ----------------------------------------------------------------
 
 -- A program as `meadow_cut::parse` reads it.
@@ -89,6 +111,14 @@ use Std.Char as C
 fun decl (a : CutArena) (d : CutDecl) : String =
   if kindCutDecl a d == CutDeclKind.Val then
     "val ${cutDeclValSymbol a d} : ${cutDeclValRep a d} =\n  ${stmt a 1 (cutDeclValBody a d)}\n"
+  else if kindCutDecl a d == CutDeclKind.Data then
+    (let ps = cutDeclDataParams a d in
+     let taking = if V.isEmpty ps then "" else " <${S.join ", " ps}>" in
+     let ctor =
+       \c ->
+         (let fs = cutDataCtorFields a c in
+          if V.isEmpty fs then cutDataCtorName a c else "${cutDataCtorName a c}(${S.join ", " fs})")
+     in "data ${cutDeclDataSymbol a d}${taking} { ${S.join "; " (V.map ctor (cutDeclDataCtors a d))} }\n")
   else
     "def ${cutDeclDefSymbol a d} ${params a (cutDeclDefParams a d) (cutDeclDefConts a d)} =\n  ${stmt a 1 (cutDeclDefBody a d)}\n"
 
@@ -149,6 +179,21 @@ fun cons (a : CutArena) (depth : Int) (c : CutCons) : String =
   else if k == CutConsKind.Halt then "halt"
   else if k == CutConsKind.MuT then
     "μ̃ ${cutConsMuTName a c}: ${cutConsMuTRep a c}.${line (depth + 1)}${stmt a (depth + 1) (cutConsMuTBody a c)}"
+  else if k == CutConsKind.Case then
+    "case {"
+      ++ S.join
+        ";"
+        (V.map
+           (\arm ->
+             (let pattern = cutCaseArmPattern a arm in
+              let fields = cutCaseArmFields a arm in
+              let taken =
+                if V.isEmpty fields and pattern != "#tuple" then ""
+                else "(${S.join ", " (V.map (param a) fields)})"
+              in "${line (depth + 1)}${pattern}${taken} =>${line (depth + 2)}${stmt a (depth + 2) (cutCaseArmBody a arm)}"))
+           (cutConsCaseArms a c))
+      ++ line depth
+      ++ "}"
   else cutConsCallMethod a c ++ call a depth (cutConsCallArgs a c) (cutConsCallConts a c)
 
 -- A string as Cut writes one.

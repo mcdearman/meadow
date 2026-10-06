@@ -21,7 +21,6 @@
 
 use Lingua (pass!)
 use Lingua.Lang (Meta)
-use Lingua.Lang as LinguaL
 use MeadowBoot.Core
 use MeadowBoot.Core (Core!)
 use MeadowBoot.Cut

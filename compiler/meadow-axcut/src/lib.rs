@@ -448,6 +448,7 @@ pub mod describe;
 pub mod machine;
 
 mod print;
+pub use print::Listing;
 
 impl Extern {
     /// Does this `extern` choose between two continuations rather than produce

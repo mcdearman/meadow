@@ -48,18 +48,98 @@ type R<T> = Result<T, String>;
 /// `p` as a program of AxCut, or why it is not one yet. What its entry
 /// answers is what the program answers: a machine that runs it has it back.
 pub fn lower(p: &Program) -> R<ax::Program> {
-    lowered(p, false)
+    lowered(p, false).map(|l| l.program)
 }
 
 /// The same, as a program to run for what it does: one whose answer is a
 /// string writes it to standard output, as `answer str` says, and answers
 /// `unit`.
 pub fn executable(p: &Program) -> R<ax::Program> {
+    lowered(p, true).map(|l| l.program)
+}
+
+/// [`lower`], with what each part of the AxCut came from.
+pub fn lower_mapped(p: &Program) -> R<Lowered> {
+    lowered(p, false)
+}
+
+/// [`executable`], with what each part of the AxCut came from.
+pub fn executable_mapped(p: &Program) -> R<Lowered> {
     lowered(p, true)
 }
 
-fn lowered(p: &Program, prints: bool) -> R<ax::Program> {
+/// A program lowered, and where each part of it came from.
+#[derive(Debug, Default)]
+pub struct Lowered {
+    pub program: ax::Program,
+    pub map: Map,
+}
+
+/// What the AxCut of a program came from in its Cut: which declaration each
+/// block is, and which declaration and variable each name.
+#[derive(Debug, Default)]
+pub struct Map {
+    /// The definition each block is. The block a program starts at, which
+    /// computes its top-level values, is no definition's.
+    pub blocks: HashMap<Label, Symbol>,
+    pub names: HashMap<Name, Origin>,
+}
+
+/// Where a name of the AxCut came from.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Origin {
+    /// The definition or top-level value it was made lowering, if any.
+    pub of: Option<Symbol>,
+    /// The variables of Cut's it is: none for a name the lowering made of
+    /// its own -- a literal's, an object's, a consumer's made one -- and
+    /// more than one where a `μ̃` or a `let` names again what has a name.
+    pub vars: Vec<String>,
+}
+
+impl Lowered {
+    /// The AxCut as text, with what each part of it is in the Cut it came
+    /// from: each definition's block, and each name that is a variable of
+    /// Cut's, as [`crate::print::Listing`] says a program of Cut's own.
+    pub fn listing(&self) -> crate::print::Listing {
+        use crate::print::{Part, Segment};
+        let listed = self.program.listing();
+        let mut segments = Vec::new();
+        for (start, end, label) in &listed.defs {
+            if let Some(symbol) = self.map.blocks.get(label) {
+                segments.push(Segment {
+                    start: *start,
+                    end: *end,
+                    part: Part::Decl(symbol.clone()),
+                });
+            }
+        }
+        for (start, end, name) in &listed.names {
+            let Some(Origin { of: Some(of), vars }) = self.map.names.get(name) else {
+                continue;
+            };
+            for var in vars {
+                segments.push(Segment {
+                    start: *start,
+                    end: *end,
+                    part: Part::Var {
+                        of: of.clone(),
+                        name: var.clone(),
+                    },
+                });
+            }
+        }
+        segments.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end)));
+        crate::print::Listing {
+            text: listed.text,
+            segments,
+        }
+    }
+}
+
+fn lowered(p: &Program, prints: bool) -> R<Lowered> {
     let mut l = Lower {
+        map: Map::default(),
+        current: None,
         prints,
         natives: HashMap::new(),
         answers: HashMap::new(),
@@ -78,14 +158,18 @@ fn lowered(p: &Program, prints: bool) -> R<ax::Program> {
                 d.symbol
             ));
         }
+        l.current = Some(d.symbol.clone());
+        l.map.blocks.insert(Label(i as u32), d.symbol.clone());
         let mut sc = Scope::default();
         for b in &d.params {
             let n = l.fresh(rep_of(&b.rep)?);
             sc.bind(&b.name, n);
+            l.called(n, &b.name);
         }
         for k in &d.conts {
             let n = l.fresh(ax::Rep::Ref);
             sc.bind(k, n);
+            l.called(n, k);
             l.out.returns.insert(n);
         }
         let params = sc.env.clone();
@@ -97,11 +181,19 @@ fn lowered(p: &Program, prints: bool) -> R<ax::Program> {
             block: Block { params, body },
         });
     }
+    l.current = None;
     l.start(p)?;
-    Ok(l.out)
+    Ok(Lowered {
+        program: l.out,
+        map: l.map,
+    })
 }
 
 struct Lower {
+    /// What each block and name made so far came from.
+    map: Map,
+    /// The declaration being lowered, which the names made now are of.
+    current: Option<Symbol>,
     out: ax::Program,
     next: u32,
     next_tag: Tag,
@@ -193,7 +285,23 @@ impl Lower {
         let n = VarId(self.next);
         self.next += 1;
         self.out.reps.insert(n, rep);
+        self.map.names.insert(
+            n,
+            Origin {
+                of: self.current.clone(),
+                vars: Vec::new(),
+            },
+        );
         n
+    }
+
+    /// `n` is the variable `name` of Cut's, in the declaration being
+    /// lowered: one more of its names, where it had one.
+    fn called(&mut self, n: Name, name: &str) {
+        let origin = self.map.names.entry(n).or_default();
+        if !origin.vars.iter().any(|v| v == name) {
+            origin.vars.push(name.to_string());
+        }
     }
 
     fn tag_of(&mut self, ctor: &str) -> Tag {
@@ -303,9 +411,11 @@ impl Lower {
             value: Name,
             place: Name,
             s: &'a Statement,
+            symbol: &'a Symbol,
         }
         let mut turns: Vec<Turn> = Vec::new();
         for v in &p.vals {
+            self.current = Some(v.symbol.clone());
             let rep = rep_of(&v.rep)?;
             let keep = self.fresh(ax::Rep::Ref);
             self.out.continuations.insert(keep);
@@ -333,8 +443,10 @@ impl Lower {
                 value,
                 place,
                 s: &v.body,
+                symbol: &v.symbol,
             });
         }
+        self.current = None;
         let mut rest = S::Substitute(
             vec![k],
             Box::new(Block {
@@ -398,6 +510,9 @@ impl Lower {
                     },
                 }],
             };
+            self.current = Some(t.symbol.clone());
+            let body = self.statement(t.s, &t.body)?;
+            self.current = None;
             rest = S::New {
                 name: t.keep,
                 captures: t.before,
@@ -405,7 +520,7 @@ impl Lower {
                     params: t.with_value,
                     body: kept,
                 }],
-                rest: Box::new(self.statement(t.s, &t.body)?),
+                rest: Box::new(body),
             };
         }
         let label = Label(self.out.defs.len() as u32);
@@ -438,6 +553,7 @@ impl Lower {
             Statement::Cut(Producer::Mu(k, body), c) => {
                 let kn = self.reify(c, &mut sc, &mut steps)?;
                 sc.vars.insert(k.clone(), kn);
+                self.called(kn, k);
                 self.statement(body, &sc)?
             }
             Statement::Cut(p, c) => {
@@ -447,6 +563,7 @@ impl Lower {
             Statement::Let(b, p, rest) => {
                 let v = self.atom(p, &mut sc, &mut steps)?;
                 sc.vars.insert(b.name.clone(), v);
+                self.called(v, &b.name);
                 self.statement(rest, &sc)?
             }
             Statement::Call(f, args, conts) => {
@@ -647,6 +764,7 @@ impl Lower {
             Consumer::MuTilde(b, s) => {
                 let mut inner = sc.clone();
                 inner.vars.insert(b.name.clone(), v);
+                self.called(v, &b.name);
                 self.statement(s, &inner)
             }
             Consumer::Case(arms) => self.switch(v, arms, sc),
@@ -700,6 +818,7 @@ impl Lower {
             for f in &arm.fields {
                 let n = self.fresh(rep_of(&f.rep)?);
                 inner.bind(&f.name, n);
+                self.called(n, &f.name);
             }
             inner.env.extend(sc.env.iter().copied());
             let body = self.statement(&arm.body, &inner)?;
@@ -854,10 +973,12 @@ impl Lower {
                     for b in &m.params {
                         let n = self.fresh(rep_of(&b.rep)?);
                         inner.bind(&b.name, n);
+                        self.called(n, &b.name);
                     }
                     for k in &m.conts {
                         let n = self.fresh(ax::Rep::Ref);
                         inner.bind(k, n);
+                        self.called(n, k);
                         self.out.returns.insert(n);
                     }
                     let params = inner.env.clone();

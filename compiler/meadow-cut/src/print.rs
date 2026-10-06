@@ -1,5 +1,9 @@
 //! Cut as text: what [`crate::parse`] reads, written. A program printed and
 //! read back is the program it was.
+//!
+//! [`listing`] is the same text with what each part of it is: which
+//! declaration a range is, which variable or symbol a name in it -- for a
+//! tool that shows a program beside what it was compiled from, or to.
 
 use crate::*;
 use std::fmt::Write;
@@ -49,12 +53,6 @@ fn commas<T: fmt::Display>(xs: &[T]) -> String {
     xs.iter().map(T::to_string).collect::<Vec<_>>().join(", ")
 }
 
-/// `(values; continuations)`, every continuation written as the `ptr` it is.
-fn params(values: &[Binder], conts: &[String]) -> String {
-    let conts: Vec<String> = conts.iter().map(|k| format!("{k}: ptr")).collect();
-    format!("({}; {})", commas(values), conts.join(", "))
-}
-
 /// A string literal, escaped as the parser reads one.
 pub fn string(s: &str) -> String {
     let mut out = String::from("\"");
@@ -99,11 +97,107 @@ fn float(x: f64) -> String {
     }
 }
 
+/// A program's text, and what its parts are.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Listing {
+    pub text: String,
+    /// In the order written. A declaration's comes before those of what is
+    /// in it.
+    pub segments: Vec<Segment>,
+}
+
+/// Bytes `start..end` of a listing's text, and what is written there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Segment {
+    pub start: usize,
+    pub end: usize,
+    pub part: Part,
+}
+
+/// What a range of a listing is.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Part {
+    /// A whole declaration: a `data`, an `effect`, a `val` or a `def`.
+    Decl(Symbol),
+    /// A variable, bound or mentioned -- a value's or a continuation's -- in
+    /// the declaration `of`. Its name is its own within that declaration.
+    Var { of: Symbol, name: String },
+    /// A symbol mentioned: a value read, a definition called, a constructor,
+    /// an operation -- in the declaration `of`.
+    Symbol { of: Symbol, symbol: Symbol },
+}
+
+impl Listing {
+    /// The segments that are the variable `name` of declaration `of`.
+    pub fn var<'a>(&'a self, of: &'a Symbol, name: &'a str) -> impl Iterator<Item = &'a Segment> {
+        self.segments.iter().filter(
+            move |s| matches!(&s.part, Part::Var { of: o, name: n } if o == of && n == name),
+        )
+    }
+
+    /// The declaration of `symbol`, if the program has one.
+    pub fn decl(&self, symbol: &Symbol) -> Option<&Segment> {
+        self.segments
+            .iter()
+            .find(|s| matches!(&s.part, Part::Decl(d) if d == symbol))
+    }
+}
+
+/// A name written, before it is known which declaration it is in.
+enum Mark {
+    Var(String),
+    Symbol(Symbol),
+}
+
+#[derive(Default)]
 struct Printer {
     out: String,
+    marks: Vec<(usize, usize, Mark)>,
 }
 
 impl Printer {
+    /// A variable, bound or mentioned.
+    fn var(&mut self, x: &str) {
+        let start = self.out.len();
+        self.out.push_str(x);
+        self.marks
+            .push((start, self.out.len(), Mark::Var(x.to_string())));
+    }
+
+    fn symbol(&mut self, s: &Symbol) {
+        let start = self.out.len();
+        let _ = write!(self.out, "{s}");
+        self.marks
+            .push((start, self.out.len(), Mark::Symbol(s.clone())));
+    }
+
+    /// `x: rep, ..`
+    fn binders(&mut self, bs: &[Binder]) {
+        for (i, b) in bs.iter().enumerate() {
+            if i > 0 {
+                self.out.push_str(", ");
+            }
+            self.var(&b.name);
+            let _ = write!(self.out, ": {}", b.rep);
+        }
+    }
+
+    /// `(values; continuations)`, every continuation written as the `ptr`
+    /// it is.
+    fn params(&mut self, values: &[Binder], conts: &[String]) {
+        self.out.push('(');
+        self.binders(values);
+        self.out.push_str("; ");
+        for (i, k) in conts.iter().enumerate() {
+            if i > 0 {
+                self.out.push_str(", ");
+            }
+            self.var(k);
+            self.out.push_str(": ptr");
+        }
+        self.out.push(')');
+    }
+
     fn line(&mut self, indent: usize) {
         self.out.push('\n');
         self.out.push_str(&"  ".repeat(indent));
@@ -140,10 +234,8 @@ impl Printer {
 
     fn producer(&mut self, p: &Producer, indent: usize) {
         match p {
-            Producer::Var(x) => self.out.push_str(x),
-            Producer::Val(s) => {
-                let _ = write!(self.out, "{s}");
-            }
+            Producer::Var(x) => self.var(x),
+            Producer::Val(s) => self.symbol(s),
             Producer::Int(n) => {
                 let _ = write!(self.out, "{n}");
             }
@@ -158,7 +250,7 @@ impl Printer {
                 let _ = write!(self.out, "desc({r})");
             }
             Producer::Con(k, args) => {
-                let _ = write!(self.out, "{k}");
+                self.symbol(k);
                 if !args.is_empty() {
                     self.out.push('(');
                     self.list(args, indent);
@@ -187,7 +279,9 @@ impl Printer {
                 self.out.push_str(" }");
             }
             Producer::Mu(k, s) => {
-                let _ = write!(self.out, "μ {k}.");
+                self.out.push_str("μ ");
+                self.var(k);
+                self.out.push('.');
                 self.nested(s, indent + 1);
             }
             Producer::Cocase(methods) => {
@@ -197,7 +291,9 @@ impl Printer {
                         self.out.push(';');
                     }
                     self.line(indent + 1);
-                    let _ = write!(self.out, "{}{} =>", m.name, params(&m.params, &m.conts));
+                    self.out.push_str(&m.name);
+                    self.params(&m.params, &m.conts);
+                    self.out.push_str(" =>");
                     self.nested(&m.body, indent + 2);
                 }
                 self.line(indent);
@@ -208,10 +304,12 @@ impl Printer {
 
     fn consumer(&mut self, c: &Consumer, indent: usize) {
         match c {
-            Consumer::Var(k) => self.out.push_str(k),
+            Consumer::Var(k) => self.var(k),
             Consumer::Halt => self.out.push_str("halt"),
             Consumer::MuTilde(x, s) => {
-                let _ = write!(self.out, "μ̃ {x}.");
+                self.out.push_str("μ̃ ");
+                self.binders(std::slice::from_ref(x));
+                self.out.push('.');
                 self.nested(s, indent + 1);
             }
             Consumer::Case(arms) => {
@@ -222,14 +320,14 @@ impl Printer {
                     }
                     self.line(indent + 1);
                     match &arm.pattern {
-                        Pattern::Con(k) => {
-                            let _ = write!(self.out, "{k}");
-                        }
+                        Pattern::Con(k) => self.symbol(k),
                         Pattern::Tuple => self.out.push_str("#tuple"),
                         Pattern::Default => self.out.push('_'),
                     }
                     if !arm.fields.is_empty() || arm.pattern == Pattern::Tuple {
-                        let _ = write!(self.out, "({})", commas(&arm.fields));
+                        self.out.push('(');
+                        self.binders(&arm.fields);
+                        self.out.push(')');
                     }
                     self.out.push_str(" =>");
                     self.nested(&arm.body, indent + 2);
@@ -254,7 +352,7 @@ impl Printer {
                 self.out.push('>');
             }
             Statement::Call(f, args, conts) => {
-                let _ = write!(self.out, "{f}");
+                self.symbol(f);
                 self.call(args, conts, indent);
             }
             Statement::Prim(op, args, conts) => {
@@ -262,13 +360,16 @@ impl Printer {
                 self.call(args, conts, indent);
             }
             Statement::Let(x, p, body) => {
-                let _ = write!(self.out, "let {x} = ");
+                self.out.push_str("let ");
+                self.binders(std::slice::from_ref(x));
+                self.out.push_str(" = ");
                 self.producer(p, indent);
                 self.out.push_str(" in");
                 self.nested(body, indent);
             }
             Statement::Perform(op, args, c) => {
-                let _ = write!(self.out, "perform {op}");
+                self.out.push_str("perform ");
+                self.symbol(op);
                 self.call(args, std::slice::from_ref(c), indent);
             }
             Statement::Error(msg) => {
@@ -279,20 +380,22 @@ impl Printer {
                 for c in &h.clauses {
                     self.line(indent + 1);
                     let conts = [c.resumption.clone(), c.cont.clone()];
-                    let _ = write!(self.out, "{}{} =>", c.op, params(&c.params, &conts));
+                    self.symbol(&c.op);
+                    self.params(&c.params, &conts);
+                    self.out.push_str(" =>");
                     self.nested(&c.body, indent + 2);
                     self.out.push(';');
                 }
                 let (x, k, body) = &h.ret;
                 self.line(indent + 1);
-                let _ = write!(
-                    self.out,
-                    "return{} =>",
-                    params(std::slice::from_ref(x), std::slice::from_ref(k))
-                );
+                self.out.push_str("return");
+                self.params(std::slice::from_ref(x), std::slice::from_ref(k));
+                self.out.push_str(" =>");
                 self.nested(body, indent + 2);
                 self.line(indent);
-                let _ = write!(self.out, "}} in μ {}.", h.body_cont);
+                self.out.push_str("} in μ ");
+                self.var(&h.body_cont);
+                self.out.push('.');
                 self.nested(&h.body, indent + 1);
                 self.line(indent);
                 self.out.push_str("; ");
@@ -304,6 +407,42 @@ impl Printer {
 
 /// A program as the text [`crate::parse`] reads.
 pub fn program(p: &Program) -> String {
+    listing(p).text
+}
+
+/// What `pr` wrote, a declaration of `symbol`'s, after a blank line of
+/// `out`: the declaration's segment, then those of the names in it.
+fn declared(out: &mut String, segments: &mut Vec<Segment>, symbol: &Symbol, pr: Printer) {
+    out.push('\n');
+    let base = out.len();
+    out.push_str(&pr.out);
+    segments.push(Segment {
+        start: base,
+        end: out.len(),
+        part: Part::Decl(symbol.clone()),
+    });
+    out.push('\n');
+    for (start, end, mark) in pr.marks {
+        segments.push(Segment {
+            start: base + start,
+            end: base + end,
+            part: match mark {
+                Mark::Var(name) => Part::Var {
+                    of: symbol.clone(),
+                    name,
+                },
+                Mark::Symbol(s) => Part::Symbol {
+                    of: symbol.clone(),
+                    symbol: s,
+                },
+            },
+        });
+    }
+}
+
+/// [`program`]'s text, and what each part of it is.
+pub fn listing(p: &Program) -> Listing {
+    let mut segments = Vec::new();
     let mut out = format!("cut {}\n", p.version);
     if let Some(entry) = &p.entry {
         let _ = writeln!(out, "entry {entry}");
@@ -331,7 +470,9 @@ pub fn program(p: &Program) -> String {
                 }
             })
             .collect();
-        let _ = writeln!(out, "\ndata {}{vars} {{ {} }}", d.symbol, ctors.join("; "));
+        let mut pr = Printer::default();
+        let _ = write!(pr.out, "data {}{vars} {{ {} }}", d.symbol, ctors.join("; "));
+        declared(&mut out, &mut segments, &d.symbol, pr);
     }
     if !p.roles.is_empty() {
         out.push_str("\nroles {\n");
@@ -361,12 +502,15 @@ pub fn program(p: &Program) -> String {
                 )
             })
             .collect();
-        let _ = writeln!(out, "\neffect {} {{ {} }}", e.symbol, ops.join("; "));
+        let mut pr = Printer::default();
+        let _ = write!(pr.out, "effect {} {{ {} }}", e.symbol, ops.join("; "));
+        declared(&mut out, &mut segments, &e.symbol, pr);
     }
     for v in &p.vals {
-        let mut pr = Printer { out: String::new() };
+        let mut pr = Printer::default();
+        let _ = write!(pr.out, "val {} : {} =", v.symbol, v.rep);
         pr.nested(&v.body, 1);
-        let _ = writeln!(out, "\nval {} : {} ={}", v.symbol, v.rep, pr.out);
+        declared(&mut out, &mut segments, &v.symbol, pr);
     }
     for d in &p.defs {
         let mut head = Vec::new();
@@ -391,17 +535,17 @@ pub fn program(p: &Program) -> String {
         } else {
             format!(" <{}>", head.join("; "))
         };
-        let mut pr = Printer { out: String::new() };
+        let mut pr = Printer::default();
+        let _ = write!(pr.out, "def {}{generics} ", d.symbol);
+        pr.params(&d.params, &d.conts);
+        pr.out.push_str(" =");
         pr.nested(&d.body, 1);
-        let _ = writeln!(
-            out,
-            "\ndef {}{generics} {} ={}",
-            d.symbol,
-            params(&d.params, &d.conts),
-            pr.out
-        );
+        declared(&mut out, &mut segments, &d.symbol, pr);
     }
-    out
+    Listing {
+        text: out,
+        segments,
+    }
 }
 
 impl fmt::Display for Program {

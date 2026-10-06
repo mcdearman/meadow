@@ -14,23 +14,73 @@
 use crate::{Block, Extern, Label, Name, Program, Statement};
 use std::fmt::Write;
 
+/// A program's text, and where in it each definition and each name is
+/// written: for a tool that shows a program beside what it was lowered from,
+/// which knows what each label and name came from.
+#[derive(Clone, Debug, Default)]
+pub struct Listing {
+    pub text: String,
+    /// Bytes `start..end` are the definition labelled so, whole.
+    pub defs: Vec<(usize, usize, Label)>,
+    /// Bytes `start..end` are a mention of the name, or where it is bound.
+    pub names: Vec<(usize, usize, Name)>,
+}
+
+impl Write for Listing {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.text.push_str(s);
+        Ok(())
+    }
+}
+
+impl Listing {
+    fn name(&mut self, n: Name) {
+        let start = self.text.len();
+        let _ = write!(self.text, "v{}", n.0);
+        self.names.push((start, self.text.len(), n));
+    }
+
+    fn names(&mut self, ns: &[Name]) {
+        for (i, n) in ns.iter().enumerate() {
+            if i > 0 {
+                self.text.push_str(", ");
+            }
+            self.name(*n);
+        }
+    }
+
+    fn params(&mut self, ns: &[Name]) {
+        self.text.push('(');
+        self.names(ns);
+        self.text.push(')');
+    }
+
+    fn pad(&mut self, depth: usize) {
+        for _ in 0..depth {
+            self.text.push_str("  ");
+        }
+    }
+}
+
 impl Program {
     pub fn pretty(&self) -> String {
-        let mut out = String::new();
+        self.listing().text
+    }
+
+    /// [`Program::pretty`]'s text, and where its definitions and names are.
+    pub fn listing(&self) -> Listing {
+        let mut out = Listing::default();
         for def in &self.defs {
-            let entry = if Some(def.label) == self.entry {
-                "  (entry)"
-            } else {
-                ""
-            };
-            let _ = writeln!(
-                out,
-                "def {} {}{entry}",
-                label(def.label),
-                params(&def.block.params)
-            );
+            let start = out.text.len();
+            let _ = write!(out, "def {} ", label(def.label));
+            out.params(&def.block.params);
+            if Some(def.label) == self.entry {
+                out.text.push_str("  (entry)");
+            }
+            out.text.push('\n');
             stmt(&mut out, &def.block.body, 1);
-            out.push('\n');
+            out.defs.push((start, out.text.len(), def.label));
+            out.text.push('\n');
         }
         out
     }
@@ -40,18 +90,6 @@ fn label(Label(n): Label) -> String {
     format!("#{n}")
 }
 
-fn name(n: Name) -> String {
-    format!("v{}", n.0)
-}
-
-fn names(ns: &[Name]) -> String {
-    ns.iter().map(|n| name(*n)).collect::<Vec<_>>().join(", ")
-}
-
-fn params(ns: &[Name]) -> String {
-    format!("({})", names(ns))
-}
-
 fn place(p: &Option<crate::Place>) -> String {
     match p {
         Some(p) => format!(" @{}/{}", p.at, p.of),
@@ -59,22 +97,15 @@ fn place(p: &Option<crate::Place>) -> String {
     }
 }
 
-fn pad(out: &mut String, depth: usize) {
-    for _ in 0..depth {
-        out.push_str("  ");
-    }
-}
-
-fn stmt(out: &mut String, s: &Statement, depth: usize) {
-    pad(out, depth);
+fn stmt(out: &mut Listing, s: &Statement, depth: usize) {
+    out.pad(depth);
     match s {
         Statement::Substitute(sel, block) => {
-            let _ = writeln!(
-                out,
-                "substitute [{}] in {}",
-                names(sel),
-                params(&block.params)
-            );
+            out.text.push_str("substitute [");
+            out.names(sel);
+            out.text.push_str("] in ");
+            out.params(&block.params);
+            out.text.push('\n');
             stmt(out, &block.body, depth + 1);
         }
         Statement::Jump(l) => {
@@ -87,7 +118,11 @@ fn stmt(out: &mut String, s: &Statement, depth: usize) {
             fields,
             rest,
         } => {
-            let _ = writeln!(out, "let {} = {ctor}#{tag}({});", name(*n), names(fields));
+            out.text.push_str("let ");
+            out.name(*n);
+            let _ = write!(out, " = {ctor}#{tag}(");
+            out.names(fields);
+            out.text.push_str(");\n");
             stmt(out, rest, depth);
         }
         Statement::Switch {
@@ -95,17 +130,23 @@ fn stmt(out: &mut String, s: &Statement, depth: usize) {
             arms,
             default,
         } => {
-            let _ = writeln!(out, "switch {} {{", name(*scrutinee));
+            out.text.push_str("switch ");
+            out.name(*scrutinee);
+            out.text.push_str(" {\n");
             for (tag, b) in arms {
-                pad(out, depth + 1);
-                let _ = writeln!(out, "#{tag} {} =>", params(&b.params));
+                out.pad(depth + 1);
+                let _ = write!(out, "#{tag} ");
+                out.params(&b.params);
+                out.text.push_str(" =>\n");
                 stmt(out, &b.body, depth + 2);
             }
-            pad(out, depth + 1);
-            let _ = writeln!(out, "else {} =>", params(&default.params));
+            out.pad(depth + 1);
+            out.text.push_str("else ");
+            out.params(&default.params);
+            out.text.push_str(" =>\n");
             stmt(out, &default.body, depth + 2);
-            pad(out, depth);
-            out.push_str("}\n");
+            out.pad(depth);
+            out.text.push_str("}\n");
         }
         Statement::New {
             name: n,
@@ -113,18 +154,26 @@ fn stmt(out: &mut String, s: &Statement, depth: usize) {
             methods,
             rest,
         } => {
-            let _ = writeln!(out, "new {} [{}] {{", name(*n), names(captures));
+            out.text.push_str("new ");
+            out.name(*n);
+            out.text.push_str(" [");
+            out.names(captures);
+            out.text.push_str("] {\n");
             for (tag, m) in methods.iter().enumerate() {
-                pad(out, depth + 1);
-                let _ = writeln!(out, "#{tag} {} =>", params(&m.params));
+                out.pad(depth + 1);
+                let _ = write!(out, "#{tag} ");
+                out.params(&m.params);
+                out.text.push_str(" =>\n");
                 stmt(out, &m.body, depth + 2);
             }
-            pad(out, depth);
-            out.push_str("};\n");
+            out.pad(depth);
+            out.text.push_str("};\n");
             stmt(out, rest, depth);
         }
         Statement::Invoke(n, tag) => {
-            let _ = writeln!(out, "invoke {}#{tag}", name(*n));
+            out.text.push_str("invoke ");
+            out.name(*n);
+            let _ = writeln!(out, "#{tag}");
         }
         Statement::Extern { op, args, blocks } => {
             let op = match op {
@@ -148,24 +197,25 @@ fn stmt(out: &mut String, s: &Statement, depth: usize) {
                 Extern::Field(i) => format!("field {i}"),
                 Extern::Native(e, o) => format!("native {e}.{o}"),
             };
+            let _ = write!(out, "extern {op}(");
+            out.names(args);
             // One continuation is a sequence point, not a branch: write it flat.
             if let [only] = &blocks[..] {
-                let _ = writeln!(
-                    out,
-                    "extern {op}({}) -> {};",
-                    names(args),
-                    params(&only.params)
-                );
+                out.text.push_str(") -> ");
+                out.params(&only.params);
+                out.text.push_str(";\n");
                 stmt(out, &only.body, depth);
             } else {
-                let _ = writeln!(out, "extern {op}({}) {{", names(args));
+                out.text.push_str(") {\n");
                 for (i, b) in blocks.iter().enumerate() {
-                    pad(out, depth + 1);
-                    let _ = writeln!(out, "#{i} {} =>", params(&b.params));
+                    out.pad(depth + 1);
+                    let _ = write!(out, "#{i} ");
+                    out.params(&b.params);
+                    out.text.push_str(" =>\n");
                     stmt(out, &b.body, depth + 2);
                 }
-                pad(out, depth);
-                out.push_str("}\n");
+                out.pad(depth);
+                out.text.push_str("}\n");
             }
         }
         Statement::Error(msg) => {
@@ -180,9 +230,10 @@ fn stmt(out: &mut String, s: &Statement, depth: usize) {
 
 impl std::fmt::Display for Block {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut out = String::new();
-        let _ = writeln!(out, "{} =>", params(&self.params));
+        let mut out = Listing::default();
+        out.params(&self.params);
+        out.text.push_str(" =>\n");
         stmt(&mut out, &self.body, 1);
-        f.write_str(&out)
+        f.write_str(&out.text)
     }
 }

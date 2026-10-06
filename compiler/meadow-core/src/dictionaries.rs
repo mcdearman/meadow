@@ -97,6 +97,7 @@ pub fn program(p: &Program, opt: OptLevel) -> Program {
         wrappers: HashMap::new(),
         labels: p.ctor_fields.clone(),
         copies: HashMap::new(),
+        open_instances: HashMap::new(),
         per_function: HashMap::new(),
         made: Vec::new(),
         origins: HashMap::new(),
@@ -175,6 +176,9 @@ struct Spec {
     labels: HashMap<InternedString, Vec<InternedString>>,
     /// The copy made of a function at some types and dictionaries.
     copies: HashMap<(Var, String), Var>,
+    /// The copies of a parameterized `impl` that are still generic: at
+    /// their caller's own type variables, which each is over.
+    open_instances: HashMap<Var, Vec<TyVar>>,
     per_function: HashMap<Var, usize>,
     made: Vec<Def>,
     origins: HashMap<Var, Var>,
@@ -321,8 +325,26 @@ impl Spec {
         match t.peel() {
             Term::Var(v) if self.known.contains_key(v) => Some(*v),
             Term::TyApp(g, tys) => match g.peel() {
-                Term::Var(v) if self.generic.contains_key(v) && !tys.iter().any(open) => {
-                    self.instance(*v, tys)
+                // A copy that is generic in its caller's variables, named at
+                // them: as it is written wherever it is given.
+                Term::Var(v) if self.open_instances.contains_key(v) => Some(*v),
+                Term::Var(v) if self.generic.contains_key(v) => {
+                    if !tys.iter().any(open) {
+                        return self.instance(*v, tys, &[]);
+                    }
+                    // At the caller's own type variables -- `impl Rows
+                    // (Builder s)` inside a function generic in `s`, which
+                    // is every function run under a `runSt`. A release build
+                    // copies at them, generic in them, as it copies a
+                    // function ([`Spec::copy`]); a debug build waits.
+                    if self.limit.is_some() {
+                        return None;
+                    }
+                    let mut vars = Vec::new();
+                    if !tys.iter().all(|t| type_vars(t, &mut vars)) {
+                        return None;
+                    }
+                    self.instance(*v, tys, &vars)
                 }
                 _ => None,
             },
@@ -332,7 +354,7 @@ impl Spec {
 
     /// The copy of the generic dictionary `k` at `tys`, made if it has not
     /// been, and known from then on.
-    fn instance(&mut self, k: Var, tys: &[Ty]) -> Option<Var> {
+    fn instance(&mut self, k: Var, tys: &[Ty], vars: &[u32]) -> Option<Var> {
         let key = (k, format!("{tys:?}"));
         if let Some(v) = self.copies.get(&key) {
             return Some(*v);
@@ -373,11 +395,31 @@ impl Spec {
         self.depth += 1;
         let term = self.term(&copy.term);
         self.depth -= 1;
+        // Generic in the caller's variables it is at, if it is at any.
+        let binders: Vec<TyVar> = vars
+            .iter()
+            .map(|v| TyVar {
+                id: *v,
+                kind: VarKind::Type,
+            })
+            .collect();
+        let (poly, term) = if binders.is_empty() {
+            (Poly::mono(ty), term)
+        } else {
+            self.open_instances.insert(var, binders.clone());
+            (
+                Poly {
+                    binders: binders.clone(),
+                    ty,
+                },
+                Term::TyLam(binders, Arc::new(term)),
+            )
+        };
         self.made.push(Def {
             var,
             name: d.name,
             module: d.module,
-            poly: Poly::mono(ty),
+            poly,
             term,
         });
         Some(var)
@@ -596,7 +638,18 @@ impl Spec {
         let body = rewrite::term(
             &copy.term,
             &mut |t| match t {
-                Term::Var(v) => Term::Var(given.get(&v).copied().unwrap_or(v)),
+                // A dictionary that is generic in the caller's variables is
+                // named at them.
+                Term::Var(v) => match given.get(&v) {
+                    Some(d) => match self.open_instances.get(d) {
+                        Some(binders) => Term::TyApp(
+                            Arc::new(Term::Var(*d)),
+                            binders.iter().map(|b| InferType::Var(b.id)).collect(),
+                        ),
+                        None => Term::Var(*d),
+                    },
+                    None => Term::Var(v),
+                },
                 t => t,
             },
             &mut |p| p,

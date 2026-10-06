@@ -82,6 +82,10 @@ St s }`), and `! Reading r` where a method's type says what it performs. A
 
 ### Fixed
 
+- A trait used at a type with the caller's own type variables in it -- an
+  `impl` for `Builder s`, inside a function generic in `s`, as everything run
+  under a `runSt` is -- is compiled away in a release build as it is at a
+  known type. Its dictionary was looked up and its method called at run time.
 - A small function that takes a value apart and is inlined where its answer
   is needed -- an accessor, a trait's reader at a known type -- no longer
   costs a continuation frame on every call: what waits for a one-armed

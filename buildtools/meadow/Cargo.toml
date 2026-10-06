@@ -42,6 +42,7 @@ find-msvc-tools = "0.1"
 insta = "1.47.2"
 # The reference interpreter of Cut, which what MeadowBoot lowers is run on.
 meadow-cut.workspace = true
+meadow-axcut.workspace = true
 
 [features]
 # Pass through to the runtime: charge allocation to the instruction that asked

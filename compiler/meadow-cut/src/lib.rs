@@ -13,6 +13,7 @@
 //! run.
 
 pub mod interp;
+pub mod lower;
 pub mod parse;
 pub mod print;
 

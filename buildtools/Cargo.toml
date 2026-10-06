@@ -16,6 +16,7 @@ meadow-eval = { path = "../eval" }
 meadow-glade = { path = "../glade" }
 meadow-seq = { path = "../compiler/meadow-seq" }
 meadow-cut = { path = "../compiler/meadow-cut" }
+meadow-axcut = { path = "../compiler/meadow-axcut" }
 meadow-codegen = { path = "../compiler/meadow-codegen" }
 meadow-llvm = { path = "../compiler/meadow-llvm" }
 meadow-bytecode = { path = "../compiler/meadow-bytecode" }

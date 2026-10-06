@@ -2269,17 +2269,53 @@ fn cut_answer(text: &str) -> String {
         .unwrap_or_else(|_| "the interpreter panicked".to_string())
 }
 
+/// How many of them answer so once that Cut is lowered to AxCut and run by
+/// its machine, which has every primitive the runtimes have and checks how
+/// each value is represented. The rest are a handler's, which the lowering
+/// to AxCut does not take yet, and what MeadowBoot does not lower or show.
+const AXCUT_CASES_AGREEING: usize = 56;
+
+/// What the AxCut machine answers of the Cut program `text` once it is
+/// lowered, or why it answered nothing.
+fn axcut_answer(text: &str) -> String {
+    use meadow_axcut::machine::{Machine, Value};
+    let program = match meadow_cut::parse(text) {
+        Ok(p) => p,
+        Err(e) => return format!("does not read: {e}"),
+    };
+    let lowered = match meadow_cut::lower::lower(&program) {
+        Ok(l) => l,
+        Err(e) => return format!("not lowered: {e}"),
+    };
+    match Machine::run(&lowered, 500_000_000) {
+        Ok(Value::Str(s)) => s.to_string(),
+        Ok(v) => format!("answered {v}, not a string"),
+        Err(e) => format!("fails: {e:?}"),
+    }
+}
+
 #[test]
 fn glade_cases_lowered_to_cut_by_meadowboot_answer_as_the_rust_compiler_has_them() {
     let dir = std::env::temp_dir().join(format!("meadowboot-cut-{}", std::process::id()));
     let cases = run_cases(&dir);
     let wants: std::collections::HashMap<PathBuf, String> = cases.iter().cloned().collect();
     let files: Vec<PathBuf> = cases.iter().map(|(f, _)| f.clone()).collect();
-    let answers: Vec<(PathBuf, String)> = per_file("cut", &files)
-        .into_iter()
-        .map(|(p, text)| (p, format!("{}\n", cut_answer(&text))))
+    let lowered = per_file("cut", &files);
+    let answers: Vec<(PathBuf, String)> = lowered
+        .iter()
+        .map(|(p, text)| (p.clone(), format!("{}\n", cut_answer(text))))
         .collect();
     let bad = differences(&answers, |p| format!("{}\n", wants[p]));
+    let on_axcut: Vec<(PathBuf, String)> = lowered
+        .iter()
+        .map(|(p, text)| (p.clone(), format!("{}\n", axcut_answer(text))))
+        .collect();
+    let bad_on_axcut = differences(&on_axcut, |p| format!("{}\n", wants[p]));
+    let agreeing_on_axcut = files.len() - bad_on_axcut.len();
+    eprintln!(
+        "{agreeing_on_axcut} of {} cases agree on the AxCut machine",
+        files.len()
+    );
     let _ = std::fs::remove_dir_all(&dir);
     let agreeing = files.len() - bad.len();
     eprintln!("{agreeing} of {} cases agree", files.len());
@@ -2293,6 +2329,17 @@ fn glade_cases_lowered_to_cut_by_meadowboot_answer_as_the_rust_compiler_has_them
         "{agreeing} of {} cases agree, and {CUT_CASES_AGREEING} did:\n\n{}",
         files.len(),
         bad.iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
+    assert!(
+        agreeing_on_axcut >= AXCUT_CASES_AGREEING,
+        "{agreeing_on_axcut} of {} cases agree on the AxCut machine, and {AXCUT_CASES_AGREEING} did:\n\n{}",
+        files.len(),
+        bad_on_axcut
+            .iter()
             .take(20)
             .cloned()
             .collect::<Vec<_>>()

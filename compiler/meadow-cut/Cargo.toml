@@ -7,3 +7,9 @@ edition.workspace = true
 [lib]
 name = "meadow_cut"
 path = "src/lib.rs"
+
+[dependencies]
+# What Cut is lowered to, and the primitives and descriptors the two share.
+meadow-axcut.workspace = true
+meadow-rt.workspace = true
+meadow-intern.workspace = true

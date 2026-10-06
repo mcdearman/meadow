@@ -953,6 +953,7 @@ dependencies = [
  "iced-x86",
  "insta",
  "itertools",
+ "meadow-axcut",
  "meadow-bytecode",
  "meadow-codegen",
  "meadow-compiler",
@@ -1050,6 +1051,11 @@ dependencies = [
 [[package]]
 name = "meadow-cut"
 version = "0.3.0"
+dependencies = [
+ "meadow-axcut",
+ "meadow-intern",
+ "meadow-rt",
+]
 
 [[package]]
 name = "meadow-diagnostics"

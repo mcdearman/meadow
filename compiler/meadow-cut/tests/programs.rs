@@ -1,5 +1,6 @@
 //! Cut programs as a front end writes them: read, printed and read back the
-//! same, and run by the reference interpreter.
+//! same, and run by the reference interpreter -- and, those the lowering to
+//! AxCut takes, by the AxCut machine, to the same answer.
 
 use meadow_cut::interp::{Options, Outcome, run};
 use meadow_cut::{parse, print};
@@ -12,7 +13,27 @@ fn runs(text: &str) -> Outcome {
     let printed = print::program(&p);
     let again = parse(&printed).unwrap_or_else(|e| panic!("{e}\n{printed}"));
     assert_eq!(p, again, "printed and read back:\n{printed}");
-    run(&p, &Options::default()).unwrap_or_else(|(e, out)| panic!("{e}\n{out:?}"))
+    let out = run(&p, &Options::default()).unwrap_or_else(|(e, out)| panic!("{e}\n{out:?}"));
+    lowered_agrees(&p, &out);
+    out
+}
+
+/// Where `p` is one the lowering to AxCut takes and its answer is a string,
+/// the AxCut machine answers what the interpreter printed.
+#[track_caller]
+fn lowered_agrees(p: &meadow_cut::Program, out: &Outcome) {
+    use meadow_axcut::machine::{Machine, Value};
+    let Ok(lowered) = meadow_cut::lower::lower(p) else {
+        return;
+    };
+    if p.answer != meadow_cut::Answer::Str {
+        return;
+    }
+    match Machine::run(&lowered, 100_000_000) {
+        Ok(Value::Str(s)) => assert_eq!(&*s, out.output, "what the AxCut machine answers"),
+        Ok(v) => panic!("the AxCut machine answered {v}, not a string"),
+        Err(e) => panic!("the AxCut machine: {e:?}\n{}", lowered.pretty()),
+    }
 }
 
 /// What `text` fails with when run.
@@ -326,4 +347,64 @@ fn a_reader_refuses_what_it_cannot_read() {
     assert!(e.contains("no data declares it"), "{e}");
     let e = parse("cut 0\ndef idyll:A/f (; k: ptr) = <1 | \n").unwrap_err();
     assert!(e.starts_with("3:1:"), "says where: {e}");
+}
+
+#[test]
+fn what_is_not_lowered_to_axcut_yet_is_refused_and_says_what() {
+    let lowered = |text: &str| meadow_cut::lower::lower(&parse(text).expect("a program"));
+    let effects = lowered(&format!(
+        "cut 0
+entry idyll:Main/main
+answer none
+{CONSOLE}
+def idyll:Main/main (; k: ptr) =
+  perform idyll:Prelude/Console.putStr(\"hello\\n\"; k)
+"
+    ));
+    assert!(
+        effects.as_ref().is_err_and(|e| e.contains("effects")),
+        "{effects:?}"
+    );
+    let generic = lowered(
+        "cut 0
+entry idyll:Main/main
+answer none
+
+def idyll:Main/id <'a = d> (d: desc, x: 'a; k: ptr) =
+  <x | k>
+
+def idyll:Main/main (; k: ptr) =
+  idyll:Main/id(desc(i64), 1; k)
+",
+    );
+    assert!(
+        generic.as_ref().is_err_and(|e| e.contains("generic")),
+        "{generic:?}"
+    );
+}
+
+#[test]
+fn a_top_level_value_is_computed_once_and_read_on_the_axcut_machine() {
+    // The start block computes each value in the order written, the second
+    // of the first, before the entry runs.
+    let out = runs(
+        "cut 0
+entry idyll:Main/main
+answer str
+
+val idyll:Main/twenty : i64 =
+  prim add(19, 1; halt)
+
+val idyll:Main/pair : ptr =
+  <#tuple(idyll:Main/twenty, \"x\") | halt>
+
+def idyll:Main/main (; k: ptr) =
+  <idyll:Main/pair | case {
+    #tuple(n: i64, s: str) =>
+      prim add(n, idyll:Main/twenty; μ̃ m: i64.
+        prim eq(m, 40; μ̃ u: unit. <\"no\" | k>, μ̃ u: unit. <s | k>))
+  }>
+",
+    );
+    assert_eq!(out.output, "x");
 }

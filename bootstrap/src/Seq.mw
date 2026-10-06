@@ -322,89 +322,69 @@ fun lifted src out cx (m : Meta) binds body =
 -- `seen`: what a function lifted out of where it was written has to be
 -- given.
 fun free (a : CoreArena) (t : CoreTerm) (bound : [Int]) (seen : [(Int, Type)]) : [(Int, Type)] =
-  let k = kindCoreTerm a t in
   let each = \ts b acc -> V.foldl (\x u -> free a u b x) acc ts in
-  if k == CoreTermKind.Var then
-    (let id = coreTermVarId a t in
-     if V.elem id bound or V.any (\s -> fst s == id) seen then seen
-     else V.pushBack seen (id, tyCoreTerm a t))
-  else if k == CoreTermKind.Lam then
-    free a (coreTermLamBody a t) (V.pushBack bound (coreTermLamParam a t)) seen
-  else if k == CoreTermKind.App then
-    free a (coreTermAppArg a t) bound (free a (coreTermAppFunc a t) bound seen)
-  else if k == CoreTermKind.Let then
-    free
-      a
-      (coreTermLetBody a t)
-      (V.pushBack bound (coreTermLetId a t))
-      (free a (coreTermLetValue a t) bound seen)
-  else if k == CoreTermKind.LetRec then
-    (let binds = coreTermLetRecBinds a t in
-     let inner = V.append bound (V.map (\b -> coreBindId a b) binds) in
-     free
-       a
-       (coreTermLetRecBody a t)
-       inner
-       (each (V.map (\b -> coreBindValue a b) binds) inner seen))
-  else if k == CoreTermKind.If then
-    each [coreTermIfCond a t, coreTermIfYes a t, coreTermIfNo a t] bound seen
-  else if k == CoreTermKind.Tuple then each (coreTermTupleItems a t) bound seen
-  else if k == CoreTermKind.Array then each (coreTermArrayItems a t) bound seen
-  else if k == CoreTermKind.Proj then free a (coreTermProjTuple a t) bound seen
-  else if k == CoreTermKind.Record then
-    each (V.map (\f -> coreFieldValue a f) (coreTermRecordFields a t)) bound seen
-  else if k == CoreTermKind.Sel then free a (coreTermSelTarget a t) bound seen
-  else if k == CoreTermKind.Extend then
-    each [coreTermExtendTarget a t, coreTermExtendValue a t] bound seen
-  else if k == CoreTermKind.Ctor then each (coreTermCtorArgs a t) bound seen
-  else if k == CoreTermKind.Prim then each (coreTermPrimArgs a t) bound seen
-  else if k == CoreTermKind.Perform then free a (coreTermPerformArg a t) bound seen
-  else if k == CoreTermKind.Case then
-    V.foldl
-      (\acc arm ->
-        (let inner = V.append bound (bindersOf a (coreArmPat a arm)) in
-         let guarded =
-           (match coreArmGuard a arm with
-            | Just g -> free a g inner acc
-            | None -> acc)
-         in free a (coreArmBody a arm) inner guarded))
-      (free a (coreTermCaseScrutinee a t) bound seen)
-      (coreTermCaseArms a t)
-  else if k == CoreTermKind.Handle then
-    (let body = free a (coreTermHandleBody a t) bound seen in
-     let clauses =
-       V.foldl
-         (\acc c ->
-           free
-             a
-             (coreClauseBody a c)
-             (V.append bound [coreClauseParam a c, coreClauseResume a c])
-             acc)
-         body
-         (coreTermHandleClauses a t)
-     in match (coreTermHandleRetId a t, coreTermHandleRet a t) with
-        | (Just r, Just ret) -> free a ret (V.pushBack bound r) clauses
-        | _ -> clauses)
-  else if k == CoreTermKind.Join then
-    free
-      a
-      (coreTermJoinBody a t)
-      bound
-      (free a (coreTermJoinRhs a t) (V.append bound (coreTermJoinParams a t)) seen)
-  else if k == CoreTermKind.Jump then each (coreTermJumpArgs a t) bound seen
-  else seen
+  match viewCoreTerm a t with
+  | CoreTermView.Var r ->
+      if V.elem r.id bound or V.any (\s -> fst s == r.id) seen then seen
+      else V.pushBack seen (r.id, r.ty)
+  | CoreTermView.Lam r -> free a r.body (V.pushBack bound r.param) seen
+  | CoreTermView.App r -> free a r.arg bound (free a r.func bound seen)
+  | CoreTermView.Let r -> free a r.body (V.pushBack bound r.id) (free a r.value bound seen)
+  | CoreTermView.LetRec r ->
+      let inner = V.append bound (V.map (\b -> coreBindId a b) r.binds) in
+      free a r.body inner (each (V.map (\b -> coreBindValue a b) r.binds) inner seen)
+  | CoreTermView.If r -> each [r.cond, r.yes, r.no] bound seen
+  | CoreTermView.Tuple r -> each r.items bound seen
+  | CoreTermView.Array r -> each r.items bound seen
+  | CoreTermView.Proj r -> free a r.tuple bound seen
+  | CoreTermView.Record r -> each (V.map (\f -> coreFieldValue a f) r.fields) bound seen
+  | CoreTermView.Sel r -> free a r.target bound seen
+  | CoreTermView.Extend r -> each [r.target, r.value] bound seen
+  | CoreTermView.Ctor r -> each r.args bound seen
+  | CoreTermView.Prim r -> each r.args bound seen
+  | CoreTermView.Perform r -> free a r.arg bound seen
+  | CoreTermView.Case r ->
+      V.foldl
+        (\acc arm ->
+          (let inner = V.append bound (bindersOf a (coreArmPat a arm)) in
+           let guarded =
+             (match coreArmGuard a arm with
+              | Just g -> free a g inner acc
+              | None -> acc)
+           in free a (coreArmBody a arm) inner guarded))
+        (free a r.scrutinee bound seen)
+        r.arms
+  | CoreTermView.Handle r ->
+      let body = free a r.body bound seen in
+      let clauses =
+        V.foldl
+          (\acc c ->
+            free
+              a
+              (coreClauseBody a c)
+              (V.append bound [coreClauseParam a c, coreClauseResume a c])
+              acc)
+          body
+          r.clauses
+      in (match (r.retId, r.ret) with
+          | (Just x, Just ret) -> free a ret (V.pushBack bound x) clauses
+          | _ -> clauses)
+  | CoreTermView.Join r -> free a r.body bound (free a r.rhs (V.append bound r.params) seen)
+  | CoreTermView.Jump r -> each r.args bound seen
+  | CoreTermView.Ill _ -> seen
+  | CoreTermView.Const _ -> seen
 
 -- The variables a pattern binds.
 fun bindersOf (a : CoreArena) (p : CorePat) : [Int] =
-  let k = kindCorePat a p in
-  if k == CorePatKind.PVar then [corePatPVarId a p]
-  else if k == CorePatKind.PAs then V.pushBack (bindersOf a (corePatPAsPat a p)) (corePatPAsId a p)
-  else if k == CorePatKind.PTuple then V.concatMap (bindersOf a) (corePatPTupleItems a p)
-  else if k == CorePatKind.PArray then V.concatMap (bindersOf a) (corePatPArrayItems a p)
-  else if k == CorePatKind.PCtor then V.concatMap (bindersOf a) (corePatPCtorArgs a p)
-  else if k == CorePatKind.PRecord then
-    V.concatMap (\f -> bindersOf a (corePFieldPat a f)) (corePatPRecordFields a p)
-  else []
+  match viewCorePat a p with
+  | CorePatView.PVar r -> [r.id]
+  | CorePatView.PAs r -> V.pushBack (bindersOf a r.pat) r.id
+  | CorePatView.PTuple r -> V.concatMap (bindersOf a) r.items
+  | CorePatView.PArray r -> V.concatMap (bindersOf a) r.items
+  | CorePatView.PCtor r -> V.concatMap (bindersOf a) r.args
+  | CorePatView.PRecord r -> V.concatMap (\f -> bindersOf a (corePFieldPat a f)) r.fields
+  | CorePatView.PWild _ -> []
+  | CorePatView.PLit _ -> []
 
 -- --- matching ----------------------------------------------------------------
 --
@@ -449,109 +429,94 @@ fun armsFrom src out cx (m : Meta) (s : String) arms (i : Int) =
 -- matches, with what `p` binds bound, and giving up to `fail` where it does
 -- not.
 fun matched src out cx (m : Meta) (x : String) p (fail : String) success =
-  let kind = kindCorePat src p in
   let var = C.var out m x in
-  if kind == CorePatKind.PWild then success ()
-  else if kind == CorePatKind.PVar then
-    C.give
-      out
-      m
-      var
-      (C.binding out m "v${show (corePatPVarId src p)}" (repOf (tyCorePat src p)) (success ()))
-  else if kind == CorePatKind.PAs then
-    C.give
-      out
-      m
-      var
-      (C.binding
-         out
-         m
-         "v${show (corePatPAsId src p)}"
-         (repOf (tyCorePat src p))
-         (matched src out cx m x (corePatPAsPat src p) fail success))
-  else if kind == CorePatKind.PLit then
-    (let l = corePatPLitLit src p in
-     let lk = kindCoreLit src l in
-     if lk == CoreLitKind.LUnit then success ()
-     else if lk == CoreLitKind.LBool then
-       (if coreLitLBoolValue src l then
-          C.branch out m "u${show p}" var (C.gaveUp out m fail) (success ())
-        else C.branch out m "u${show p}" var (success ()) (C.gaveUp out m fail))
-     else
-       C.prim out m "eq" [var, lowerLit src out cx l] [
-         C.binding out m "u${show p}" "unit" (C.gaveUp out m fail),
-         C.binding out m "u${show p}" "unit" (success ())
-       ])
-  else if kind == CorePatKind.PTuple then
-    (let items = corePatPTupleItems src p in
-     let names = V.map (\i -> "m${show p}_${show i}") (V.range 0 (V.len items)) in
-     let pairs = V.zip names items in
-     C.give
-       out
-       m
-       var
-       (C.caseOf
-          out
-          m
-          [C.arm
-             out
-             m
-             "#tuple"
-             (V.map (\q -> C.param out m (fst q) (repOf (tyCorePat src (snd q)))) pairs)
-             (matchedAll src out cx m pairs fail success)]))
-  else if kind == CorePatKind.PCtor then
-    (let args = corePatPCtorArgs src p in
-     let names = V.map (\i -> "m${show p}_${show i}") (V.range 0 (V.len args)) in
-     let pairs = V.zip names args in
-     C.give
-       out
-       m
-       var
-       (C.caseOf out m [
-          C.arm
-            out
-            m
-            (symbolOf (corePatPCtorName src p))
-            (V.map (\q -> C.param out m (fst q) (repOf (tyCorePat src (snd q)))) pairs)
-            (matchedAll src out cx m pairs fail success),
-          C.arm out m "_" [] (C.gaveUp out m fail)
-        ]))
-  else if kind == CorePatKind.PArray then
-    (let items = corePatPArrayItems src p in
-     let names = V.map (\i -> "m${show p}_${show i}") (V.range 0 (V.len items)) in
-     let pairs = V.zip names items in
-     let len = "l${show p}" in
-     let taken =
-       V.foldr
-         (\i acc ->
-           C.prim
-             out
-             m
-             "arrayGet"
-             [C.var out m x, C.int out m i]
-             [C.binding
+  -- The value's parts, each named, and matched in turn.
+  let parts = \qs -> V.zip (V.map (\i -> "m${show p}_${show i}") (V.range 0 (V.len qs))) qs in
+  let fields =
+    \pairs -> V.map (\q -> C.param out m (fst q) (repOf (tyCorePat src (snd q)))) pairs
+  in match viewCorePat src p with
+     | CorePatView.PWild _ -> success ()
+     | CorePatView.PVar r ->
+         C.give out m var (C.binding out m "v${show r.id}" (repOf r.ty) (success ()))
+     | CorePatView.PAs r ->
+         C.give
+           out
+           m
+           var
+           (C.binding
+              out
+              m
+              "v${show r.id}"
+              (repOf r.ty)
+              (matched src out cx m x r.pat fail success))
+     | CorePatView.PLit r ->
+         (match viewCoreLit src r.lit with
+          | CoreLitView.LUnit _ -> success ()
+          | CoreLitView.LBool b ->
+              if b.value then C.branch out m "u${show p}" var (C.gaveUp out m fail) (success ())
+              else C.branch out m "u${show p}" var (success ()) (C.gaveUp out m fail)
+          | _ ->
+              C.prim out m "eq" [var, lowerLit src out cx r.lit] [
+                C.binding out m "u${show p}" "unit" (C.gaveUp out m fail),
+                C.binding out m "u${show p}" "unit" (success ())
+              ])
+     | CorePatView.PTuple r ->
+         let pairs = parts r.items in
+         C.give
+           out
+           m
+           var
+           (C.caseOf
+              out
+              m
+              [C.arm out m "#tuple" (fields pairs) (matchedAll src out cx m pairs fail success)])
+     | CorePatView.PCtor r ->
+         let pairs = parts r.args in
+         C.give
+           out
+           m
+           var
+           (C.caseOf out m [
+              C.arm
                 out
                 m
-                (V.getOr "" names i)
-                (repOf (M.unwrapOr Error (M.map (\q -> tyCorePat src q) (V.get items i))))
-                acc])
-         (matchedAll src out cx m pairs fail success)
-         (V.range 0 (V.len items))
-     in C.prim
-          out
-          m
-          "arrayLen"
-          [var]
-          [C.binding
-             out
-             m
-             len
-             "i64"
-             (C.prim out m "eq" [C.var out m len, C.int out m (V.len items)] [
-                C.binding out m "u${show p}" "unit" (C.gaveUp out m fail),
-                C.binding out m "u${show p}" "unit" taken
-              ])])
-  else C.unsupported out m "a pattern of this kind"
+                (symbolOf r.name)
+                (fields pairs)
+                (matchedAll src out cx m pairs fail success),
+              C.arm out m "_" [] (C.gaveUp out m fail)
+            ])
+     | CorePatView.PArray r ->
+         let pairs = parts r.items in
+         let len = "l${show p}" in
+         let taken =
+           V.foldr
+             (\i acc ->
+               (match V.get pairs i with
+                | Just q ->
+                    C.prim
+                      out
+                      m
+                      "arrayGet"
+                      [C.var out m x, C.int out m i]
+                      [C.binding out m (fst q) (repOf (tyCorePat src (snd q))) acc]
+                | None -> acc))
+             (matchedAll src out cx m pairs fail success)
+             (V.range 0 (V.len pairs))
+         in C.prim
+              out
+              m
+              "arrayLen"
+              [var]
+              [C.binding
+                 out
+                 m
+                 len
+                 "i64"
+                 (C.prim out m "eq" [C.var out m len, C.int out m (V.len pairs)] [
+                    C.binding out m "u${show p}" "unit" (C.gaveUp out m fail),
+                    C.binding out m "u${show p}" "unit" taken
+                  ])]
+     | CorePatView.PRecord _ -> C.unsupported out m "a pattern of this kind"
 
 -- Each named value matched against its pattern, in turn.
 fun matchedAll src out cx (m : Meta) pairs (fail : String) success =

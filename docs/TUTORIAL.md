@@ -134,6 +134,8 @@ Useful commands:
 | -------------- | ---------------------------------------------------------- |
 | `:t <expr>`    | show the type without evaluating                           |
 | `:module`      | list what is defined, and what a later definition shadowed |
+| `:core NAME`   | a definition as core, the typed IR every pass works on     |
+| `:axcut NAME`  | the same as AxCut, the IR the runtimes compile             |
 | `:reset`       | forget everything defined so far                           |
 | `:time`        | time every entry from now on (`:time` again stops)         |
 | `:time <expr>` | time just this entry                                       |

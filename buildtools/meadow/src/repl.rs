@@ -839,6 +839,14 @@ const COMMANDS: &[(&str, &str)] = &[
         ":module",
         "list what is defined, and what a later definition shadowed",
     ),
+    (
+        ":core <name>",
+        "a definition as core, the typed IR every pass works on",
+    ),
+    (
+        ":axcut <name>",
+        "the same as AxCut, the IR the runtimes compile",
+    ),
     (":reset", "forget everything defined so far"),
     (
         ":jit / :vm / :cek",
@@ -1338,6 +1346,11 @@ impl Session {
                         _ if trimmed.starts_with(":time ") || trimmed.starts_with(":time\n") => {
                             self.handle(trimmed[5..].trim(), Mode::Run, true);
                         }
+                        _ if trimmed.starts_with(":core ") => self.show_core(trimmed[5..].trim()),
+                        _ if trimmed.starts_with(":axcut ") => self.show_axcut(trimmed[6..].trim()),
+                        ":core" | ":axcut" => {
+                            println!("({trimmed} <name>: the name of something defined)")
+                        }
                         _ if trimmed.starts_with(":t ") || trimmed.starts_with(":t\n") => {
                             self.handle(trimmed[2..].trim(), Mode::TypeOnly, false);
                         }
@@ -1589,6 +1602,70 @@ impl Session {
                     self.uses.push(decl);
                 }
             }
+        }
+    }
+
+    /// The definition called `name`: the last of that name, as a mention of
+    /// it now would mean -- an entry's before the library's.
+    fn definition(&self, name: &str) -> Option<&core::Def> {
+        self.prefix
+            .iter()
+            .rev()
+            .flat_map(|p| p.defs.iter().rev())
+            .find(|d| &*d.name == name || hir::spell_name(&d.name) == name)
+    }
+
+    /// `:core name`: the definition as the front end left it, before the
+    /// passes that run on a whole program.
+    fn show_core(&self, name: &str) {
+        let Some(d) = self.definition(name) else {
+            println!("(nothing called `{name}` is defined)");
+            return;
+        };
+        let alone = core::Program {
+            defs: vec![d.clone()],
+            entry: None,
+            ctor_fields: Default::default(),
+            variants: Default::default(),
+            origins: Default::default(),
+        };
+        print!("{}", alone.pretty());
+    }
+
+    /// `:axcut name`: every block the definition is lowered to, in the
+    /// program that reaches it -- as the runtimes are handed it, after the
+    /// passes over core, at this session's optimisation level.
+    fn show_axcut(&mut self, name: &str) {
+        let Some(d) = self.definition(name) else {
+            println!("(nothing called `{name}` is defined)");
+            return;
+        };
+        let (var, canonical) = (d.var, d.name);
+        self.cache.catch_up(&self.prefix);
+        let keep = core::prune::reach_all(&[&self.cache.deps], Some(var));
+        let program = core::Program {
+            defs: self
+                .prefix
+                .iter()
+                .flat_map(|p| &p.defs)
+                .filter(|d| keep.contains(&d.var))
+                .cloned()
+                .collect(),
+            entry: None,
+            ctor_fields: self.cache.ctor_fields.clone(),
+            variants: self.cache.variants.clone(),
+            origins: Default::default(),
+        };
+        let lowered = meadow_seq::lower_program(&program, self.opts.opt);
+        let mut shown = false;
+        for block in lowered.program.defs.iter().filter(|b| b.name == canonical) {
+            println!("-- {} (L{})\n{}", block.name, block.label.0, block.block);
+            shown = true;
+        }
+        if !shown {
+            println!(
+                "(`{name}` is lowered to no block of its own: it was inlined where it is used)"
+            );
         }
     }
 

@@ -769,6 +769,7 @@ impl Tree<'_> {
             TypeExpr::Tuple(ts) => self.node("TTuple", s, |w| w.list("items", ts, |w, t| w.ty(t))),
             TypeExpr::Vector(t) => self.node("TVector", s, |w| w.ty(t)),
             TypeExpr::List(t) => self.node("TList", s, |w| w.ty(t)),
+            TypeExpr::Row(r) => self.node("TRow", s, |w| w.row(r)),
             TypeExpr::Record(fields, tail) => self.node("TRecord", s, |w| {
                 w.list("fields", fields, |w, (n, t)| {
                     w.under("TField", |w| {

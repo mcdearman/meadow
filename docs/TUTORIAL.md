@@ -1625,6 +1625,31 @@ the _rest_ of the row it is written in, so effects may be named before it --
 implementation is known the dictionary is compiled away, as every trait's is,
 and a call of `slot` is a call of that `impl`'s function.
 
+**A parameter that is an effect.** The same can be said with a parameter of
+the trait: one a method's type performs is an effect, and an `impl` is given a
+row for it, or a variable where anything will do.
+
+```meadow
+trait Rows r e {
+  fun slot : r -> Int -> Int ! e
+}
+
+impl Rows Done e {
+  fun slot r i = match r with | Done a -> arrayGet a i
+}
+
+impl Rows (Writing s) { St s | e } {
+  fun slot r i = match r with | Writing a -> stGetArray a i
+}
+```
+
+An `impl` is found by the trait's other parameters -- here by `Done` or
+`Writing s` -- and then says what the effect is, so the effect never has to be
+known to find one. A row in an `impl`'s head is in braces as its body is; the
+body is the last of them. Which to write is a matter of what reads better: a
+parameter shows in every `Rows r e =>`, and an associated effect only in the
+trait.
+
 What is left out, for now:
 
 - A method's type mentions the trait's parameter, its associated types,

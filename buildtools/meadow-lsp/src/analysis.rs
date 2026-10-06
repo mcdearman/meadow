@@ -1620,6 +1620,11 @@ impl Walk<'_> {
             hir::TypeExpr::Tuple(ts) => ts.iter().for_each(|x| self.ty(x)),
             hir::TypeExpr::Vector(x) | hir::TypeExpr::List(x) => self.ty(x),
             hir::TypeExpr::Record(fields, _) => fields.iter().for_each(|(_, x)| self.ty(x)),
+            hir::TypeExpr::Row(row) => {
+                for (_, args) in &row.labels {
+                    args.iter().for_each(|x| self.ty(x));
+                }
+            }
             hir::TypeExpr::Var(_) | hir::TypeExpr::Error => {}
         }
     }

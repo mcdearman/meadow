@@ -3854,6 +3854,11 @@ impl Infer {
         );
         let want = Type::func_eff(vec![Type::unit()], result.clone(), body_row);
         self.unify_at(body.span, body_ty, want.clone());
+        // What the body asked of a trait at a type that names `s` is answered
+        // in here too: the `impl` found for it is over variables of its own,
+        // which made out there could not stand for `s` -- that would be the
+        // state escaping -- though nothing of it gets out.
+        self.solve_wanted();
         // Everything the body passed along is settled while `s` is still this
         // `runSt`'s, so an outer callback's effect can be told apart from it.
         self.solve_subsumptions(mark);
@@ -4042,6 +4047,11 @@ fn alias_reaches(
             hir::TypeExpr::Tuple(ts) => ts.iter().for_each(|x| names(x, out)),
             hir::TypeExpr::Vector(x) | hir::TypeExpr::List(x) => names(x, out),
             hir::TypeExpr::Record(fs, _) => fs.iter().for_each(|(_, x)| names(x, out)),
+            hir::TypeExpr::Row(row) => {
+                for (_, args) in &row.labels {
+                    args.iter().for_each(|a| names(a, out));
+                }
+            }
             hir::TypeExpr::Var(_) | hir::TypeExpr::Error => {}
         }
     }
@@ -4185,6 +4195,7 @@ fn ty_of(t: &hir::LTypeExpr, params: &HashMap<VarId, u32>, aliases: &Aliases) ->
             });
             Type::Record(Box::new(row))
         }
+        hir::TypeExpr::Row(row) => eff_of(row, params, aliases),
         hir::TypeExpr::Error => Type::Error,
     }
 }
@@ -5364,6 +5375,18 @@ fn collect_tyvars(t: &hir::LTypeExpr, out: &mut HashMap<VarId, u32>) {
             if let Some(tail) = tail {
                 let next = out.len() as u32;
                 out.entry(*tail.value()).or_insert(next);
+            }
+        }
+        hir::TypeExpr::Row(row) => {
+            for (_, args) in &row.labels {
+                args.iter().for_each(|a| collect_tyvars(a, out));
+            }
+            if let Some(tail) = &row.tail {
+                let next = out.len() as u32;
+                out.entry(*tail.value()).or_insert(next);
+            }
+            if let Some((_, args)) = &row.assoc {
+                args.iter().for_each(|a| collect_tyvars(a, out));
             }
         }
         hir::TypeExpr::Error => {}

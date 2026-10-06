@@ -265,6 +265,15 @@ fn ty(t: &mut ast::LType) {
                 }
             }
         }
+        ast::TypeExpr::Row(row) => {
+            for (label, args) in &mut row.labels {
+                unmark(label);
+                args.iter_mut().for_each(ty);
+            }
+            if let Some(tail) = &mut row.tail {
+                unmark(tail);
+            }
+        }
         ast::TypeExpr::Tuple(ts) => ts.iter_mut().for_each(ty),
         ast::TypeExpr::Vector(t) | ast::TypeExpr::List(t) => ty(t),
         ast::TypeExpr::Record(fields, tail) => {

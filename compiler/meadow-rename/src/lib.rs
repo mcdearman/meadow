@@ -3226,6 +3226,10 @@ impl Resolver {
                 let rx = self.resolve_ty(x);
                 self.node(hir::TypeExpr::List(rx), t.span)
             }
+            ast::TypeExpr::Row(row) => {
+                let row = self.resolve_effect_row(row);
+                self.node(hir::TypeExpr::Row(row), t.span)
+            }
             ast::TypeExpr::Record(fields, tail) => {
                 let mut seen: Vec<InternedString> = Vec::with_capacity(fields.len());
                 let rfields = fields

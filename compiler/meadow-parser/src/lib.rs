@@ -1152,7 +1152,32 @@ fn bound_name(bind: &Bind) -> Option<&Ident> {
 /// empty body would otherwise read as an empty record type.
 fn head_ty<'a, I: ValueInput<'a, Token = Token, Span = Span>>()
 -> impl Parser<'a, I, LType, extra::Err<Rich<'a, Token, Span>>> + Clone {
-    just(Token::LBrace).not().ignore_then(ty_atom())
+    // A row in braces is what a trait is given for a parameter that is an
+    // effect -- `impl Rows (Writing s) { St s | e } { … }`. The `impl`'s own
+    // body is in braces too, and comes last, so a row is one that something
+    // of the head still follows: another row, the body, a `where`, or what
+    // ends a bound.
+    let label = upper_ident().then(ty_atom().repeated().collect::<Vec<_>>());
+    let row = label
+        .separated_by(just(Token::Comma))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .then(just(Token::Bar).ignore_then(lower_ident()).or_not())
+        .delimited_by(just(Token::LBrace), just(Token::RBrace))
+        .then_ignore(
+            choice((
+                just(Token::LBrace),
+                just(Token::Where),
+                just(Token::Comma),
+                just(Token::FatArrow),
+                just(Token::RParen),
+            ))
+            .rewind(),
+        )
+        .map_with(|(labels, tail), e| {
+            Located::new(TypeExpr::Row(EffectRow { labels, tail }), e.span())
+        });
+    choice((row, just(Token::LBrace).not().ignore_then(ty_atom())))
 }
 
 /// One trait some types have to implement: `Show a`, `Convert a (List b)`.

@@ -36,6 +36,10 @@ beyond the last release is under _Unreleased_.
   in each `impl` (`effect Reading Done = {}`, `effect Reading (Writing s) = {
 St s }`), and `! Reading r` where a method's type says what it performs. A
   function generic over the trait performs what its type's `impl` says.
+- A trait's parameter can be an effect: one a method performs, `trait Rows r e
+{ fun slot : r -> Int ! e }`. An `impl` gives a row for it, `impl Rows
+(Writing s) { St s | e }`, or a variable, and is found by the other
+  parameters.
 - `@fmt(skip)` on a declaration, or on a line of its own before one, has
   `meadow fmt` leave it exactly as it is written, as `#[rustfmt::skip]` does.
 - A record update takes a field by its name alone, as construction does:
@@ -78,6 +82,10 @@ St s }`), and `! Reading r` where a method's type says what it performs. A
 
 ### Fixed
 
+- A trait used inside a `runSt` at a type that names its state -- `label cell`
+  for a `Cell s` made in there, through a function generic over the trait --
+  was refused as the state escaping. What such a use asks for is answered
+  before the `runSt` closes.
 - `meadow fmt` keeps the lines of a macro call's body when one of them has a
   comma in it: `lang! { pub Core extends Base with In, set` and a rule to a
   line after it came out with each line ending in the first word of the next.

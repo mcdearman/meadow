@@ -420,6 +420,7 @@ fn ty(t: &ast::LType) -> String {
                 opt(eff.as_ref().map(|e| row(e, s))),
             ],
         ),
+        ast::TypeExpr::Row(r) => node("TRow", s, &[row(r, s)]),
         ast::TypeExpr::Tuple(ts) => node("TTuple", s, &[list(ts.iter().map(ty))]),
         ast::TypeExpr::Vector(x) => node("TVector", s, &[ty(x)]),
         ast::TypeExpr::List(x) => node("TList", s, &[ty(x)]),

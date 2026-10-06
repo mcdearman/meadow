@@ -326,6 +326,10 @@ pub enum TypeExpr {
     /// over the rest of its fields -- a structural record, the type a record
     /// literal has, written the way a hover prints one.
     Record(Vec<(Ident, LType)>, Option<Ident>),
+    /// `{ St s | e }` where a type is expected and an effect row is meant:
+    /// what a trait is given for a parameter that is an effect --
+    /// `impl Rows (Writing s) { St s | e }`. Nowhere else.
+    Row(EffectRow),
 }
 
 /// An effect annotation `! <row>`: `! Console`, `! e`, `! { Console, State Int | e }`.

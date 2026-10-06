@@ -798,3 +798,93 @@ def result = 7
 ";
     is(src, "7");
 }
+
+// --- a parameter that is an effect --------------------------------------------
+//
+// The same thing said the other way: what a method performs is one of the
+// trait's parameters, and an `impl` is given a row for it.
+
+const ROWS_OVER: &str = "\
+data Done = Done #[Int]
+data Writing s = Writing (StArray s Int)
+
+trait Rows r e {
+  fun slot : r -> Int -> Int ! e
+}
+
+impl Rows Done e {
+  fun slot r i = match r with | Done a -> arrayGet a i
+}
+
+impl Rows (Writing s) { St s | e } {
+  fun slot r i = match r with | Writing a -> stGetArray a i
+}
+
+fun second rows = slot rows 1
+
+fun sum3 rows = slot rows 0 + slot rows 1 + slot rows 2
+";
+
+#[test]
+fn a_trait_can_be_of_an_effect_which_an_impl_gives_a_row_for() {
+    // The `impl` is found by the type alone, and says what the effect is:
+    // anything for `Done`, the state's and anything else for `Writing s`.
+    let src = format!(
+        "{ROWS_OVER}
+fun pureOne (d : Done) : Int = second d
+
+def result =
+  let d = Done #[10, 20, 30] in
+  let w = runSt (\\() -> let a = stThaw #[1, 2, 3] in (second (Writing a), sum3 (Writing a))) in
+  (pureOne d, sum3 d, w)
+"
+    );
+    is(&src, "(20, 60, (2, 6))");
+}
+
+#[test]
+fn a_row_given_to_a_trait_is_told_from_the_body_after_it() {
+    // Both are in braces. In a `where` too, and with nothing in it.
+    let src = "\
+trait Runs a e {
+  fun go : a -> Int ! e
+}
+
+impl Runs Int {} {
+  fun go n = n + 1
+}
+
+impl Runs Bool { Console | e } {
+  fun go b = let _ = println \"going\" in if b then 1 else 0
+}
+
+impl Runs (Maybe a) e where Runs a e {
+  fun go m = match m with | Just x -> go x | None -> 0
+}
+
+def result = (go 41, go (Just 6))
+";
+    is(src, "(42, 7)");
+}
+
+#[test]
+fn a_trait_at_a_type_made_in_a_run_st_is_answered_inside_it() {
+    // The `impl` found is over variables of its own, which have to be made
+    // while the state is still this `runSt`'s.
+    let src = "\
+data Cell s = Cell (StRef s Int)
+
+trait Peek c {
+  fun label : c -> String
+}
+
+impl Peek (Cell s) {
+  fun label c = \"a cell\"
+}
+
+fun named x = label x
+
+def result = runSt (\\() -> let c = Cell (stNewRef 1) in named c)
+";
+    is(src, "\"a cell\"");
+}

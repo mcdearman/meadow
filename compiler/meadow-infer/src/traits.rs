@@ -80,6 +80,10 @@ pub enum Evidence {
 pub struct TraitShape {
     /// How many types it is a trait of.
     pub params: usize,
+    /// Which of them are effects: a parameter a method's type performs,
+    /// `trait Rows r e { fun slot : r -> Int ! e }`. An `impl` is found by
+    /// the others, and says what such a one is.
+    pub effect_params: Vec<bool>,
     /// The traits it requires, each of which of its parameters.
     pub supers: Vec<(InternedString, Vec<usize>)>,
     /// Its associated types: its own, then those it inherits from the traits
@@ -313,7 +317,7 @@ impl Infer {
                 }
                 // Every one of them known, outermost constructor at least: an
                 // `impl` is found by all of them together.
-                let Some(key) = heads_key(&tys) else {
+                let Some(key) = self.impl_key(tr, &tys) else {
                     self.agree(i, &tys);
                     continue;
                 };
@@ -387,7 +391,7 @@ impl Infer {
             .collect();
         // Settled by now, by another one defaulted before it: answered as
         // any wanted of a known type is.
-        if let Some(key) = heads_key(&tys)
+        if let Some(key) = self.impl_key(tr, &tys)
             && let Some(found) = self.tr.impls.get(&(tr, key)).cloned()
         {
             self.answer_with(i, tys, &found);
@@ -844,6 +848,25 @@ impl Infer {
         }
     }
 
+    /// What an `impl` of `tr` for `tys` is found by: the outermost
+    /// constructor of each, all of them known -- but for a parameter that is
+    /// an effect, which is the `impl`'s to say and so is not looked at.
+    fn impl_key(&self, tr: InternedString, tys: &[Type]) -> Option<String> {
+        let effects = self.tr.shapes.get(&tr).map(|s| &s.effect_params);
+        let heads: Option<Vec<String>> = tys
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                if effects.and_then(|e| e.get(i)).copied().unwrap_or(false) {
+                    Some("!".to_string())
+                } else {
+                    head_key(t)
+                }
+            })
+            .collect();
+        Some(heads?.join(" "))
+    }
+
     // --- associated types in written types ------------------------------------
 
     /// What kind of variable stands for the associated `name`: an effect's,
@@ -1045,6 +1068,7 @@ impl Infer {
         labels.extend(td.methods.iter().map(|m| m.name));
         let shape = TraitShape {
             params: np,
+            effect_params: vec![false; np],
             supers: td
                 .supers
                 .iter()
@@ -1068,6 +1092,7 @@ impl Infer {
             self.tr.assoc_effects.insert(*e.value());
         }
         self.tr.shapes.insert(td.name, shape);
+        let mut effect_params = vec![false; np];
 
         // The dictionary: over the trait's parameters, then its associated
         // types.
@@ -1105,6 +1130,12 @@ impl Infer {
                 quant[np + k] = self.assoc_kind(*a);
             }
             mark_effect_vars(&raw, &mut quant);
+            // A parameter of the trait a method performs is an effect.
+            for p in 0..np {
+                if quant[p] == VarKind::Effect {
+                    effect_params[p] = true;
+                }
+            }
             if quant[np + n..].iter().any(|k| *k != VarKind::Effect) {
                 self.trait_error(
                     format!(
@@ -1177,6 +1208,14 @@ impl Infer {
         for (k, a) in assocs.iter().enumerate() {
             quant[np + k] = self.assoc_kind(*a);
         }
+        for p in 0..np {
+            if effect_params[p] {
+                quant[p] = VarKind::Effect;
+            }
+        }
+        if let Some(shape) = self.tr.shapes.get_mut(&td.name) {
+            shape.effect_params = effect_params;
+        }
         self.record_ctor(td.name, td.dict, &quant, &head, &fields);
     }
 
@@ -1206,11 +1245,23 @@ impl Infer {
         // the `impl` for some types is looking up their constructors.
         // Or every one a variable of its own: `impl Eq a`, the `impl` for any
         // type no other `impl` is for.
+        // A parameter that is an effect is not what an `impl` is found by:
+        // it is whatever row the `impl` says, a variable or not.
+        let effects: Vec<bool> = self
+            .tr
+            .shapes
+            .get(&tr)
+            .map(|s| s.effect_params.clone())
+            .unwrap_or_default();
+        let is_effect = |i: usize| effects.get(i).copied().unwrap_or(false);
         let blanket = heads
             .iter()
             .enumerate()
-            .all(|(i, h)| matches!(h, Type::Bound(_)) && !heads[..i].contains(h));
-        let plain = heads.iter().all(|head| {
+            .all(|(i, h)| is_effect(i) || (matches!(h, Type::Bound(_)) && !heads[..i].contains(h)));
+        let plain = heads.iter().enumerate().all(|(i, head)| {
+            if is_effect(i) {
+                return true;
+            }
             let params: Vec<&Type> = match head {
                 Type::Con(_, args) | Type::Tuple(args) => args.iter().collect(),
                 _ => return false,
@@ -1223,7 +1274,7 @@ impl Infer {
         let key = if blanket {
             Some(blanket_key(heads.len()))
         } else {
-            heads_key(&heads).filter(|_| plain)
+            self.impl_key(tr, &heads).filter(|_| plain)
         };
         let Some(key) = key else {
             self.trait_error(
@@ -1238,6 +1289,22 @@ impl Infer {
             return;
         };
         let mut quant = vec![VarKind::Type; vars.len()];
+        // What it is given for a parameter that is an effect is a row: its
+        // variable, alone or at its end, is an effect's.
+        for (i, h) in heads.iter().enumerate() {
+            if !is_effect(i) {
+                continue;
+            }
+            let mut row = h;
+            while let Type::RowExtend(_, _, rest) = row {
+                row = rest;
+            }
+            if let Type::Bound(v) = row
+                && let Some(k) = quant.get_mut(*v as usize)
+            {
+                *k = VarKind::Effect;
+            }
+        }
         let mut table = Vec::new();
         let mut preds = Vec::new();
         for b in &id.context {

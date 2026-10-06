@@ -162,112 +162,196 @@ fun lastName (s : GTree) : Nm =
 fun nm b (n : Nm) = newAstName b n.at n.text
 
 -- --- declarations ------------------------------------------------------------
+--
+-- A pass, `lowerDecl`, from a declaration of the grammar's to the tree's.
+-- What a declaration answers is not one node: a signature with clauses is
+-- two, a synonym several, and a macro call whatever it expanded to -- each
+-- under the attributes written on it, a signature keeping only `@cfg`. So
+-- the form under the attributes answers its nodes, each with whether it is
+-- a signature, and the declaration puts the attributes on them.
 
--- A declaration's nodes: more than one for a signature with clauses, or a
--- synonym -- each under the attributes written on it, a signature keeping
--- only `@cfg`.
-fun decl (c : Lc) b (s : GTree) =
-  let item = M.andThen firstNode (childOf NodeItem s) in
-  let isCall = M.map R.kindOf item == Just NodeMacCall in
-  -- A macro call: what it expanded to, in its place -- a call of one of the
-  -- module's `macro`s expanded here, and left a call if it cannot be.
-  match (if isCall then M.andThen (\i -> M.map (\m -> (i, m)) (rulesOf c i)) item else None) with
-  | Just (i, m) -> M.unwrapOr (written c b s) (expandedDecls c b m i)
-  | None ->
-      (match (if isCall then expansion c "decls" (spanOf s) else None) with
-       | Just made -> V.map (jDecl c b) (jarr made)
-       | None ->
-           V.append
-             (written c b s)
-             (V.map (jDecl c b) (M.unwrapOr [] (M.map jarr (expansion c "derived" (spanOf s))))))
+fun decl (c : Lc) b (s : GTree) = lowerDeclDecl () b c s
 
--- A declaration as it was written, each of its nodes under its attributes.
-fun written (c : Lc) b (s : GTree) =
-  let attrs = childrenOf NodeAttr s in
-  let bare =
-    (match firstNode (must NodeItem s) with
-     | Just item -> item_ c b item
-     | None -> [])
-  in if V.isEmpty attrs then V.map snd bare
-     else
-       V.map
-         (\x ->
-           let kept =
-             (if fst x then V.filter (\a -> (firstName (must NodeAttrName a)).text == "cfg") attrs
-              else attrs)
-           in if V.isEmpty kept then snd x
-              else newAstDeclAttributed b (spanOf s) (V.map (attr c b) kept) (snd x))
-         bare
+pass! {
+  lowerDecl : Grouped -> Ast with c from Decl
+    | Decl _ -> []
+    | Item _ -> []
+    | Fixity _ -> []
+    | ModDecl _ -> []
+    | UseDecl _ -> []
+    | DataDecl _ -> []
+    | RecordDecl _ -> []
+    | EffectDecl _ -> []
+    | TypeDecl _ -> []
+    | TraitDecl _ -> []
+    | ImplDecl _ -> []
+    | MacroDecl _ -> []
+    | MacCall _ -> []
+    | FunItem _ -> []
+    | DefItem _ -> []
+    | PatternDecl _ -> []
+    -- A macro call is what it expanded to, in its place: a call of one of
+    -- the module's `macro`s expanded here, and left a call if it cannot be.
+    -- Anything else is what was written, and what a `@derive` on it wrote.
+    | Decl { raw attrs, later item } ->
+        (let call =
+           only (\i -> R.kindOf i == NodeMacCall) (M.andThen firstNode (childOf NodeItem node))
+         in
+         let written = \u -> attributed c out node attrs (item c) in
+         match M.andThen (\i -> M.map (\m -> (i, m)) (rulesOf c i)) call with
+         | Just (i, m) -> M.unwrapOr (written ()) (expandedDecls c out m i)
+         | None ->
+             (match M.andThen (\i -> expansion c "decls" (spanOf node)) call with
+              | Just made -> V.map (jDecl c out) (jarr made)
+              | None ->
+                  V.append
+                    (written ())
+                    (V.map
+                       (jDecl c out)
+                       (M.unwrapOr [] (M.map jarr (expansion c "derived" (spanOf node)))))))
+    | Item {
+      fixity, modDecl, useDecl, dataDecl, recordDecl, effectDecl, typeDecl, traitDecl, implDecl,
+      macroDecl, macCall, funItem, defItem, patternDecl
+    } ->
+        V.concat
+          (V.concatMap asList [
+             fixity, modDecl, useDecl, dataDecl, recordDecl, effectDecl, typeDecl, traitDecl,
+             implDecl, macroDecl, macCall, funItem, defItem, patternDecl
+           ])
+    | Fixity { raw ops } ->
+        [(
+          False,
+          newAstDeclFixity
+            out
+            (spanOf node)
+            (V.map (\f -> nm out (firstName (must NodeOpName f))) ops)
+        )]
+    | ModDecl { raw name } -> [(False, newAstDeclMod out (spanOf node) (nm out (firstName name)))]
+    | UseDecl { raw path, raw glob, raw alias, raw names } ->
+        [(False, useDecl out (spanOf node) path glob alias names)]
+    | DataDecl { variants } ->
+        [(False, newAstDeclData out (spanOf node) (declared out node) (taking out node) variants)]
+    -- A variant's fields: named, when the first thing after its name is a
+    -- brace list of at least one field and no `| r`, and otherwise its types
+    -- in order.
+    | Variant { attrs, raw args } ->
+        (let fieldList =
+           M.andThen
+             (\a ->
+               only
+                 (\r -> V.len (childrenOf NodeFieldTy r) > 0 and not (has NodeRowTail r))
+                 (childOf NodeRecTy a))
+             (V.get args 0)
+         in
+         let name = nm out (nameOf (must TokenUpperIdent node)) in
+         match fieldList with
+         | Just r ->
+             newAstVariant
+               out
+               (spanOf node)
+               attrs
+               name
+               True
+               []
+               (V.map (field c out) (childrenOf NodeFieldTy r))
+         | None -> newAstVariant out (spanOf node) attrs name False (V.map (tatom c out) args) [])
+    | Attr {} -> attr c out node
+    | RecordDecl { raw fields } ->
+        [(
+          False,
+          newAstDeclRecord
+            out
+            (spanOf node)
+            (declared out node)
+            (taking out node)
+            (V.map (field c out) (childrenOf NodeFieldTy fields))
+        )]
+    | EffectDecl { raw body } ->
+        (match childOf NodeEffectAlias body with
+         | Just alias ->
+             [(
+               False,
+               newAstDeclEffectAlias
+                 out
+                 (spanOf node)
+                 (declared out node)
+                 (taking out node)
+                 (row c out (must NodeEffRow alias))
+             )]
+         | None ->
+             [(
+               False,
+               newAstDeclEffect
+                 out
+                 (spanOf node)
+                 (declared out node)
+                 (taking out node)
+                 (V.map (field c out) (childrenOf NodeFieldTy (must NodeRecTy body)))
+             )])
+    | TypeDecl { raw ty } ->
+        [(
+          False,
+          newAstDeclAlias out (spanOf node) (declared out node) (taking out node) (tyOf c out ty)
+        )]
+    | TraitDecl { raw supers, raw items } ->
+        [(
+          False,
+          traitDecl
+            c
+            out
+            (spanOf node)
+            (must TokenUpperIdent node)
+            (childrenOf TokenLowerIdent node)
+            supers
+            items
+        )]
+    | ImplDecl { raw tys, raw context, raw items } ->
+        [(False, implDecl c out (spanOf node) (must TokenUpperIdent node) tys context items)]
+    | MacroDecl {} ->
+        [(False, newAstDeclMacro out (spanOf node) (nm out (nameOf (must TokenLowerIdent node))))]
+    | MacCall {} -> [(False, newAstDeclMacCall out (spanOf node) (macCall out node))]
+    -- With a body, a binding; without, a signature, and its clauses the
+    -- binding.
+    | FunItem { raw name, raw annot, raw body, raw clauses } ->
+        (match body with
+         | Just _ -> [(False, newAstDeclBind out (spanOf node) (bindOf c out node))]
+         | None -> sigDecl c out node True (vid name) (M.unwrapOr node annot) clauses)
+    | DefItem { raw pat, raw annot, raw body, raw clauses } ->
+        (match body with
+         | Just _ -> [(False, newAstDeclBind out (spanOf node) (bindOf c out node))]
+         | None -> sigDecl c out node False (patName pat) (M.unwrapOr node annot) clauses)
+    | PatternDecl { raw form } -> patternDecl c out node (nameOf (must TokenUpperIdent node)) form
+}
 
--- A bare declaration's nodes, each with whether it is a signature.
-fun item_ (c : Lc) b (s : GTree) =
-  let m = spanOf s in
-  match s with
-  | GroupedFixity assoc prec ops ->
-      [(False, newAstDeclFixity b m (V.map (\f -> nm b (firstName (must NodeOpName f))) ops))]
-  | GroupedModDecl name -> [(False, newAstDeclMod b m (nm b (firstName name)))]
-  | GroupedUseDecl path glob alias names -> [(False, useDecl b m path glob alias names)]
-  | GroupedDataDecl name params variants ->
-      [(
-        False,
-        newAstDeclData
-          b
-          m
-          (nm b (nameOf name))
-          (V.map (\p -> nm b (nameOf p)) params)
-          (V.map (variant c b) variants)
-      )]
-  | GroupedRecordDecl name params fields ->
-      [(
-        False,
-        newAstDeclRecord
-          b
-          m
-          (nm b (nameOf name))
-          (V.map (\p -> nm b (nameOf p)) params)
-          (V.map (field c b) (childrenOf NodeFieldTy fields))
-      )]
-  | GroupedEffectDecl name params body ->
-      (match childOf NodeEffectAlias body with
-       | Just alias ->
-           [(
-             False,
-             newAstDeclEffectAlias
-               b
-               m
-               (nm b (nameOf name))
-               (V.map (\p -> nm b (nameOf p)) params)
-               (row c b (must NodeEffRow alias))
-           )]
-       | None ->
-           [(
-             False,
-             newAstDeclEffect
-               b
-               m
-               (nm b (nameOf name))
-               (V.map (\p -> nm b (nameOf p)) params)
-               (V.map (field c b) (childrenOf NodeFieldTy (must NodeRecTy body)))
-           )])
-  | GroupedTypeDecl name params t ->
-      [(
-        False,
-        newAstDeclAlias b m (nm b (nameOf name)) (V.map (\p -> nm b (nameOf p)) params) (ty c b t)
-      )]
-  | GroupedTraitDecl name params supers items -> [(False, traitDecl c b m name params supers items)]
-  | GroupedImplDecl tr tys context items -> [(False, implDecl c b m tr tys context items)]
-  | GroupedMacroDecl name rules -> [(False, newAstDeclMacro b m (nm b (nameOf name)))]
-  | GroupedMacCall _ _ _ -> [(False, newAstDeclMacCall b m (macCall b s))]
-  | GroupedFunItem name _ annot body clauses ->
-      (match body with
-       | Just _ -> [(False, newAstDeclBind b m (bindOf c b s))]
-       | None -> sigDecl c b s True (vid name) (M.unwrapOr s annot) clauses)
-  | GroupedDefItem p annot body clauses ->
-      (match body with
-       | Just _ -> [(False, newAstDeclBind b m (bindOf c b s))]
-       | None -> sigDecl c b s False (patName p) (M.unwrapOr s annot) clauses)
-  | GroupedPatternDecl name form -> patternDecl c b s (nameOf name) form
-  | _ -> []
+-- `x`, if it is one `keep` keeps.
+fun only keep (x : Maybe a) : Maybe a =
+  match x with
+  | Just v -> if keep v then Just v else None
+  | None -> None
+
+-- A type, as the rest of this file writes one: the pass's cases name a
+-- field `ty`, which this is not.
+fun tyOf (c : Lc) b (s : GTree) = ty c b s
+
+-- The name a `data`, a `record`, an `effect` or a `type` declares, and the
+-- parameters it takes.
+fun declared b (s : GTree) = nm b (nameOf (must TokenUpperIdent s))
+
+fun taking b (s : GTree) = V.map (\p -> nm b (nameOf p)) (childrenOf TokenLowerIdent s)
+
+-- A declaration's nodes, each under the attributes written on it: a
+-- signature's only its `@cfg`.
+fun attributed (c : Lc) b (s : GTree) (attrs : [GTree]) bare =
+  if V.isEmpty attrs then V.map snd bare
+  else
+    V.map
+      (\x ->
+        let kept =
+          (if fst x then V.filter (\a -> (firstName (must NodeAttrName a)).text == "cfg") attrs
+           else attrs)
+        in if V.isEmpty kept then snd x
+           else newAstDeclAttributed b (spanOf s) (V.map (attr c b) kept) (snd x))
+      bare
 
 fun attr (c : Lc) b (s : GTree) =
   let metas =
@@ -341,27 +425,6 @@ fun useName (i : GTree) : Nm =
   match firstNode n with
   | Just x -> (if R.kindOf x == NodeParenOp then firstName (must NodeOpName x) else firstName x)
   | None -> firstName n
-
--- A variant's fields: named, when the first thing after its name is a brace
--- list of at least one field and no `| r`, and otherwise its types in order.
-fun variant (c : Lc) b (s : GTree) =
-  let atoms = childrenOf NodeTAtom s in
-  let fieldList =
-    (match V.get atoms 0 with
-     | Just a ->
-         (match childOf NodeRecTy a with
-          | Just r ->
-              (if V.len (childrenOf NodeFieldTy r) > 0 and not (has NodeRowTail r) then Just r
-               else None)
-          | None -> None)
-     | None -> None)
-  in
-  let attrs = V.map (attr c b) (childrenOf NodeAttr s) in
-  let name = nm b (nameOf (must TokenUpperIdent s)) in
-  match fieldList with
-  | Just r ->
-      newAstVariant b (spanOf s) attrs name True [] (V.map (field c b) (childrenOf NodeFieldTy r))
-  | None -> newAstVariant b (spanOf s) attrs name False (V.map (tatom c b) atoms) []
 
 fun field (c : Lc) b (s : GTree) =
   newAstField

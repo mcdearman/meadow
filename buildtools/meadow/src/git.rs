@@ -510,7 +510,12 @@ fn unpack(db: &Path, rev: &str, path: &Path) -> Result<(), String> {
         .ok_or_else(|| format!("{} has no parent", path.display()))?;
     std::fs::create_dir_all(parent)
         .map_err(|e| format!("could not make {}: {e}", parent.display()))?;
-    let staging = parent.join(format!(".{rev}.part"));
+    // This unpacking's own: two builds unpacking the same commit at once --
+    // a test's and the compiler's it runs beside, say, or two threads of one
+    // -- would otherwise write over, and remove, each other's.
+    static UNPACKED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let nth = UNPACKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staging = parent.join(format!(".{rev}.{}-{nth}.part", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
 
     // `--local` hardlinks the objects instead of copying them, so a checkout
@@ -528,15 +533,27 @@ fn unpack(db: &Path, rev: &str, path: &Path) -> Result<(), String> {
     )?;
     git(Some(&staging), &["checkout", "--quiet", "--detach", rev])?;
 
-    match std::fs::rename(&staging, path) {
-        Ok(()) => Ok(()),
-        // Another build may have unpacked the same commit first, which is fine:
-        // the contents are the same by construction.
-        Err(_) if path.is_dir() => {
-            let _ = std::fs::remove_dir_all(&staging);
-            Ok(())
+    // A few times: on Windows a directory just written may be held a moment
+    // by whatever scans new files, and the move is refused while it is.
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(&staging, path) {
+            Ok(()) => return Ok(()),
+            // Another build may have unpacked the same commit first, which is
+            // fine: the contents are the same by construction.
+            Err(_) if path.is_dir() => {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Ok(());
+            }
+            Err(_) if tries < 10 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(format!("could not put {} in place: {e}", path.display()));
+            }
         }
-        Err(e) => Err(format!("could not put {} in place: {e}", path.display())),
     }
 }
 

@@ -87,6 +87,10 @@ St s }`), and `! Reading r` where a method's type says what it performs. A
 
 ### Fixed
 
+- Two builds fetching the same dependency at once no longer fail with
+  "could not put … in place": each unpacks into a directory of its own, and
+  the one that finishes second finds the checkout there. On Windows the two
+  wrote into, and removed, one staging directory.
 - `meadow fmt` keeps what an associated effect is on its line in an `impl`,
   `effect Reading (Writing s) = { St s }`. It laid the row out as the fields
   of an `effect` declaration, a label a line.

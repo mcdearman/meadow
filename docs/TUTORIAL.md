@@ -1621,7 +1621,11 @@ fun second rows = slot rows 1
 nothing for a `Done`, so `second d` is a pure expression, and `St s` for a
 `Writing s`, so it runs inside that array's `runSt`. An associated effect is
 the _rest_ of the row it is written in, so effects may be named before it --
-`! { Console, Reading r }` -- and a variable may not follow it. Where the
+`! { Console, Reading r }` -- and a variable may not follow it. A function
+generic over the trait that performs something of its own performs that and
+then the associated effect; one function cannot be generic over two
+associated effects at once, since a row has one rest -- give a parameter its
+type, and its effect is known. Where the
 implementation is known the dictionary is compiled away, as every trait's is,
 and a call of `slot` is a call of that `impl`'s function.
 

@@ -82,6 +82,11 @@ St s }`), and `! Reading r` where a method's type says what it performs. A
 
 ### Fixed
 
+- A small function that takes a value apart and is inlined where its answer
+  is needed -- an accessor, a trait's reader at a known type -- no longer
+  costs a continuation frame on every call: what waits for a one-armed
+  `match` on a constructor goes into its arm, as it already did for a `match`
+  with several.
 - A trait used inside a `runSt` at a type that names its state -- `label cell`
   for a `Cell s` made in there, through a function generic over the trait --
   was refused as the state escaping. What such a use asks for is answered

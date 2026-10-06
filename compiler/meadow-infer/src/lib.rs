@@ -1445,7 +1445,15 @@ impl Infer {
     /// associated effect: the one remembered, or one it was unified with --
     /// an application's own effect is a fresh variable tied to its callee's.
     fn is_assoc_effect(&mut self, phi: &Type) -> bool {
-        let Type::Var(id) = self.arena.zonk(phi) else {
+        // Alone, or at the end of a row that names effects before it: `{ St
+        // s | Reading r }`, what a function that writes a cell and reads
+        // rows performs.
+        let whole = self.arena.zonk(phi);
+        let mut end = &whole;
+        while let Type::RowExtend(_, _, rest) = end {
+            end = rest;
+        }
+        let Type::Var(id) = *end else {
             return false;
         };
         // What an `impl` has settled is a variable no longer, and is dropped.
@@ -1471,6 +1479,58 @@ impl Infer {
             self.subsumptions.push((phi, region, span));
             return;
         }
+        // One that is still a variable when its binding is done is generic
+        // there: the function performs it, whatever it is, *and* what else
+        // its region names. So it is the region's end -- `{ St s | Reading r
+        // }` -- and not the whole of it, which would have every `impl` say
+        // it performs the `St s` too.
+        if self.settling_joins && self.is_assoc_effect(&phi) {
+            // What it names before its end is joined as any row is, with an
+            // end of its own; then the end.
+            let mut named = Vec::new();
+            let mut end = self.arena.zonk(&phi);
+            while let Type::RowExtend(l, f, rest) = end {
+                named.push((l, f));
+                end = *rest;
+            }
+            if !named.is_empty() {
+                let open = self.arena.fresh_effect();
+                let row = named
+                    .into_iter()
+                    .rev()
+                    .fold(open, |rest, (l, f)| Type::RowExtend(l, f, Box::new(rest)));
+                self.join_effect_into(span, region.clone(), row);
+            }
+            let whole = self.arena.zonk(&region);
+            let mut last = &whole;
+            while let Type::RowExtend(_, _, rest) = last {
+                last = rest;
+            }
+            if matches!(last, Type::Var(_)) {
+                let last = last.clone();
+                self.unify_at(span, last, end);
+                return;
+            }
+            self.unify_at(span, region, end);
+            return;
+        }
+        // An effect named twice is performed once: `{ St s, St s }`, what a
+        // function that writes a state and reads rows of that same state
+        // comes to once the rows' `impl` is known.
+        let phi = {
+            let mut seen: Vec<(InternedString, Type)> = Vec::new();
+            let mut end = self.arena.zonk(&phi);
+            while let Type::RowExtend(l, f, rest) = end {
+                let f = self.arena.zonk(&f);
+                if !seen.iter().any(|(m, g)| *m == l && *g == f) {
+                    seen.push((l, f));
+                }
+                end = *rest;
+            }
+            seen.into_iter().rev().fold(end, |rest, (l, f)| {
+                Type::RowExtend(l, Box::new(f), Box::new(rest))
+            })
+        };
         // Performing nothing asks nothing of the region: what an associated
         // effect turned out to be, where its `impl` is pure.
         if matches!(self.arena.zonk(&phi), Type::RowEmpty) {

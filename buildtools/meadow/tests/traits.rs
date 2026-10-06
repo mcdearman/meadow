@@ -746,6 +746,27 @@ def result = second (Done #[1, 2, 3])
 }
 
 #[test]
+fn a_generic_function_performs_its_associated_effect_and_what_else_it_does() {
+    // Reading rows it knows nothing of, beside a cell it writes: its effect
+    // is the state's and then whatever reading is, not reading alone.
+    let src = format!(
+        "{ROWS}
+fun counted rows (seen : StRef t Int) =
+  let u = stSetRef seen (stGetRef seen + 1) in
+  slot rows 1
+
+def result =
+  runSt (\\() ->
+    let seen = stNewRef 0 in
+    let a = counted (Done #[1, 2, 3]) seen in
+    let b = runSt (\\() -> counted (Writing (stThaw #[4, 5, 6])) (stNewRef 0)) in
+    (a, b, stGetRef seen))
+"
+    );
+    is(&src, "(2, 5, 1)");
+}
+
+#[test]
 fn what_an_associated_effect_is_cannot_be_left_out_or_made_up() {
     let missing = errors(
         "trait Rows r {\n  effect Reading r\n  fun slot : r -> Int ! Reading r\n}\n\

@@ -762,13 +762,31 @@ fn branches(t: &Term) -> bool {
         Term::If(..) => true,
         // One arm that cannot fail, whose body branches, as taking apart a
         // tuple before deciding on what was in it does.
+        // Or one arm that can: `match a with | Arena fs _ -> …`, what an
+        // accessor is once it is inlined. It answers from one place, but the
+        // machine is not told the pattern cannot fail, and gives whatever
+        // waits for the answer a frame of its own to be answered in -- on
+        // every read. With the context pushed in there is nothing waiting.
         Term::Case(_, arms, _) => {
-            arms.len() > 1 || matches!(arms.as_slice(), [(_, None, body)] if branches(body))
+            arms.len() > 1
+                || matches!(arms.as_slice(), [(pat, None, body)] if branches(body) || may_fail(pat))
         }
         // A `let` in front of a branch is still a branch, and so is a join
         // whose body branches. Both come out of desugaring constantly.
         Term::Let(_, _, _, body) | Term::Join { body, .. } => branches(body),
         _ => false,
+    }
+}
+
+/// Whether matching `p` tests anything: a constructor, a literal or an
+/// array's length, anywhere in it.
+fn may_fail(p: &Pat) -> bool {
+    match p {
+        Pat::Wild | Pat::Var(..) => false,
+        Pat::As(_, _, sub) => may_fail(sub),
+        Pat::Tuple(items) => items.iter().any(may_fail),
+        Pat::Record(fields) => fields.iter().any(|(_, sub)| may_fail(sub)),
+        Pat::Lit(_) | Pat::Ctor(..) | Pat::Array(_) => true,
     }
 }
 
@@ -1195,6 +1213,37 @@ mod tests {
 
     /// `case s of A -> 1; _ -> case s of B -> 2; _ -> 3`, with `s` a name: one
     /// `case`, looking at `s` once.
+    #[test]
+    fn what_waits_on_a_one_armed_match_goes_into_its_arm() {
+        // `let x = (case s of C a -> a) in x + 1`, what a call of an
+        // accessor is once it is inlined: the `let` goes in, so that
+        // nothing has to wait outside for the arm to answer.
+        let (s, a, x) = (v(1), v(2), v(3));
+        let read = Term::case(
+            Term::Var(s),
+            vec![(pctor("C", vec![Pat::Var(a, con("Int"))]), Term::Var(a))],
+        );
+        let read = match read {
+            Term::Case(scrut, arms, _) => Term::Case(scrut, arms, con("Int")),
+            other => other,
+        };
+        let whole = Term::Let(
+            x,
+            Poly::mono(con("Int")),
+            Arc::new(read),
+            Arc::new(Term::Prim(
+                Prim::Add,
+                vec![Term::Var(x), int(1)],
+                con("Int"),
+            )),
+        );
+        let out = simplified(&whole);
+        assert!(
+            matches!(peel(&out), Term::Case(..)),
+            "the match is outermost: {out:?}"
+        );
+    }
+
     #[test]
     fn a_case_on_the_same_name_again_is_one_case() {
         let s = v(1);

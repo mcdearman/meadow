@@ -366,3 +366,48 @@ fn a_program_of_cut_runs_on_glade_and_as_an_executable_of_silos() {
     assert!(err.contains("not lowered to AxCut yet"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// What the REPL prints, given `input` a line at a time.
+fn repl(input: &str) -> String {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_meadow"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the meadow binary runs");
+    child
+        .stdin
+        .take()
+        .expect("a pipe")
+        .write_all(input.as_bytes())
+        .expect("written");
+    let out = child.wait_with_output().expect("the REPL ends");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn the_repl_shows_a_definition_in_each_ir() {
+    let defined = "fun sumTo (m : Int) : Int = let rec go n acc = if n == 0 then acc else go (n - 1) (acc + n) in go m 0\n";
+    let all = repl(&format!("{defined}:ir sumTo\n:q\n"));
+    let at = |what: &str| {
+        all.find(what)
+            .unwrap_or_else(|| panic!("no `{what}` in:\n{all}"))
+    };
+    // In the order a program passes through them.
+    assert!(at("-- core") < at("-- cut") && at("-- cut") < at("-- axcut"));
+    // One of them, asked for by name, with no heading: the definition's
+    // value, and the definition its local function is lifted to.
+    let cut = repl(&format!("{defined}:ir cut sumTo\n:q\n"));
+    assert!(
+        !cut.contains("-- cut") && !cut.contains("-- axcut"),
+        "{cut}"
+    );
+    let from = cut.find("val meadow:").expect("the definition's value");
+    let text = format!("cut 0\n\n{}", &cut[from..]);
+    let read = meadow_cut::parse(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+    assert_eq!(read.vals.len(), 1, "{text}");
+    assert_eq!(read.defs.len(), 1, "the local function, at the top: {text}");
+    // And something not defined is said to be.
+    assert!(repl(":ir nope\n:q\n").contains("nothing called `nope` is defined"));
+}

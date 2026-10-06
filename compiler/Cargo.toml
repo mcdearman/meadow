@@ -21,6 +21,7 @@ meadow-exhaust = { path = "meadow-exhaust" }
 meadow-scc = { path = "meadow-scc" }
 meadow-seq = { path = "meadow-seq" }
 meadow-axcut = { path = "meadow-axcut" }
+meadow-cut = { path = "meadow-cut" }
 meadow-bytecode = { path = "meadow-bytecode" }
 meadow-codegen = { path = "meadow-codegen" }
 meadow-core = { path = "meadow-core" }

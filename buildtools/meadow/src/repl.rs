@@ -840,12 +840,12 @@ const COMMANDS: &[(&str, &str)] = &[
         "list what is defined, and what a later definition shadowed",
     ),
     (
-        ":core <name>",
-        "a definition as core, the typed IR every pass works on",
+        ":ir <name>",
+        "a definition in each of the compiler's IRs: core, Cut and AxCut",
     ),
     (
-        ":axcut <name>",
-        "the same as AxCut, the IR the runtimes compile",
+        ":ir <which> <name>",
+        "in one of them: `core`, `cut` or `axcut`",
     ),
     (":reset", "forget everything defined so far"),
     (
@@ -1346,11 +1346,10 @@ impl Session {
                         _ if trimmed.starts_with(":time ") || trimmed.starts_with(":time\n") => {
                             self.handle(trimmed[5..].trim(), Mode::Run, true);
                         }
-                        _ if trimmed.starts_with(":core ") => self.show_core(trimmed[5..].trim()),
-                        _ if trimmed.starts_with(":axcut ") => self.show_axcut(trimmed[6..].trim()),
-                        ":core" | ":axcut" => {
-                            println!("({trimmed} <name>: the name of something defined)")
-                        }
+                        _ if trimmed.starts_with(":ir ") => self.show_ir(trimmed[3..].trim()),
+                        ":ir" => println!(
+                            "(:ir <name>, or :ir core|cut|axcut <name>: the name of something defined)"
+                        ),
                         _ if trimmed.starts_with(":t ") || trimmed.starts_with(":t\n") => {
                             self.handle(trimmed[2..].trim(), Mode::TypeOnly, false);
                         }
@@ -1615,7 +1614,35 @@ impl Session {
             .find(|d| &*d.name == name || hir::spell_name(&d.name) == name)
     }
 
-    /// `:core name`: the definition as the front end left it, before the
+    /// `:ir name`, or `:ir which name`: the definition in each of the
+    /// compiler's IRs, in the order a program passes through them, or in the
+    /// one asked for.
+    fn show_ir(&mut self, asked: &str) {
+        let (which, name) = match asked.split_once(char::is_whitespace) {
+            Some((w @ ("core" | "cut" | "axcut"), name)) => (Some(w), name.trim()),
+            _ => (None, asked),
+        };
+        if self.definition(name).is_none() {
+            println!("(nothing called `{name}` is defined)");
+            return;
+        }
+        use yansi::Paint as _;
+        for ir in ["core", "cut", "axcut"] {
+            if which.is_some_and(|w| w != ir) {
+                continue;
+            }
+            if which.is_none() {
+                println!("{}", format!("-- {ir}").dim());
+            }
+            match ir {
+                "core" => self.show_core(name),
+                "cut" => self.show_cut(name),
+                _ => self.show_axcut(name),
+            }
+        }
+    }
+
+    /// The definition as the front end left it, before the
     /// passes that run on a whole program.
     fn show_core(&self, name: &str) {
         let Some(d) = self.definition(name) else {
@@ -1632,7 +1659,61 @@ impl Session {
         print!("{}", alone.pretty());
     }
 
-    /// `:axcut name`: every block the definition is lowered to, in the
+    /// The definition as Cut -- its value, and a definition to
+    /// each local function of it that calls itself -- as core is lowered to
+    /// it for showing. A program is not compiled through Cut yet: what the
+    /// runtimes are handed is `:axcut`'s.
+    fn show_cut(&mut self, name: &str) {
+        let Some(d) = self.definition(name) else {
+            println!("(nothing called `{name}` is defined)");
+            return;
+        };
+        let var = d.var;
+        self.cache.catch_up(&self.prefix);
+        let keep = core::prune::reach_all(&[&self.cache.deps], Some(var));
+        let program = core::Program {
+            defs: self
+                .prefix
+                .iter()
+                .flat_map(|p| &p.defs)
+                .filter(|d| keep.contains(&d.var))
+                .cloned()
+                .collect(),
+            entry: None,
+            ctor_fields: self.cache.ctor_fields.clone(),
+            variants: self.cache.variants.clone(),
+            origins: Default::default(),
+        };
+        let lowered = meadow_seq::cut::to_cut(&program);
+        let Some(symbol) = lowered.symbols.get(&var) else {
+            return;
+        };
+        let listing = meadow_cut::print::listing(&lowered.program);
+        // Its own declaration, and those made of its local functions, which
+        // are named for it.
+        let local = symbol.path.last().map(|n| format!("{n}#l"));
+        let its = |of: &meadow_cut::Symbol| {
+            of == symbol
+                || (of.package == symbol.package
+                    && of.path.len() == symbol.path.len()
+                    && of.path[..of.path.len().saturating_sub(1)]
+                        == symbol.path[..symbol.path.len().saturating_sub(1)]
+                    && of
+                        .path
+                        .last()
+                        .zip(local.as_ref())
+                        .is_some_and(|(n, l)| n.starts_with(l.as_str())))
+        };
+        for s in &listing.segments {
+            if let meadow_cut::print::Part::Decl(of) = &s.part
+                && its(of)
+            {
+                println!("{}\n", &listing.text[s.start..s.end]);
+            }
+        }
+    }
+
+    /// Every block the definition is lowered to as AxCut, in the
     /// program that reaches it -- as the runtimes are handed it, after the
     /// passes over core, at this session's optimisation level.
     fn show_axcut(&mut self, name: &str) {

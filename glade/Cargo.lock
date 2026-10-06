@@ -302,6 +302,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "meadow-cut"
+version = "0.3.0"
+dependencies = [
+ "meadow-axcut",
+ "meadow-intern",
+ "meadow-rt",
+]
+
+[[package]]
 name = "meadow-diagnostics"
 version = "0.3.0"
 dependencies = [
@@ -448,9 +457,11 @@ version = "0.3.0"
 dependencies = [
  "meadow-axcut",
  "meadow-core",
+ "meadow-cut",
  "meadow-hir",
  "meadow-infer",
  "meadow-intern",
+ "meadow-rt",
  "num-bigint",
  "num-traits",
 ]

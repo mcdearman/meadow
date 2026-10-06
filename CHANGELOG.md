@@ -32,8 +32,10 @@ beyond the last release is under _Unreleased_.
 
 ### Added
 
-- The REPL shows a definition in the compiler's IRs: `:core NAME` as core,
-  and `:axcut NAME` as the AxCut the runtimes are handed.
+- The REPL shows a definition in the compiler's IRs: `:ir NAME` prints it as
+  core, as Cut and as the AxCut the runtimes are handed, and `:ir core NAME`,
+  `:ir cut NAME` or `:ir axcut NAME` one of them. The Cut is core lowered for
+  showing: a program is not compiled through it yet.
 - `meadow cut FILE` runs a program written in Cut, the IR a front end hands
   the back end (`docs/CUT.md`): on Glade, or with `--runtime silo` as a native
   executable. It takes programs that handle no effects of their own so far.

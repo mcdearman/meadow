@@ -28,7 +28,7 @@ use Std.Char as C
   Prod + Sym { symbol : String }
   Prod + Int { value : Int }
   Prod + Float { value : Float }
-  
+  Prod + Char { code : Int }
   Prod + Str { text : String }
   Prod + Bool { value : Bool }
   Prod + Unit {}

@@ -2499,6 +2499,71 @@ fn a_program_of_two_units_lowered_by_meadowboot_answers_as_the_rust_compiler_has
     assert_eq!(on_axcut, want, "on the AxCut machine:\n{text}");
 }
 
+/// A program that uses the standard library: lowered with it, the whole of
+/// the library's definitions before the program's.
+const WITH_STD: &str = r#"use Std.Collections.Vector as V
+use Std.Collections.HashMap as H
+use Std.Maybe as M
+use Std.String as S
+
+fun double x = x * 2
+
+def result =
+  (
+    V.map double [1, 2, 3],
+    V.foldl (\a b -> a + b) 0 [1, 2, 3],
+    M.map double (Just 4),
+    "a" ++ "b",
+    show 12,
+    1 :: 2 :: Nil,
+    H.lookup "b" (H.insert "b" 2 H.empty),
+    S.join ", " (S.split "," "x,y"),
+    "${show 3} and ${show True}"
+  )
+"#;
+
+/// A program that uses the standard library is lowered with it and runs on
+/// the AxCut machine: the library's traits as dictionaries, its generic
+/// definitions given descriptors, and the runtime knowing its vector by the
+/// roles the program declares. What the Rust compiler answers is written
+/// here.
+#[test]
+fn a_program_with_the_standard_library_lowered_by_meadowboot_answers_as_the_rust_compiler_has_it() {
+    let dir = std::env::temp_dir().join(format!("meadowboot-std-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("src")).expect("a package directory");
+    std::fs::write(
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"WithStd\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("a manifest");
+    let main = dir.join("src").join("Main.mw");
+    std::fs::write(&main, WITH_STD).expect("a source file");
+    let out = Command::new(meadowboot_exe())
+        .arg("cut")
+        .arg(&main)
+        .env("MEADOWBOOT_STD", repo().join("lib").join("Std"))
+        // With no macro expanded: what a macro of the library's writes is not
+        // all lowered yet, and the program uses none of it.
+        .env_remove("MEADOWBOOT_EXPANSIONS")
+        .output()
+        .expect("MeadowBoot runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = stdout
+        .split_once("\ncut 0\n")
+        .map(|(_, rest)| format!("cut 0\n{rest}"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no program:\n{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+    assert_eq!(
+        axcut_answer(&text),
+        r#"([2, 4, 6], 6, Just(8), "ab", "12", [1; 2], Just(2), "x, y", "3 and True")"#
+    );
+}
+
 /// How many glade cases MeadowBoot has to lower to Cut so that the reference
 /// interpreter answers as the Rust compiler does. The rest wait on primitives
 /// the interpreter does not have -- the sized integers', the floats', `show`

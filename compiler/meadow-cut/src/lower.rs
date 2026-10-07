@@ -1895,9 +1895,9 @@ fn methods_of(s: &Statement, out: &mut HashSet<String>) {
 /// A constructor's name as a runtime has it, of its symbol as text. A
 /// runtime hashes a value of a data type by its constructor's name, and
 /// Meadow's rule is the name the compiler's own lowering hands a runtime: the
-/// package and then the path, `Json.Value.Null` -- the list every program
-/// has is `List.Cons`, with no package -- so that is what one of Meadow's is
-/// called. Any other language's is its whole symbol.
+/// package and then the path, `Json.Value.Null` -- the standard library's
+/// are named from its root, `List.Cons`, with no package -- so that is what
+/// one of Meadow's is called. Any other language's is its whole symbol.
 fn ctor_name(symbol: &str) -> String {
     let Some((package, path)) = symbol
         .strip_prefix("meadow:")
@@ -1906,7 +1906,7 @@ fn ctor_name(symbol: &str) -> String {
         return symbol.to_string();
     };
     let package = package.split('@').next().unwrap_or(package);
-    if package == "Std" && path.starts_with("List.") {
+    if package == "Std" {
         path.to_string()
     } else {
         format!("{package}.{path}")

@@ -309,7 +309,11 @@ fun coreOf
                          units =
                            V.pushBack
                              units
-                             (Entry { key = pkg, value = Seq.declarations core knownSigs labels }),
+                             (Entry {
+                                key = pkg,
+                                value =
+                                  Seq.declarations core knownSigs labels (packagesOf units pkg)
+                              }),
                          datas = V.append known ownDatas,
                          named =
                            V.append
@@ -377,9 +381,16 @@ fun emptyInterface () : Interface =
        (V.concatMap
           (\(l : Linked) -> V.map (\(e : Entry [String]) -> (e.key, e.value)) l.named)
           linked)
+       (packagesOf units (Seq.packageOf core))
        (S.join "" (V.map (\(e : Entry String) -> e.value) units))
 
 fun fst3 (t : (a, b, c)) : a = match t with | (x, _, _) -> x
+
+-- The packages a program is made of that a type's name in core starts
+-- with: every unit's but the standard library's, whose types are named
+-- from its root.
+fun packagesOf (units : [Entry String]) (own : String) : [String] =
+  V.filter (\p -> p != "Std") (V.pushBack (V.map (\(e : Entry String) -> e.key) units) own)
 
 -- The unit at `dir` renamed: its modules, each with its path, and what
 -- renaming made of them.

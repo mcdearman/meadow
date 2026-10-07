@@ -193,11 +193,26 @@ pass! {
                 (lowerTerm src out inner yes))))
     | Prim { op, raw args } ->
         (let names = V.map (\i -> "p${show node}_${show i}") (V.range 0 (V.len args)) in
-         let done = C.prim out here (primName op) (V.map (\n -> C.var out here n) names) [cx.k] in
-         V.foldr
-           (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
-           done
-           (V.zip names args))
+         -- What it answers is named at its own representation, which a
+         -- continuation alone does not say: one of an array's items is
+         -- whatever the array holds.
+         let x = "x${show node}" in
+         let done =
+           C.prim
+             out
+             here
+             (primName op)
+             (V.map (\n -> C.var out here n) names)
+             [C.binding
+                out
+                here
+                x
+                (repIn cx (tyCoreTerm src node))
+                (C.give out here (C.var out here x) cx.k)]
+         in V.foldr
+              (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
+              done
+              (V.zip names args))
     | Tuple { raw items } ->
         (let names = V.map (\i -> "t${show node}_${show i}") (V.range 0 (V.len items)) in
          let done =
@@ -283,7 +298,7 @@ pass! {
                       [C.arm
                          out
                          here
-                         (symbolOf ctor)
+                         (symbolOf cx.pkgs ctor)
                          (V.map (\q -> C.param out here (fst q) (repIn cx (snd q))) (V.zip fs tys))
                          (C.give out here (C.var out here (V.getOr "" fs at)) cx.k)]))
             | None ->
@@ -331,7 +346,7 @@ pass! {
                          [C.arm
                             out
                             here
-                            (symbolOf ctor)
+                            (symbolOf cx.pkgs ctor)
                             (V.map
                                (\q -> C.param out here (fst q) (repIn cx (snd q)))
                                (V.zip fs tys))
@@ -341,7 +356,7 @@ pass! {
                                (C.con
                                   out
                                   here
-                                  (symbolOf ctor)
+                                  (symbolOf cx.pkgs ctor)
                                   (V.map
                                      (\i -> C.var out here (if i == at then v else V.getOr "" fs i))
                                      (V.range 0 (V.len fs))))
@@ -353,7 +368,7 @@ pass! {
            C.give
              out
              here
-             (C.con out here (symbolOf name) (V.map (\n -> C.var out here n) names))
+             (C.con out here (symbolOf cx.pkgs name) (V.map (\n -> C.var out here n) names))
              cx.k
          in V.foldr
               (\pair rest -> named src out cx here (fst pair) (snd pair) rest)
@@ -747,7 +762,7 @@ fun matched src out cx (m : Meta) (x : String) p (fail : String) success =
               C.arm
                 out
                 m
-                (symbolOf r.name)
+                (symbolOf cx.pkgs r.name)
                 (fields pairs)
                 (matchedAll src out cx m pairs fail success),
               C.arm out m "_" [] (C.gaveUp out m fail)
@@ -826,10 +841,11 @@ fun matchedAll src out cx (m : Meta) pairs (fail : String) success =
 
 -- The symbol of the type or constructor core names `canon`: its package,
 -- and then its path. The list every program has is the standard library's.
-fun symbolOf (canon : String) : String =
+fun symbolOf (pkgs : [String]) (canon : String) : String =
   let segs = S.split "." canon in
-  if V.getOr "" segs 0 == "List" or V.len segs < 2 then "meadow:Std/${canon}"
-  else "meadow:${V.getOr "" segs 0}/${S.join "." (V.drop segs 1)}"
+  if V.len segs >= 2 and V.elem (V.getOr "" segs 0) pkgs then
+    "meadow:${V.getOr "" segs 0}/${S.join "." (V.drop segs 1)}"
+  else "meadow:Std/${canon}"
 
 -- Where the field `label` is in a value of type `t`, if `t` is a declared
 -- type with a constructor that names its fields: the constructor, the
@@ -879,6 +895,7 @@ fun bare (canon : String) : String =
     (p : CoreProgram)
     (known : [(String, Int, [(String, [Type])])])
     (labelled : [(String, [String])])
+    (packages : [String])
     : CutProgram =
   let a = coreArena p in
   let file = coreRoot p in
@@ -914,11 +931,20 @@ fun bare (canon : String) : String =
   -- A value is computed after the values it reads, whatever order they
   -- were written in.
   let values = V.filter (\d -> not (isFun d)) defs in
+  -- What a value reads: the values it mentions, and those the functions it
+  -- mentions do, which it may call.
+  let mentions =
+    H.fromVec (V.map (\d -> (coreDefId a d, V.map fst (free a (coreDefBody a d) [] []))) defs)
+  in
+  let isValue = V.foldl (\h v -> H.insert (coreDefId a v) True h) H.empty values in
   let reads =
     \d ->
-      V.filter
-        (\id -> V.any (\v -> coreDefId a v == id) values)
-        (V.map fst (free a (coreDefBody a d) [] []))
+      reached
+        mentions
+        isValue
+        (M.unwrapOr [] (H.lookup (coreDefId a d) mentions))
+        (H.insert (coreDefId a d) True H.empty)
+        []
   in
   let ordered = V.append (V.filter isFun defs) (inOrder a values reads values []) in
   let own = V.filter (\d -> not (V.any (\k -> fst3 k == fst3 d) known)) (datasOf p) in
@@ -937,7 +963,7 @@ fun bare (canon : String) : String =
               C.dataDecl
                 out
                 C.nowhere
-                (symbolOf name)
+                (symbolOf packages name)
                 (V.map (\i -> "'a${show i}") (V.range 0 arity))
                 (V.map
                    (\c -> C.ctorDecl out C.nowhere (bare (fst c)) (V.map fieldRep (snd c)))
@@ -973,6 +999,7 @@ fun bare (canon : String) : String =
         gtops = generics,
         locals = H.empty,
         pkg = pkg,
+        pkgs = packages,
         ext = ext
       }
     in
@@ -1007,7 +1034,14 @@ fun bare (canon : String) : String =
         (M.map (\d -> tyCoreTerm a (coreDefBody a d)) (V.find (\d -> coreDefId a d == entry) defs))
     in
     let sh =
-      { out = out, datas = datas, wanted = stNewRef [], seen = stNewRef [], next = stNewRef 0 }
+      {
+        out = out,
+        datas = datas,
+        pkgs = packages,
+        wanted = stNewRef [],
+        seen = stNewRef [],
+        next = stNewRef 0
+      }
     in
     let shown =
       C.defDecl
@@ -1064,10 +1098,37 @@ fun fst3 (t : (a, b, c)) : a = match t with | (x, _, _) -> x
       ))
     (coreFileDatas a (coreRoot p))
 
+-- The package a program of core is of.
+@pub fun packageOf (p : CoreProgram) : String = coreFilePackage (coreArena p) (coreRoot p)
+
 -- Each constructor whose fields have names, with them.
 @pub fun namedOf (p : CoreProgram) : [(String, [String])] =
   let a = coreArena p in
   V.map (\n -> (coreNamedName a n, coreNamedLabels a n)) (coreFileNamed a (coreRoot p))
+
+-- The values reached from `todo`, through the functions among them: what
+-- each definition mentions is `mentions`, and `found` those reached so far.
+fun reached
+    (mentions : HashMap Int [Int])
+    (isValue : HashMap Int Bool)
+    (todo : [Int])
+    (seen : HashMap Int Bool)
+    (found : [Int])
+    : [Int] =
+  if V.isEmpty todo then found
+  else
+    (let id = V.getOr 0 todo (V.len todo - 1) in
+     let rest = V.take todo (V.len todo - 1) in
+     if M.isSome (H.lookup id seen) then reached mentions isValue rest seen found
+     else if M.isSome (H.lookup id isValue) then
+       reached mentions isValue rest (H.insert id True seen) (V.pushBack found id)
+     else
+       reached
+         mentions
+         isValue
+         (V.append rest (M.unwrapOr [] (H.lookup id mentions)))
+         (H.insert id True seen)
+         found)
 
 -- `todo` after what each reads, each once: `done` is what is placed already.
 fun inOrder (a : CoreArena) (all : [CoreDef]) reads (todo : [CoreDef]) (done : [CoreDef])
@@ -1220,6 +1281,10 @@ fun shownTo sh value (t : Type) k =
             shown
             (V.range 0 (V.len fields)))
   | Con "Array" _ -> wanting sh value t k
+  -- The standard library's vector is the runtime's to show, which knows it
+  -- by the part its constructors play: its elements, as the CEK machine
+  -- shows them.
+  | Con "Vector" _ -> C.prim out C.nowhere "show" [value] [k]
   | Con name args ->
       (match dataNamed sh.datas name with
        | Just _ ->
@@ -1404,11 +1469,16 @@ fun shower sh (key : String) (t : Type) =
            C.nowhere
            x
            (C.caseOf out C.nowhere [
-              C.arm out C.nowhere (symbolOf "List.Nil") [] (C.give out C.nowhere (text "") k),
               C.arm
                 out
                 C.nowhere
-                (symbolOf "List.Cons")
+                (symbolOf sh.pkgs "List.Nil")
+                []
+                (C.give out C.nowhere (text "") k),
+              C.arm
+                out
+                C.nowhere
+                (symbolOf sh.pkgs "List.Cons")
                 [C.param out C.nowhere h (repOf item), C.param out C.nowhere rest "ptr"]
                 (shownTo
                    sh
@@ -1490,7 +1560,7 @@ fun shower sh (key : String) (t : Type) =
                           C.arm
                             out
                             C.nowhere
-                            (symbolOf (fst c))
+                            (symbolOf sh.pkgs (fst c))
                             (V.map (\q -> C.param out C.nowhere (fst q) (repOf (snd q))) pairs)
                             (if V.isEmpty fields then C.give out C.nowhere (text (bare (fst c))) k
                              else
@@ -1508,7 +1578,8 @@ fun shower sh (key : String) (t : Type) =
 
 -- `p` as the text of a program of Cut: `program`'s, and the definitions its
 -- entry shows a number with.
-@pub fun written (p : CoreProgram) : String = writtenWith p [] [] ""
+@pub fun written (p : CoreProgram) : String =
+  writtenWith p [] [] [coreFilePackage (coreArena p) (coreRoot p)] ""
 
 -- The same for a program of several units: `before` is the declarations of
 -- the units it depends on, as `declarations` wrote them, and `known` and
@@ -1517,10 +1588,49 @@ fun shower sh (key : String) (t : Type) =
     (p : CoreProgram)
     (known : [(String, Int, [(String, [Type])])])
     (labelled : [(String, [String])])
+    (packages : [String])
     (before : String)
     : String =
-  let cut = program p known labelled in
-  C.header cut ++ before ++ C.body cut ++ C.showInt package
+  let cut = program p known labelled packages in
+  C.header cut ++ roles (V.append known (datasOf p)) ++ before ++ C.body cut ++ C.showInt package
+
+-- The constructor that plays each part a runtime builds or recognises a
+-- value by (`meadow_rt::roles`), of those the program declares: an optional
+-- value, a result, a list, the standard library's vector and its nodes, and
+-- what a file's metadata is.
+def played : [(String, String)] =
+  [
+    ("none", "Maybe.None"),
+    ("some", "Maybe.Just"),
+    ("ok", "Result.Ok"),
+    ("err", "Result.Err"),
+    ("nil", "List.Nil"),
+    ("cons", "List.Cons"),
+    ("vector-empty", "Vector.Empty"),
+    ("vector-single", "Vector.Single"),
+    ("vector-full", "Vector.Full"),
+    ("vnode-leaf", "VNode.Leaf"),
+    ("vnode-branch", "VNode.Branch"),
+    ("false", "Bool.False"),
+    ("file-meta", "FileMeta.FileMeta")
+  ]
+
+-- `roles { ... }` for the types `datas` declares.
+fun roles (datas : [(String, Int, [(String, [Type])])]) : String =
+  let declared =
+    V.filter
+      (\r ->
+        V.any
+          (\d ->
+            match d with
+            | (_, _, ctors) -> V.any (\c -> fst c == snd r) ctors)
+          datas)
+      played
+  in if V.isEmpty declared then ""
+     else
+       "roles {\n"
+         ++ S.join "" (V.map (\r -> "  ${fst r} = meadow:Std/${snd r}\n") declared)
+         ++ "}\n\n"
 
 -- A unit's declarations as text, to go before those of a unit that depends
 -- on it.
@@ -1528,5 +1638,6 @@ fun shower sh (key : String) (t : Type) =
     (p : CoreProgram)
     (known : [(String, Int, [(String, [Type])])])
     (labelled : [(String, [String])])
+    (packages : [String])
     : String =
-  C.body (program p known labelled) ++ "\n"
+  C.body (program p known labelled packages) ++ "\n"

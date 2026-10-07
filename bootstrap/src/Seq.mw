@@ -1044,31 +1044,7 @@ fun bare (canon : String) : String =
       }
     in
     let shown =
-      C.defDecl
-        out
-        C.nowhere
-        "${package}\"#entry\""
-        []
-        [C.param out C.nowhere "k" "ptr"]
-        (match H.lookup entry generics with
-         | Just vars ->
-             C.invoke
-               out
-               C.nowhere
-               (topSymbol pkg entry)
-               (V.map (\v -> C.desc out C.nowhere "ptr") vars)
-               [C.binding
-                  out
-                  C.nowhere
-                  "r"
-                  (repOf answerTy)
-                  (shownTo sh (C.var out C.nowhere "r") answerTy (C.cont out C.nowhere "k"))]
-         | None ->
-             shownTo
-               sh
-               (C.sym out C.nowhere (topSymbol pkg entry))
-               answerTy
-               (C.cont out C.nowhere "k"))
+      entered out sh pkg entry answerTy (M.unwrapOr 0 (M.map V.len (H.lookup entry generics)))
     in
     let showers = showersOf sh [] in
     let root =
@@ -1083,7 +1059,89 @@ fun bare (canon : String) : String =
           (V.concat [declared, effects, stGetRef lifted, vals, [shown], showers])
     in C.finished out root)
 
+-- The definition a program is entered at: the value of definition `entry`
+-- of package `pkg`, of type `answerTy` and generic in `types` types, turned
+-- into the text the CEK machine would display -- a `main` run first, and
+-- what it answers shown.
+fun entered out sh (pkg : String) (entry : Int) (answerTy : Type) (types : Int) =
+  C.defDecl
+    out
+    C.nowhere
+    "${package}\"#entry\""
+    []
+    [C.param out C.nowhere "k" "ptr"]
+    (if types > 0 then
+       C.invoke
+         out
+         C.nowhere
+         (topSymbol pkg entry)
+         (V.map (\v -> C.desc out C.nowhere "ptr") (V.range 0 types))
+         [C.binding
+            out
+            C.nowhere
+            "r"
+            (repOf answerTy)
+            (shownTo sh (C.var out C.nowhere "r") answerTy (C.cont out C.nowhere "k"))]
+     else
+       (match mainOf answerTy with
+        | Just answered ->
+            C.applied
+              out
+              C.nowhere
+              (C.sym out C.nowhere (topSymbol pkg entry))
+              (C.unit out C.nowhere)
+              (C.binding
+                 out
+                 C.nowhere
+                 "r"
+                 (repOf answered)
+                 (shownTo sh (C.var out C.nowhere "r") answered (C.cont out C.nowhere "k")))
+        | None ->
+            shownTo
+              sh
+              (C.sym out C.nowhere (topSymbol pkg entry))
+              answerTy
+              (C.cont out C.nowhere "k")))
+
+-- What goes around the declarations of a program's units to make it one:
+-- before them, how it opens and the roles its types play; after them, the
+-- definition it is entered at and what that shows a value with. `known`
+-- are the types the units declare.
+@pub fun around
+    (pkg : String)
+    (entry : Int)
+    (answerTy : Type)
+    (types : Int)
+    (known : [(String, Int, [(String, [Type])])])
+    (packages : [String])
+    : (String, String) =
+  let cut =
+    runSt (\() ->
+      let out = C.builder () in
+      let sh =
+        {
+          out = out,
+          datas = known,
+          pkgs = packages,
+          wanted = stNewRef [],
+          seen = stNewRef [],
+          next = stNewRef 0
+        }
+      in
+      let shown = entered out sh pkg entry answerTy types in
+      let showers = showersOf sh [] in
+      C.finished
+        out
+        (C.file out C.nowhere "${package}\"#entry\"" "str" (V.pushFront showers shown)))
+  in (C.header cut ++ roles known, C.body cut ++ C.showInt package)
+
 fun fst3 (t : (a, b, c)) : a = match t with | (x, _, _) -> x
+
+-- What a function of `()` answers, if `t` is one: a program's `main`.
+fun mainOf (t : Type) : Maybe Type =
+  match t with
+  | Fun params answered _ -> if params == [Con "Unit" []] then Just answered else None
+  | _ -> None
 
 -- The types a program of core declares: each one's name, how many types it
 -- takes, and each constructor with its fields' types.

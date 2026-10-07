@@ -15,6 +15,7 @@
 -- which of several constructors of one name was meant.
 
 use Lingua (lang!, pass!)
+use Std.Macro (Reflect)
 use Lingua.Lang (Meta, spanMeta)
 use MeadowBoot.Rename
 use MeadowBoot.Rename (Hir!)
@@ -787,12 +788,13 @@ fun constructedPat out (cx : Low s) (m : Meta) (id : Int) args (t : Type) =
 def nowhere : Meta = spanMeta 0 0
 
 -- What a unit gives the units after it to be lowered with: its package;
--- each unit's declarations of Cut it is made with, its own last, by package;
--- every declared type it knows, and each constructor's named fields; its
--- own `impl`s' dictionaries' binders; and its own traits' defaults.
+-- the packages of the units it is made with, its own last; every declared
+-- type it knows, and each constructor's named fields; its own `impl`s'
+-- dictionaries' binders; and its own traits' defaults.
+@derive(Reflect, Debug, PartialEq)
 @pub record Linked = {
   package : String,
-  units : [Entry String],
+  packages : [String],
   datas : [DataSig],
   named : [Entry [String]],
   dicts : [Int],
@@ -801,6 +803,7 @@ def nowhere : Meta = spanMeta 0 0
 
 -- A declared type: its name in core, how many types it takes, and each
 -- constructor's fields' types.
+@derive(Reflect, Debug, PartialEq)
 @pub record DataSig = {
   name : String,
   arity : Int,
@@ -809,6 +812,7 @@ def nowhere : Meta = spanMeta 0 0
 
 -- A trait's default for a method: the trait and method (`methodKey`), its
 -- binder in its unit, the traits it asks dictionaries of, and its scheme.
+@derive(Reflect, Debug, PartialEq)
 @pub record DefaultSig = {
   key : String,
   binder : Int,

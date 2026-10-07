@@ -11,7 +11,14 @@
 -- grouped file and what the units before it export.
 
 use Lingua (database!, make!)
-use Lingua.Make (Given, unitSources, unitImports, unitOut, unitDir)
+use Lingua.Make (
+  Given, Linking, unitSources, unitImports, unitOut, unitDir, linkUnits, linkOut, linkDir
+)
+use Std.Fs (Fs, readToString, writeString)
+use Std.Time (monotonic)
+use Std.Console (writeError)
+use Std.Process (getEnv)
+use MeadowBoot.Types.Type.*
 use Lingua.Green (Green)
 use Lingua.Red as R
 use Lingua.Diagnostic (Diagnostic, collect, renderAll)
@@ -52,7 +59,8 @@ use Std.Result.Result.*
   package : String,
   exports : [Export],
   anyVis : Bool,
-  types : TypeEnv
+  types : TypeEnv,
+  linked : Linked
 }
 
 -- An operator, and how it binds.
@@ -92,17 +100,16 @@ database! {
              (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None))
              (queryFiles unit))
     | query core (unit : Int) : Maybe CoreProgram =
-        M.map
-          fst
-          (coreOf
+        coreIn
+          (checkedOf
              (queryHome unit)
              (queryImported unit)
              (tableOf (queryFixities 0))
              (V.map
                 (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None))
                 (queryFiles unit))
-             []
-             (Just "result"))
+             (Just "result")
+             (\x -> ()))
 }
 
 -- The files of a unit that are its modules: all but its manifest.
@@ -190,20 +197,23 @@ fun inferredOf
            done.types
          )
 
--- The unit at `dir` as core, entered at its `entry` if it is to have one --
--- or `None`, for one with nothing of that name -- with what the units after
--- it are lowered with. `linked` is that of each unit it imports, in their
--- order.
-fun coreOf
+-- The unit at `dir` checked and lowered, its types inferred once: what it
+-- exports, each with its scheme; whether it says; what it knows about
+-- types; and, entered at its `entry` if it is to have one -- or `None`, for
+-- one with nothing of that name -- its core, what the units after it are
+-- lowered with, and its declarations of Cut as text.
+fun checkedOf
     (dir : String)
     (imported : [Interface])
     (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
-    (linked : [Linked])
     (entry : Maybe String)
-    : Maybe (CoreProgram, Linked) =
+    (mark : String -> () ! e)
+    : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, String)) ! e =
+  let m0 = mark "start" in
   match unitOf dir imported fx files with
   | (sources, r) ->
+      let m1 = mark "renamed" in
       let deps =
         V.map
           (\(i : Interface) ->
@@ -229,168 +239,159 @@ fun coreOf
              (V.find (\x -> match x with | (p, _, _) -> S.endsWith "Meadow.toml" p) files))
       in
       let done = inferUnit r deps (V.map (\(i : Interface) -> i.types) imported) texts in
-      let nothing =
-        \(i : Interface) ->
-          Linked {
-            package = i.package,
-            units = [],
-            datas = [],
-            named = [],
-            dicts = [],
-            defaults = []
-          }
-      in
+      let m2 = mark "inferred" in
+      let linked = V.map (\(i : Interface) -> i.linked) imported in
       let theirs =
         V.map
-          (\k ->
-            (let i = V.getOr (emptyInterface ()) imported k in
-             Imported {
-               package = i.package,
-               exports = i.exports,
-               types = i.types,
-               linked = M.unwrapOr (nothing i) (V.get linked k)
-             }))
-          (V.range 0 (V.len imported))
-      in M.map
-           (\made ->
-             match made with
-             | (core, dicts, defaults) ->
-                 -- Every unit before this one, each once, in the order they
-                 -- were made in; every type and named field they declare.
-                 (let units =
-                    V.foldl
-                      (\acc (l : Linked) ->
-                        V.foldl
-                          (\acc2 (e : Entry String) ->
-                            if V.any (\(x : Entry String) -> x.key == e.key) acc2 then acc2
-                            else V.pushBack acc2 e)
-                          acc
-                          l.units)
-                      []
-                      linked
-                  in
-                  let known =
-                    V.foldl
-                      (\acc (l : Linked) ->
-                        V.foldl
-                          (\acc2 (d : DataSig) ->
-                            if V.any (\(x : DataSig) -> x.name == d.name) acc2 then acc2
-                            else V.pushBack acc2 d)
-                          acc
-                          l.datas)
-                      []
-                      linked
-                  in
-                  let labelled = V.concatMap (\(l : Linked) -> l.named) linked in
-                  let knownSigs =
-                    V.map
-                      (\(d : DataSig) ->
-                        (d.name, d.arity, V.map (\(c : Entry [Type]) -> (c.key, c.value)) d.ctors))
-                      known
-                  in
-                  let labels = V.map (\(e : Entry [String]) -> (e.key, e.value)) labelled in
-                  let ownDatas =
-                    V.concatMap
-                      (\d ->
-                        match d with
-                        | (name, arity, ctors) ->
-                            if V.any (\(x : DataSig) -> x.name == name) known then []
-                            else
-                              [DataSig {
-                                 name = name,
-                                 arity = arity,
-                                 ctors = V.map (\c -> Entry { key = fst c, value = snd c }) ctors
-                               }])
-                      (Seq.datasOf core)
-                  in (
-                       core,
-                       Linked {
-                         package = pkg,
-                         units =
-                           V.pushBack
-                             units
-                             (Entry {
-                                key = pkg,
-                                value =
-                                  Seq.declarations core knownSigs labels (packagesOf units pkg)
-                              }),
-                         datas = V.append known ownDatas,
-                         named =
-                           V.append
-                             labelled
-                             (V.map
-                                (\n -> Entry { key = fst n, value = snd n })
-                                (Seq.namedOf core)),
-                         dicts = dicts,
-                         defaults = defaults
-                       }
-                     )))
-           (unitCore pkg r done theirs entry)
-
-fun emptyInterface () : Interface =
-  Interface { fixities = [], package = "", exports = [], anyVis = False, types = noTypes }
-
--- Unit `u` as core, entered at its `entry` if it is to have one, with what
--- the units after it are lowered with: `linked` is that of each unit it
--- imports, in their order.
-@pub fun linkedCore (u : Given Interface) (linked : [Linked]) (entry : Maybe String) =
-  let db = unitDatabase u in
-  coreOf
-    (unitDir u)
-    (V.map snd (unitImports u))
-    (tableOf (compilerFixities db 0))
-    (V.map
-       (\s -> (fst s, snd s, if S.endsWith ".mw" (fst s) then compilerGrouped db (fst s) else None))
-       (unitSources u))
-    linked
-    entry
-
--- A program of several units as the text of one of Cut: `core` its last
--- unit, entered, and `linked` what its imports are lowered with.
-@pub fun programText (core : CoreProgram) (linked : [Linked]) : String =
-  let units =
-    V.foldl
-      (\acc (l : Linked) ->
+          (\(i : Interface) ->
+            Imported {
+              package = i.package,
+              exports = i.exports,
+              types = i.types,
+              linked = i.linked
+            })
+          imported
+      in
+      -- Every unit before this one, each once, in the order they were made
+      -- in; every type and named field they declare.
+      let packages =
         V.foldl
-          (\acc2 (e : Entry String) ->
-            if V.any (\(x : Entry String) -> x.key == e.key) acc2 then acc2 else V.pushBack acc2 e)
-          acc
-          l.units)
-      []
-      linked
-  in
-  let known =
-    V.foldl
-      (\acc (l : Linked) ->
+          (\acc (l : Linked) ->
+            V.foldl (\acc2 p -> if V.elem p acc2 then acc2 else V.pushBack acc2 p) acc l.packages)
+          []
+          linked
+      in
+      let known =
         V.foldl
-          (\acc2 (d : DataSig) ->
-            if V.any (\x -> fst3 x == d.name) acc2 then acc2
-            else
-              V.pushBack acc2 (
-                d.name,
-                d.arity,
-                V.map (\(c : Entry [Type]) -> (c.key, c.value)) d.ctors
-              ))
-          acc
-          l.datas)
-      []
-      linked
-  in Seq.writtenWith
-       core
-       known
-       (V.concatMap
-          (\(l : Linked) -> V.map (\(e : Entry [String]) -> (e.key, e.value)) l.named)
-          linked)
-       (packagesOf units (Seq.packageOf core))
-       (S.join "" (V.map (\(e : Entry String) -> e.value) units))
+          (\acc (l : Linked) ->
+            V.foldl
+              (\acc2 (d : DataSig) ->
+                if V.any (\(x : DataSig) -> x.name == d.name) acc2 then acc2 else V.pushBack acc2 d)
+              acc
+              l.datas)
+          []
+          linked
+      in
+      let labelled = V.concatMap (\(l : Linked) -> l.named) linked in
+      let exports =
+        V.map (\(e : Export) -> { e | scheme = H.lookup e.binder done.schemes }) r.exports
+      in
+      let cored = unitCore pkg r done theirs entry in
+      let m3 = mark "core" in
+      (
+        exports,
+        r.anyVis,
+        done.types,
+        M.map
+          (\made ->
+            match made with
+            | (core, dicts, defaults) ->
+                (let ownDatas =
+                   V.concatMap
+                     (\d ->
+                       match d with
+                       | (name, arity, ctors) ->
+                           if V.any (\(x : DataSig) -> x.name == name) known then []
+                           else
+                             [DataSig {
+                                name = name,
+                                arity = arity,
+                                ctors = V.map (\c -> Entry { key = fst c, value = snd c }) ctors
+                              }])
+                     (Seq.datasOf core)
+                 in (
+                      core,
+                      Linked {
+                        package = pkg,
+                        packages = V.pushBack packages pkg,
+                        datas = V.append known ownDatas,
+                        named =
+                          V.append
+                            labelled
+                            (V.map (\n -> Entry { key = fst n, value = snd n }) (Seq.namedOf core)),
+                        dicts = dicts,
+                        defaults = defaults
+                      },
+                      Seq.declarations
+                        core
+                        (sigsOf known)
+                        (V.map (\(e : Entry [String]) -> (e.key, e.value)) labelled)
+                        (V.filter (\p -> p != "Std") (V.pushBack packages pkg))
+                    )))
+          cored
+      )
+
+-- Declared types as the lowering takes them.
+fun sigsOf (datas : [DataSig]) : [(String, Int, [(String, [Type])])] =
+  V.map
+    (\(d : DataSig) -> (d.name, d.arity, V.map (\(c : Entry [Type]) -> (c.key, c.value)) d.ctors))
+    datas
+
+fun emptyLinked () : Linked =
+  Linked { package = "", packages = [], datas = [], named = [], dicts = [], defaults = [] }
+
+-- A unit's declarations of Cut, where its compiler writes them: its object.
+fun objectIn (out : String) (pkg : String) : String = Path.join out "${pkg}.cut"
+
+-- The build's program put together, once its units are built: before the
+-- units' objects, in the order they were made in, how it opens and the roles
+-- its types play; after them, the definition it is entered at -- the root
+-- unit's `result`, or its `main` -- and what that shows a value with. A
+-- root with neither is a library, and has no program.
+fun linkProgram (l : Linking Interface) : Result String () ! { Fs | e } =
+  let units = linkUnits l in
+  match V.get units (V.len units - 1) with
+  | None -> Ok ()
+  | Just (_, (root : Interface), _) ->
+      let named =
+        \n ->
+          V.find
+            (\(e : Export) ->
+              e.kind == "v" and e.name == n and S.isEmpty e.owner and V.isEmpty e.module)
+            root.exports
+      in (match (match named "result" with
+           | Just e -> Just e
+           | None -> named "main") with
+          | None -> Ok ()
+          | Just (e : Export) ->
+              (let sc =
+                 M.unwrapOr (Scheme { quant = [], preds = [], ty = Error, lacks = [] }) e.scheme
+               in
+               let (before, after) =
+                 Seq.around
+                   root.package
+                   e.binder
+                   sc.ty
+                   (V.len (V.filter (\k -> k == VarKind.Plain) sc.quant))
+                   (sigsOf root.linked.datas)
+                   (V.filter (\p -> p != "Std") root.linked.packages)
+               in
+               let objects =
+                 V.foldl
+                   (\acc u ->
+                     match (acc, u) with
+                     | (Err why, _) -> Err why
+                     | (Ok texts, (_, (i : Interface), out)) ->
+                         (match readToString (objectIn out i.package) with
+                          | Ok text -> Ok (V.pushBack texts text)
+                          | Err why -> Err "${i.package} wrote no object: ${why}\n"))
+                   (Ok [])
+                   units
+               in match objects with
+                  | Err why -> Err why
+                  | Ok texts ->
+                      (match writeString (
+                         Path.join (linkOut l) "program.cut",
+                         S.join "" (V.concat [[before], texts, [after]])
+                       ) with
+                       | Ok _ -> Ok ()
+                       | Err why -> Err "the program could not be written: ${why}\n")))
 
 fun fst3 (t : (a, b, c)) : a = match t with | (x, _, _) -> x
 
--- The packages a program is made of that a type's name in core starts
--- with: every unit's but the standard library's, whose types are named
--- from its root.
-fun packagesOf (units : [Entry String]) (own : String) : [String] =
-  V.filter (\p -> p != "Std") (V.pushBack (V.map (\(e : Entry String) -> e.key) units) own)
+fun coreIn (c : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, String)))
+    : Maybe CoreProgram =
+  match c with | (_, _, _, made) -> M.map fst3 made
 
 -- The unit at `dir` renamed: its modules, each with its path, and what
 -- renaming made of them.
@@ -504,6 +505,7 @@ make! {
     | dependencies = dependenciesOf
     | files = unitFilesOf
     | compile = compileUnit
+    | link = linkProgram
 }
 
 -- Compile unit `u`: every file parsed and grouped by the unit's fixities, and
@@ -514,6 +516,10 @@ fun compileUnit (u : Given Interface) =
   | Err why -> Err "${show why}\n"
 
 fun compiling (u : Given Interface) =
+  let timed = M.isSome (getEnv "MEADOWBOOT_TIMES") in
+  let mark =
+    \what -> if timed then writeError "${show (monotonic ())} ${unitDir u} ${what}\n" else ()
+  in
   let db = unitDatabase u in
   let sources = V.filter (\s -> S.endsWith ".mw" (fst s)) (unitSources u) in
   let files = V.map fst sources in
@@ -539,17 +545,46 @@ fun compiling (u : Given Interface) =
            (V.range 0 (V.len sources))
        in if not (V.isEmpty wrong) then Err (S.join "" wrong)
           else
-            match compilerInferred db 0 with
-            | (_, exports, anyVis, types) ->
+            -- Its types inferred once, and lowered: its declarations of Cut
+            -- are its object, written where the link reads them.
+            match checkedOf
+              (unitDir u)
+              (V.map snd (unitImports u))
+              (tableOf (compilerFixities db 0))
+              (V.map
+                 (\s ->
+                   (
+                     fst s,
+                     snd s,
+                     if S.endsWith ".mw" (fst s) then
+                       M.unwrapOr None (V.get groups (indexOf files (fst s)))
+                     else None
+                   ))
+                 (unitSources u))
+              None
+              mark with
+            | (exports, anyVis, types, made) ->
+                let m9 = mark "cut" in
                 let manifest =
                   M.unwrapOr
                     ""
                     (M.map snd (V.find (\s -> S.endsWith "Meadow.toml" (fst s)) (unitSources u)))
+                in
+                let pkg = packageName manifest in
+                let linked =
+                  (match made with
+                   | Just (_, l, text) ->
+                       (let w = writeString (objectIn (unitOut u) pkg, text) in l)
+                   | None -> emptyLinked ())
                 in Ok
                      (Interface {
                         fixities = compilerFixities db 0,
-                        package = packageName manifest,
+                        package = pkg,
                         exports = exports,
                         anyVis = anyVis,
-                        types = types
+                        types = types,
+                        linked = linked
                       })
+
+fun indexOf (xs : [String]) (x : String) : Int =
+  M.unwrapOr (0 - 1) (V.find (\k -> V.get xs k == Just x) (V.range 0 (V.len xs)))

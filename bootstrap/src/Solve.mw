@@ -250,6 +250,10 @@ use Sol.*
   -- The types a mention of a generic name is at, one for each variable over
   -- types its scheme has: by where the mention is.
   instAt : StRef s (HashMap String [Type]),
+  -- The wanted traits not answered yet, in the order they were wanted:
+  -- what answering looks through, where all of them is every one the unit
+  -- ever had.
+  unanswered : StRef s [Int],
   -- Which of its meanings a name with several was found to have: by where
   -- it is written, the meaning's place among them.
   chosenAt : StRef s (HashMap String Int),

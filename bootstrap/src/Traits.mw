@@ -78,25 +78,35 @@ fun findImpl (i : Inf s) (tr : String) (key : String) : Maybe ImplDef ! { St s |
 fun wantedAt (i : Inf s) (k : Int) : Wanted ! { St s | e } = B.at i.wanted k
 
 fun setSol (i : Inf s) (k : Int) (sol : Maybe Sol) : () ! { St s | e } =
-  B.put i.wanted k { (wantedAt i k) | sol = sol }
+  let u = B.put i.wanted k { (wantedAt i k) | sol = sol } in
+  -- One whose answer is taken back is unanswered again.
+  if M.isNone sol and not (V.elem k (stGetRef i.unanswered)) then
+    stSetRef i.unanswered (V.pushBack (stGetRef i.unanswered) k)
+  else ()
 
--- Ask for `p`. An associated effect of what it asks for is a variable until
--- an `impl` says what it is, and is remembered as one: a call that performs
--- it has to wait for that, and not be tied to wherever it is made first
--- (`joinEffectInto`).
+-- A wanted trait, kept: where it is among them.
+@pub fun wanting (i : Inf s) (w : Wanted) : Int ! { St s | e } =
+  let k = B.push i.wanted w in
+  let u = stSetRef i.unanswered (V.pushBack (stGetRef i.unanswered) k) in
+  k
+
+-- Ask for `p`.
 fun want (i : Inf s) (p : Pred) (owner : Maybe Int) : Int ! { St s | e } =
-  let u =
-    V.foldl
-      (\w x ->
-        match zonk i.ar x with
-        | Var id ->
-            if slotKind i.ar id == Effect then
-              stSetRef i.assocEffectVars (V.pushBack (stGetRef i.assocEffectVars) id)
-            else ()
-        | _ -> ())
-      ()
-      p.assocs
-  in B.push i.wanted (Wanted { pred = p, owner = owner, sol = None })
+  wanting i (Wanted { pred = p, owner = owner, sol = None })
+
+-- Whether variable `id` is, for now, an associated type or effect of a
+-- wanted trait nothing has answered: what an `impl` will say it is. Looked
+-- for among the unanswered alone, which are few where every associated
+-- effect a unit ever asked for is not.
+@pub fun awaited (i : Inf s) (id : Int) : Bool ! { St s | e } =
+  V.any
+    (\k ->
+      (let w = wantedAt i k in
+       M.isNone w.sol
+         and V.any
+           (\t -> match zonk i.ar t with | Var now -> now == id | _ -> False)
+           w.pred.assocs))
+    (stGetRef i.unanswered)
 
 -- The scheme of a name mentioned, instantiated, wanting what its `where`
 -- asks for.
@@ -141,8 +151,12 @@ fun predsAt (sc : Scheme) (fresh : [Type]) : [Pred] =
 -- Answer every wanted whose types are known by now, and settle associated
 -- types that have to agree.
 @pub fun solveWanted (i : Inf s) : () ! { St s | e } =
-  let progress = V.foldl (\acc k -> solveOne i k or acc) False (V.range 0 (B.len i.wanted)) in
-  if progress then solveWanted i else ()
+  let progress = V.foldl (\acc k -> solveOne i k or acc) False (stGetRef i.unanswered) in
+  -- What was answered is looked at no more; what answering one wanted in
+  -- turn is there already, after the rest.
+  let u =
+    stSetRef i.unanswered (V.filter (\k -> M.isNone (wantedAt i k).sol) (stGetRef i.unanswered))
+  in if progress then solveWanted i else ()
 
 fun solveOne (i : Inf s) (k : Int) : Bool ! { St s | e } =
   let w = wantedAt i k in
@@ -342,7 +356,7 @@ fun knownAssoc (i : Inf s) (owner : String) (assoc : String) (over : [Type])
         (let x = V.foldl (\y t -> holdBack i.ar t level) () w.pred.tys in
          V.foldl (\y t -> holdBack i.ar t level) () w.pred.assocs))
     ()
-    (V.range 0 (B.len i.wanted))
+    (stGetRef i.unanswered)
 
 -- The top-level bindings `members` have been inferred together: what each
 -- asks of its caller -- its `where` -- and the wanteds their bodies had of

@@ -257,10 +257,12 @@ fun recordLabels out (e : HirExpr) =
        | Just _ -> None)
   | _ -> None
 
--- `ty`'s constructor `name`, if `ty` is a type this module can name.
+-- `ty`'s constructor `name`, if `ty` is a type this module can name. A name
+-- a macro wrote is the name it wrote, whatever marks it.
 fun typeCtor (env : Env) (ty : String) (name : String) : Maybe (Int, Int) =
-  match H.lookup ty env.scope.types with
-  | Just t -> M.map (\c -> (t, c)) (M.andThen (H.lookup name) (H.lookup t env.scope.typeCtors))
+  match H.lookup (unmarked ty) env.scope.types with
+  | Just t ->
+      M.map (\c -> (t, c)) (M.andThen (H.lookup (unmarked name)) (H.lookup t env.scope.typeCtors))
   | None -> None
 
 -- --- the pass ----------------------------------------------------------------

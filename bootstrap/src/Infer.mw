@@ -141,18 +141,7 @@ fun onceEach (i : Inf s) (phi : Type) : Type ! { St s | e } =
 -- one remembered, or one it was unified with.
 fun waitsOnImpl (i : Inf s) (phi : Type) : Bool ! { St s | e } =
   match rowEnd (zonk i.ar phi) with
-  | Var id ->
-      -- What an `impl` has settled is a variable no longer, and is dropped.
-      let still =
-        V.concatMap
-          (\v ->
-            match zonk i.ar (Var v) with
-            | Var now -> [(v, now)]
-            | _ -> [])
-          (stGetRef i.assocEffectVars)
-      in
-      let u = stSetRef i.assocEffectVars (V.map fst still) in
-      V.any (\x -> snd x == id) still
+  | Var id -> awaited i id
   | _ -> False
 
 fun joinSettled (i : Inf s) (region : Type) (phi0 : Type) : () ! { St s | e } =
@@ -2392,8 +2381,8 @@ fun inferImpl
                         let y =
                           V.map
                             (\(sup : Super) ->
-                              (B.push
-                                 i.wanted
+                              (wanting
+                                 i
                                  (Wanted {
                                     pred =
                                       Pred {
@@ -2805,6 +2794,7 @@ fun newInf (r : Renamed) : Inf s ! { St s | e } =
     subsumptions = stNewRef [],
     atNode = stNewRef H.empty,
     instAt = stNewRef H.empty,
+    unanswered = stNewRef [],
     chosenAt = stNewRef H.empty,
     mentions = stNewRef [],
     fixed = stNewRef H.empty,

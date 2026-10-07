@@ -19,10 +19,9 @@
 //! mentions from around it.
 //!
 //! What is not lowered answers `error "unsupported: …"` where it would run,
-//! so that the rest of a program still reads: a record's field and a
-//! record's pattern, which Cut has no way to read; a join point; and
-//! anything generic in how a value is represented, which is written as the
-//! `ptr` it may not be.
+//! so that the rest of a program still reads: a join point; and anything
+//! generic in how a value is represented, which is written as the `ptr` it
+//! may not be.
 
 use std::collections::{HashMap, HashSet};
 
@@ -419,8 +418,29 @@ impl Lower<'_> {
                     give(Producer::Record(labels.into_iter().zip(xs).collect()), k)
                 })
             }
-            Term::Sel(..) => unsupported("a field"),
-            Term::Extend(..) => unsupported("a record extended"),
+            Term::Sel(record, label, _) => {
+                let r = self.name("r");
+                let read = Statement::Prim(
+                    "select".to_string(),
+                    vec![Producer::Var(r.clone()), Producer::Str(label.to_string())],
+                    vec![k],
+                );
+                self.named(record, &r, read)
+            }
+            Term::Extend(record, label, value) => {
+                let (r, v) = (self.name("r"), self.name("e"));
+                let set = Statement::Prim(
+                    "extend".to_string(),
+                    vec![
+                        Producer::Var(r.clone()),
+                        Producer::Str(label.to_string()),
+                        Producer::Var(v.clone()),
+                    ],
+                    vec![k],
+                );
+                let valued = self.named(value, &v, set);
+                self.named(record, &r, valued)
+            }
             Term::Case(scrutinee, arms, _) => self.shared(k, |this, k| {
                 let s = this.name("s");
                 let matching = this.arms(&s, arms, k);
@@ -789,7 +809,24 @@ impl Lower<'_> {
                     )],
                 )
             }
-            Pat::Record(_) => unsupported("a record's pattern"),
+            // Each field the pattern names read, and matched in turn.
+            Pat::Record(fields) => {
+                let binders: Vec<Binder> = fields
+                    .iter()
+                    .map(|(_, p)| binder(&self.name("m"), pat_rep(p, None)))
+                    .collect();
+                let pats: Vec<Pat> = fields.iter().map(|(_, p)| p.clone()).collect();
+                let tys = vec![None; pats.len()];
+                let mut read = self.matched_all(&binders, &pats, &tys, fail, success);
+                for ((label, _), b) in fields.iter().zip(&binders).rev() {
+                    read = Statement::Prim(
+                        "select".to_string(),
+                        vec![value.clone(), Producer::Str(label.to_string())],
+                        vec![Consumer::MuTilde(b.clone(), Box::new(read))],
+                    );
+                }
+                read
+            }
         }
     }
 

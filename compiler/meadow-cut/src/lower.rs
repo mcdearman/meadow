@@ -591,6 +591,48 @@ impl Lower {
                     }),
                 )
             }
+            // A record's field read, or set: the label is a name the back
+            // end is given, not a value the program computes.
+            Statement::Prim(op, args, conts) if op == "select" || op == "extend" => {
+                let (Some(Producer::Str(label)), [c]) = (args.get(1), &conts[..]) else {
+                    return Err(format!(
+                        "`prim {op}` takes a record, a label written as a string, {}and one continuation",
+                        if op == "extend" { "a value, " } else { "" }
+                    ));
+                };
+                let label = InternedString::from(label.as_str());
+                let record = self.atom(&args[0], &mut sc, &mut steps)?;
+                let (extern_op, names, rep) = match (op.as_str(), args.get(2)) {
+                    ("extend", Some(value)) => {
+                        let value = self.atom(value, &mut sc, &mut steps)?;
+                        (
+                            Extern::Extend(label, None),
+                            vec![record, value],
+                            ax::Rep::Ref,
+                        )
+                    }
+                    ("select", None) => {
+                        let rep = match c {
+                            Consumer::MuTilde(b, _) => rep_of(&b.rep)?,
+                            _ => ax::Rep::Ref,
+                        };
+                        (Extern::Select(label, None), vec![record], rep)
+                    }
+                    _ => return Err(format!("`prim {op}` is given the wrong number of values")),
+                };
+                let r = self.fresh(rep);
+                let mut inner = sc.clone();
+                inner.push(r);
+                let body = self.give(r, c, &inner)?;
+                S::Extern {
+                    op: extern_op,
+                    args: names,
+                    blocks: vec![Block {
+                        params: inner.env,
+                        body,
+                    }],
+                }
+            }
             Statement::Prim(op, args, conts) => {
                 let mut names = Vec::new();
                 for a in args {

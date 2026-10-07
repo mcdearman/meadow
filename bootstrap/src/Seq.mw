@@ -33,6 +33,7 @@ use Std.Collections.Vector as V
 use Std.Collections.HashMap as H
 use Std.Collections.HashMap (HashMap)
 use Std.String as S
+use Std.Sort (sortBy)
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
 
@@ -80,7 +81,7 @@ fun primName (op : String) : String =
 -- --- the lowering ------------------------------------------------------------
 
 pass! {
-  lower : Core -> Cut with cx from Term
+  lower : Core -> Cut with cx from Term, Lit
     | LInt { value } -> C.int out here value
     | LBig { value } -> C.int out here value
     | LF64 { value } -> C.float out here value
@@ -90,7 +91,13 @@ pass! {
     | LChar { code } -> C.char out here code
     | LBool { value } -> C.bool out here value
     | LUnit {} -> C.unit out here
-    | Const { lit } -> C.give out here lit cx.k
+    -- A literal of a sized integer is the number made that wide: Cut writes
+    -- no literal of one.
+    | Const { raw lit } ->
+        (match viewCoreLit src lit with
+         | CoreLitView.LWord w ->
+             C.prim out here (primName "ToWord(${w.ty})") [C.int out here w.bits] [cx.k]
+         | _ -> C.give out here (lowerLit src out cx lit) cx.k)
     | Var { id } ->
         (if M.isSome (H.lookup id cx.tops) then C.give out here (C.sym out here (topSymbol id)) cx.k
          else C.give out here (C.var out here "v${show id}") cx.k)
@@ -174,9 +181,94 @@ pass! {
                          (V.map (\q -> C.param out here (fst q) (repOf (snd q))) (V.zip names tys))
                          (C.give out here (C.var out here (V.getOr "" names index)) cx.k)])))
          | _ -> C.unsupported out here "an item of what is not known to be a tuple")
-    | Record { raw fields } -> C.unsupported out here "a record"
-    | Sel { raw target, label } -> C.unsupported out here "a field"
-    | Extend { raw target, label, raw value } -> C.unsupported out here "a record extended"
+    | Record { raw fields } ->
+        (let names = V.map (\i -> "r${show node}_${show i}") (V.range 0 (V.len fields)) in
+         let done =
+           C.give
+             out
+             here
+             (C.recorded
+                out
+                here
+                (V.map (\f -> coreFieldLabel src f) fields)
+                (V.map (\n -> C.var out here n) names))
+             cx.k
+         in V.foldr
+              (\pair rest -> named src out cx here (fst pair) (coreFieldValue src (snd pair)) rest)
+              done
+              (V.zip names fields))
+    -- A field of a record, by its label; or of a declared type whose one
+    -- constructor names its fields, by the field's place.
+    | Sel { raw target, label } ->
+        (let s = "s${show node}" in
+         named
+           src
+           out
+           cx
+           here
+           s
+           target
+           (match placeOf cx (tyCoreTerm src target) label with
+            | Just (ctor, at, tys) ->
+                (let fs = V.map (\i -> "s${show node}_${show i}") (V.range 0 (V.len tys)) in
+                 C.give
+                   out
+                   here
+                   (C.var out here s)
+                   (C.caseOf
+                      out
+                      here
+                      [C.arm
+                         out
+                         here
+                         (symbolOf ctor)
+                         (V.map (\q -> C.param out here (fst q) (repOf (snd q))) (V.zip fs tys))
+                         (C.give out here (C.var out here (V.getOr "" fs at)) cx.k)]))
+            | None -> C.selected out here (C.var out here s) label cx.k))
+    | Extend { raw target, label, raw value } ->
+        (let s = "s${show node}" in
+         let v = "e${show node}" in
+         named
+           src
+           out
+           cx
+           here
+           s
+           target
+           (named
+              src
+              out
+              cx
+              here
+              v
+              value
+              (match placeOf cx (tyCoreTerm src target) label with
+               | Just (ctor, at, tys) ->
+                   (let fs = V.map (\i -> "s${show node}_${show i}") (V.range 0 (V.len tys)) in
+                    C.give
+                      out
+                      here
+                      (C.var out here s)
+                      (C.caseOf
+                         out
+                         here
+                         [C.arm
+                            out
+                            here
+                            (symbolOf ctor)
+                            (V.map (\q -> C.param out here (fst q) (repOf (snd q))) (V.zip fs tys))
+                            (C.give
+                               out
+                               here
+                               (C.con
+                                  out
+                                  here
+                                  (symbolOf ctor)
+                                  (V.map
+                                     (\i -> C.var out here (if i == at then v else V.getOr "" fs i))
+                                     (V.range 0 (V.len fs))))
+                               cx.k)]))
+               | None -> C.extended out here (C.var out here s) label (C.var out here v) cx.k)))
     | Ctor { name, raw args } ->
         (let names = V.map (\i -> "x${show node}_${show i}") (V.range 0 (V.len args)) in
          let done =
@@ -516,7 +608,36 @@ fun matched src out cx (m : Meta) (x : String) p (fail : String) success =
                     C.binding out m "u${show p}" "unit" (C.gaveUp out m fail),
                     C.binding out m "u${show p}" "unit" taken
                   ])]
-     | CorePatView.PRecord _ -> C.unsupported out m "a pattern of this kind"
+     -- A record's pattern: each field it names read, and matched in turn.
+     | CorePatView.PRecord r ->
+         let pairs =
+           V.map
+             (\i ->
+               (
+                 "m${show p}_${show i}",
+                 corePFieldPat src (V.getOr 0 r.fields i),
+                 corePFieldLabel src (V.getOr 0 r.fields i)
+               ))
+             (V.range 0 (V.len r.fields))
+         in V.foldr
+              (\q rest ->
+                match q with
+                | (name, sub, label) ->
+                    C.selected
+                      out
+                      m
+                      var
+                      label
+                      (C.binding out m name (repOf (tyCorePat src sub)) rest))
+              (matchedAll
+                 src
+                 out
+                 cx
+                 m
+                 (V.map (\q -> match q with | (name, sub, _) -> (name, sub)) pairs)
+                 fail
+                 success)
+              pairs
 
 -- Each named value matched against its pattern, in turn.
 fun matchedAll src out cx (m : Meta) pairs (fail : String) success =
@@ -534,6 +655,30 @@ fun symbolOf (canon : String) : String =
   let segs = S.split "." canon in
   if V.getOr "" segs 0 == "List" or V.len segs < 2 then "meadow:Std/${canon}"
   else "meadow:${V.getOr "" segs 0}/${S.join "." (V.drop segs 1)}"
+
+-- Where the field `label` is in a value of type `t`, if `t` is a declared
+-- type with a constructor that names its fields: the constructor, the
+-- field's place, and every field's type there.
+fun placeOf cx (t : Type) (label : String) =
+  match t with
+  | Con name args ->
+      (match dataNamed cx.datas name with
+       | Just (_, _, ctors) ->
+           V.get
+             (V.concatMap
+                (\c ->
+                  match V.find (\f -> fst f == fst c) cx.fields with
+                  | Just (_, labels) ->
+                      (match V.find
+                         (\i -> V.get labels i == Just label)
+                         (V.range 0 (V.len labels)) with
+                       | Just at -> [(fst c, at, V.map (given args) (snd c))]
+                       | None -> [])
+                  | None -> [])
+                ctors)
+             0
+       | None -> None)
+  | _ -> None
 
 -- An effect's symbol, and an operation's: the effect's, and then its name.
 fun effectSymbol (eff : String) : String = "${package}${eff}"
@@ -577,83 +722,88 @@ fun bare (canon : String) : String =
           V.map (\c -> (coreDataCtorName a c, coreDataCtorFields a c)) (coreDataCtors a d)
         ))
       (coreFileDatas a file)
-  in runSt (\() ->
-       let out = C.builder () in
-       let halt = C.halt out C.nowhere in
-       let lifted = stNewRef [] in
-       let declared =
-         V.map
-           (\d ->
-             match d with
-             | (name, arity, ctors) ->
-                 C.dataDecl
+  in
+  -- Each constructor whose fields have names, with them.
+  let fields = V.map (\n -> (coreNamedName a n, coreNamedLabels a n)) (coreFileNamed a file) in
+  runSt (\() ->
+    let out = C.builder () in
+    let halt = C.halt out C.nowhere in
+    let lifted = stNewRef [] in
+    let declared =
+      V.map
+        (\d ->
+          match d with
+          | (name, arity, ctors) ->
+              C.dataDecl
+                out
+                C.nowhere
+                (symbolOf name)
+                (V.map (\i -> "'a${show i}") (V.range 0 arity))
+                (V.map
+                   (\c -> C.ctorDecl out C.nowhere (bare (fst c)) (V.map fieldRep (snd c)))
+                   ctors))
+        datas
+    in
+    let effects =
+      V.map
+        (\e ->
+          C.effectDecl
+            out
+            C.nowhere
+            (effectSymbol (coreEffectName a e))
+            (V.map
+               (\o ->
+                 C.opDecl
                    out
                    C.nowhere
-                   (symbolOf name)
-                   (V.map (\i -> "'a${show i}") (V.range 0 arity))
-                   (V.map
-                      (\c -> C.ctorDecl out C.nowhere (bare (fst c)) (V.map fieldRep (snd c)))
-                      ctors))
-           datas
-       in
-       let effects =
-         V.map
-           (\e ->
-             C.effectDecl
+                   (coreOpName a o)
+                   [fieldRep (coreOpArg a o)]
+                   (fieldRep (coreOpResult a o)))
+               (coreEffectOps a e)))
+        (coreFileEffects a file)
+    in
+    let vals =
+      V.map
+        (\d ->
+          C.valDecl
+            out
+            C.nowhere
+            (topSymbol (coreDefId a d))
+            (repOf (tyCoreTerm a (coreDefBody a d)))
+            (lowerTerm
+               a
                out
-               C.nowhere
-               (effectSymbol (coreEffectName a e))
-               (V.map
-                  (\o ->
-                    C.opDecl
-                      out
-                      C.nowhere
-                      (coreOpName a o)
-                      [fieldRep (coreOpArg a o)]
-                      (fieldRep (coreOpResult a o)))
-                  (coreEffectOps a e)))
-           (coreFileEffects a file)
-       in
-       let vals =
-         V.map
-           (\d ->
-             C.valDecl
-               out
-               C.nowhere
-               (topSymbol (coreDefId a d))
-               (repOf (tyCoreTerm a (coreDefBody a d)))
-               (lowerTerm a out { k = halt, tops = tops, lifted = lifted } (coreDefBody a d)))
-           ordered
-       in
-       let entry = coreFileEntry a file in
-       let answerTy =
-         M.unwrapOr
-           Error
-           (M.map
-              (\d -> tyCoreTerm a (coreDefBody a d))
-              (V.find (\d -> coreDefId a d == entry) defs))
-       in
-       let sh =
-         { out = out, datas = datas, wanted = stNewRef [], seen = stNewRef [], next = stNewRef 0 }
-       in
-       let shown =
-         C.defDecl
-           out
-           C.nowhere
-           "${package}\"#entry\""
-           []
-           [C.param out C.nowhere "k" "ptr"]
-           (shownTo sh (C.sym out C.nowhere (topSymbol entry)) answerTy (C.cont out C.nowhere "k"))
-       in
-       let showers = showersOf sh [] in
-       let root =
-         C.file
-           out
-           C.nowhere
-           "${package}\"#entry\""
-           "str"
-           (V.concat [declared, effects, stGetRef lifted, vals, [shown], showers])
-       in C.finished out root)
+               { k = halt, tops = tops, lifted = lifted, datas = datas, fields = fields }
+               (coreDefBody a d)))
+        ordered
+    in
+    let entry = coreFileEntry a file in
+    let answerTy =
+      M.unwrapOr
+        Error
+        (M.map (\d -> tyCoreTerm a (coreDefBody a d)) (V.find (\d -> coreDefId a d == entry) defs))
+    in
+    let sh =
+      { out = out, datas = datas, wanted = stNewRef [], seen = stNewRef [], next = stNewRef 0 }
+    in
+    let shown =
+      C.defDecl
+        out
+        C.nowhere
+        "${package}\"#entry\""
+        []
+        [C.param out C.nowhere "k" "ptr"]
+        (shownTo sh (C.sym out C.nowhere (topSymbol entry)) answerTy (C.cont out C.nowhere "k"))
+    in
+    let showers = showersOf sh [] in
+    let root =
+      C.file
+        out
+        C.nowhere
+        "${package}\"#entry\""
+        "str"
+        (V.concat [declared, effects, stGetRef lifted, vals, [shown], showers])
+    in C.finished out root)
 
 -- `todo` after what each reads, each once: `done` is what is placed already.
 fun inOrder (a : CoreArena) (all : [CoreDef]) reads (todo : [CoreDef]) (done : [CoreDef])
@@ -716,6 +866,12 @@ fun given (args : [Type]) (t : Type) : Type =
   | Con name inner -> Con name (V.map (given args) inner)
   | other -> other
 
+-- A record's row as its fields: each label and its type.
+fun rowFields (row : Type) : [(String, Type)] =
+  match row with
+  | RowExtend label t rest -> V.pushFront (rowFields rest) (label, t)
+  | _ -> []
+
 -- The statement that gives `k` the text of `value`, a value of type `t`.
 fun shownTo sh value (t : Type) k =
   let out = sh.out in
@@ -755,6 +911,50 @@ fun shownTo sh value (t : Type) k =
                   ", "
                   ")"
                   k)]))
+  | Record row ->
+      (let fields = sortBy (\x y -> compare (fst x) (fst y)) (rowFields row) in
+       let names = V.map (\f -> freshName sh) fields in
+       let texts = V.map (\f -> freshName sh) fields in
+       let pieces =
+         V.concat [
+           [text (if V.isEmpty fields then "{" else "{ ")],
+           V.concatMap
+             (\i ->
+               [
+                 text
+                   ((if i == 0 then "" else ", ") ++ fst (V.getOr ("", Error) fields i) ++ " = "),
+                 C.var out C.nowhere (V.getOr "" texts i)
+               ])
+             (V.range 0 (V.len fields)),
+           [text (if V.isEmpty fields then "}" else " }")]
+         ]
+       in
+       -- Each field read, then each shown, then the pieces joined.
+       let shown =
+         V.foldr
+           (\i rest ->
+             shownTo
+               sh
+               (C.var out C.nowhere (V.getOr "" names i))
+               (snd (V.getOr ("", Error) fields i))
+               (C.binding out C.nowhere (V.getOr "" texts i) "str" rest))
+           (joinedTo out pieces k)
+           (V.range 0 (V.len fields))
+       in V.foldr
+            (\i rest ->
+              C.selected
+                out
+                C.nowhere
+                value
+                (fst (V.getOr ("", Error) fields i))
+                (C.binding
+                   out
+                   C.nowhere
+                   (V.getOr "" names i)
+                   (repOf (snd (V.getOr ("", Error) fields i)))
+                   rest))
+            shown
+            (V.range 0 (V.len fields)))
   | Con "Array" _ -> wanting sh value t k
   | Con name args ->
       (match dataNamed sh.datas name with
@@ -766,8 +966,9 @@ fun shownTo sh value (t : Type) k =
                 (let v = stSetRef sh.seen (V.pushBack (stGetRef sh.seen) key) in
                  stSetRef sh.wanted (V.pushBack (stGetRef sh.wanted) (key, t)))
             in C.invoke out C.nowhere (showSymbol key) [value] [k])
-       | None -> C.unsupported out C.nowhere "showing a value of this type")
-  | _ -> C.unsupported out C.nowhere "showing a value of this type"
+       | None -> C.prim out C.nowhere "show" [value] [k])
+  -- Anything else is the runtime's to show: a number, a character.
+  | _ -> C.prim out C.nowhere "show" [value] [k]
 
 -- A call of the definition that shows a `t`, which is written if it has not
 -- been asked for before.

@@ -471,3 +471,36 @@ def idyll:Main/main (; k: ptr) =
         ["Console.writeOutput", "Console.writeOutput"]
     );
 }
+
+#[test]
+fn a_records_field_is_read_and_set_by_its_label() {
+    let out = runs(
+        "cut 0
+entry idyll:Main/main
+answer str
+
+def idyll:Main/main (; k: ptr) =
+  <record { x = 1, name = \"a\" } | μ̃ r: ptr.
+    prim extend(r, \"x\", 41; μ̃ r2: ptr.
+      prim extend(r2, \"y\", 1; μ̃ r3: ptr.
+        prim select(r3, \"x\"; μ̃ x: i64.
+          prim select(r3, \"y\"; μ̃ y: i64.
+            prim add(x, y; μ̃ s: i64.
+              prim eq(s, 42; μ̃ u: unit. <\"no\" | k>, μ̃ u: unit.
+                prim select(r, \"name\"; k)))))))>
+",
+    );
+    assert_eq!(out.output, "a");
+    assert!(
+        fails(
+            "cut 0
+entry idyll:Main/main
+answer none
+
+def idyll:Main/main (; k: ptr) =
+  <record { x = 1 } | μ̃ r: ptr. prim select(r, \"y\"; k)>
+"
+        )
+        .contains("no field `y`")
+    );
+}

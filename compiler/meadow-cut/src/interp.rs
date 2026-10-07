@@ -974,6 +974,36 @@ impl<'p> Machine<'p> {
                 let c = a.as_bytes().cmp(b.as_bytes()) as i64;
                 self.one(op, Value::Int(c), ks)
             }
+            // A record's field, by its label -- a literal, a name and not a
+            // value -- read, and set or added.
+            "select" => {
+                arity(2)?;
+                let label = string(&args[1])?;
+                match &args[0] {
+                    Value::Record(fields) => match fields.iter().find(|(l, _)| **l == *label) {
+                        Some((_, v)) => self.one(op, v.clone(), ks),
+                        None => err(format!("the record has no field `{label}`")),
+                    },
+                    other => err(format!("`select` expects a record, got {}", other.kind())),
+                }
+            }
+            "extend" => {
+                arity(3)?;
+                let label = string(&args[1])?;
+                match &args[0] {
+                    Value::Record(fields) => {
+                        let mut out: Vec<(String, Value<'p>)> = fields
+                            .iter()
+                            .filter(|(l, _)| **l != *label)
+                            .cloned()
+                            .collect();
+                        out.push((label.to_string(), args[2].clone()));
+                        out.sort_by(|a, b| a.0.cmp(&b.0));
+                        self.one(op, Value::Record(Rc::new(out)), ks)
+                    }
+                    other => err(format!("`extend` expects a record, got {}", other.kind())),
+                }
+            }
             "arrayLen" => {
                 arity(1)?;
                 let n = array(&args[0])?.len() as i64;

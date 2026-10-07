@@ -2240,11 +2240,11 @@ fn glade_cases_compiled_by_meadowboot_evaluate_as_the_rust_compiler_has_them() {
 }
 
 /// How many glade cases MeadowBoot has to lower to Cut so that the reference
-/// interpreter answers as the Rust compiler does. The rest wait on what Cut
-/// or its interpreter does not have yet -- a record's field, the sized
-/// integers' primitives, the floats' -- more than on the lowering. A case
-/// that stops agreeing is a failure whatever the count.
-const CUT_CASES_AGREEING: usize = 53;
+/// interpreter answers as the Rust compiler does. The rest wait on primitives
+/// the interpreter does not have -- the sized integers', the floats', `show`
+/// -- more than on the lowering. A case that stops agreeing is a failure
+/// whatever the count.
+const CUT_CASES_AGREEING: usize = 59;
 
 /// What the reference interpreter prints of the Cut program `text`, or why
 /// it printed nothing. On a thread of its own with room to spare: the
@@ -2272,8 +2272,9 @@ fn cut_answer(text: &str) -> String {
 /// How many of them answer so once that Cut is lowered to AxCut and run by
 /// its machine, which has every primitive the runtimes have and checks how
 /// each value is represented. The rest are a handler's, which the lowering
-/// to AxCut does not take yet, and what MeadowBoot does not lower or show.
-const AXCUT_CASES_AGREEING: usize = 56;
+/// to AxCut does not take yet, and a function generic in what it takes,
+/// whose values MeadowBoot calls a `ptr` whatever they are.
+const AXCUT_CASES_AGREEING: usize = 81;
 
 /// What the AxCut machine answers of the Cut program `text` once it is
 /// lowered, or why it answered nothing.

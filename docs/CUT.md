@@ -469,6 +469,17 @@ both front ends' interpreters agree on:
 - `div` or `mod` by zero is a run-time error, "division by zero" or "modulo by
   zero". It is never undefined.
 
+A record is built by `record { l = p, ... }` and taken apart a field at a
+time, by its label -- written as a string literal, since it is a name the back
+end is given and not a value the program computes:
+
+```text
+prim select(r, "x"; c)              the field `x` of `r`
+prim extend(r, "x", p; c)           `r` with its `x` set, or added, to `p`
+```
+
+Reading a field a record does not have is a run-time error.
+
 Text and arrays have their own primitives, among them `concatStrings` (an
 array of strings, joined), `stringByteLength`, `stringByteAt` (the byte at an
 index, as an `i64`; out of bounds is an error), `stringSlice`, `stringCompare`,

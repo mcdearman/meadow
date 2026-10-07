@@ -355,26 +355,6 @@ fn a_reader_refuses_what_it_cannot_read() {
 #[test]
 fn what_is_not_lowered_to_axcut_yet_is_refused_and_says_what() {
     let lowered = |text: &str| meadow_cut::lower::lower(&parse(text).expect("a program"));
-    let effects = lowered(
-        "cut 0
-entry idyll:Main/main
-answer none
-
-effect idyll:Main/Ask { ask(unit) -> i64 }
-
-def idyll:Main/main (; k: ptr) =
-  handle {
-    idyll:Main/Ask.ask(u: unit; r: ptr, h: ptr) => <r | apply(1; h)>;
-    return(x: i64; h: ptr) => <x | h>
-  } in μ b.
-    perform idyll:Main/Ask.ask(unit; b)
-  ; k
-",
-    );
-    assert!(
-        effects.as_ref().is_err_and(|e| e.contains("handles")),
-        "{effects:?}"
-    );
     let generic = lowered(
         "cut 0
 entry idyll:Main/main
@@ -503,4 +483,69 @@ def idyll:Main/main (; k: ptr) =
         )
         .contains("no field `y`")
     );
+}
+
+#[test]
+fn handlers_lowered_to_axcut_answer_as_the_interpreter_does() {
+    // A clause that resumes and then goes on with what the resumed code
+    // answered; one that does not resume; a handler inside another, an
+    // operation of the outer's performed in the inner's body and in its
+    // clause; and the `return` clause.
+    let program = |main: &str| {
+        format!(
+            "cut 0
+entry idyll:Main/main
+answer str
+
+effect idyll:Main/Ask {{ ask(unit) -> i64 }}
+effect idyll:Main/Stop {{ stop(i64) -> unit }}
+
+def idyll:Main/said (n: i64, want: i64; k: ptr) =
+  prim eq(n, want; μ̃ u: unit. <\"no\" | k>, μ̃ u: unit. <\"yes\" | k>)
+
+def idyll:Main/main (; k: ptr) =
+{main}
+"
+        )
+    };
+    // 10 + 10, then one more for each resume: 22.
+    let resumed = runs(&program(
+        "  handle {
+    idyll:Main/Ask.ask(u: unit; r: ptr, h: ptr) =>
+      <r | apply(10; μ̃ v: i64. prim add(v, 1; h))>;
+    return(x: i64; h: ptr) => <x | h>
+  } in μ b.
+    perform idyll:Main/Ask.ask(unit; μ̃ a: i64.
+      perform idyll:Main/Ask.ask(unit; μ̃ c: i64. prim add(a, c; b)))
+  ; μ̃ n: i64. idyll:Main/said(n, 22; k)",
+    ));
+    assert_eq!(resumed.output, "yes");
+    // Not resumed: the clause's answer is the handler's, and the `return`
+    // clause is not run.
+    let stopped = runs(&program(
+        "  handle {
+    idyll:Main/Stop.stop(n: i64; r: ptr, h: ptr) => <n | h>;
+    return(x: i64; h: ptr) => prim add(x, 1000; h)
+  } in μ b.
+    perform idyll:Main/Stop.stop(7; μ̃ u: unit. <1 | b>)
+  ; μ̃ n: i64. idyll:Main/said(n, 7; k)",
+    ));
+    assert_eq!(stopped.output, "yes");
+    // Nested: the inner handler answers `ask` with 1, and its `return`
+    // clause asks the outer, which answers 100: 1 + 100.
+    let nested = runs(&program(
+        "  handle {
+    idyll:Main/Ask.ask(u: unit; r: ptr, h: ptr) => <r | apply(100; h)>;
+    return(x: i64; h: ptr) => <x | h>
+  } in μ b.
+    handle {
+      idyll:Main/Ask.ask(u: unit; r: ptr, h: ptr) => <r | apply(1; h)>;
+      return(x: i64; h: ptr) =>
+        perform idyll:Main/Ask.ask(unit; μ̃ o: i64. prim add(x, o; h))
+    } in μ inner.
+      perform idyll:Main/Ask.ask(unit; inner)
+    ; b
+  ; μ̃ n: i64. idyll:Main/said(n, 101; k)",
+    ));
+    assert_eq!(nested.output, "yes");
 }

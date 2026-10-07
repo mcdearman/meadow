@@ -49,9 +49,8 @@ None of them depends on any front end.
 
 `meadow cut FILE` runs a program of Cut's text: lowered to AxCut and run on
 Glade, or, with `--runtime silo`, built as an executable and run. The lowering
-takes a program that handles no effects of its own -- data, objects,
-definitions, top-level values, primitives, and the operations the `native`
-table hands the runtime -- and refuses any other, saying what it met.
+takes everything here but a definition generic in a representation, and
+refuses a program with one, saying so.
 
 ## Representations
 

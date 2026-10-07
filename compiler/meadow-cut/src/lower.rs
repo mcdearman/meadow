@@ -26,13 +26,31 @@
 //! program's: the block a program starts at computes each in turn and then
 //! calls the entry.
 //!
-//! An operation the `native` table binds is the runtime's to perform, and
-//! is an `extern` too.
+//! # Effects: evidence passing
 //!
-//! **Not lowered yet**: `handle`, and a `perform` of anything but a native
-//! operation; a definition generic in a representation; a descriptor; and a
-//! `μ` that is an argument, whose representation nothing says. A program
-//! with one of them is refused, with which.
+//! AxCut has no handlers. Every definition and every method takes one
+//! argument more than it is written with: the handlers in scope where it
+//! was called, a list of `#ev(key, clause, target, rest)` entries, newest
+//! first, that ends in `#evnone`. A consumer made an object captures it.
+//!
+//! `handle` keeps where its value goes in a `Ref`, the `target`; makes an
+//! object of each clause, and an entry for it on the evidence; and runs its
+//! body under that, answering a continuation that reads the target and runs
+//! the `return` clause there. `perform` looks its operation up -- a jump to
+//! a block of the program's that walks the list -- and enters the clause
+//! found with its arguments, a resumption, and what the target holds. The
+//! resumption is a function: called with a value and a continuation, it
+//! makes that continuation the target and goes on from the `perform`, which
+//! is what makes a handler deep. An operation no entry answers is the
+//! runtime's, if the `native` table binds it, and an error if not.
+//!
+//! A resumption is not checked to be called once: Cut leaves that to the
+//! front end, and one called again goes on from the `perform` again, as an
+//! operation marked `@many` wants.
+//!
+//! **Not lowered yet**: a definition generic in a representation; a
+//! descriptor; and a `μ` that is an argument, whose representation nothing
+//! says. A program with one of them is refused, with which.
 
 use std::collections::{HashMap, HashSet};
 
@@ -44,6 +62,10 @@ use meadow_rt::{Lit, Prim, desc};
 use crate::{Answer, Arm, Consumer, Pattern, Producer, Program, Rep, Statement, Symbol};
 
 type R<T> = Result<T, String>;
+
+/// The name the evidence -- the handlers in scope -- is in scope by. No
+/// variable of Cut's is written so.
+const EV: &str = "#ev";
 
 /// `p` as a program of AxCut, or why it is not one yet. What its entry
 /// answers is what the program answers: a machine that runs it has it back.
@@ -140,6 +162,8 @@ fn lowered(p: &Program, prints: bool) -> R<Lowered> {
     let mut l = Lower {
         map: Map::default(),
         current: None,
+        handles: false,
+        search: Label(0),
         prints,
         natives: HashMap::new(),
         answers: HashMap::new(),
@@ -172,6 +196,8 @@ fn lowered(p: &Program, prints: bool) -> R<Lowered> {
             l.called(n, k);
             l.out.returns.insert(n);
         }
+        let ev = l.fresh(ax::Rep::Ref);
+        sc.bind(EV, ev);
         let params = sc.env.clone();
         let body = l.statement(&d.body, &sc)?;
         l.out.defs.push(ax::Def {
@@ -183,6 +209,9 @@ fn lowered(p: &Program, prints: bool) -> R<Lowered> {
     }
     l.current = None;
     l.start(p)?;
+    if l.handles {
+        l.search_block();
+    }
     Ok(Lowered {
         program: l.out,
         map: l.map,
@@ -190,6 +219,11 @@ fn lowered(p: &Program, prints: bool) -> R<Lowered> {
 }
 
 struct Lower {
+    /// Whether the program handles an effect anywhere: one that does not
+    /// has no evidence to search, and performs straight to the runtime.
+    handles: bool,
+    /// The block that finds an operation's entry in the evidence.
+    search: Label,
     /// What each block and name made so far came from.
     map: Map,
     /// The declaration being lowered, which the names made now are of.
@@ -365,11 +399,20 @@ impl Lower {
             }
         }
         let mut names = HashSet::new();
+        let mut seen = Free::default();
         for d in &p.defs {
             methods_of(&d.body, &mut names);
+            seen.statement(&d.body);
         }
         for v in &p.vals {
             methods_of(&v.body, &mut names);
+            seen.statement(&v.body);
+        }
+        self.handles = seen.handles;
+        self.search = Label(p.defs.len() as u32 + u32::from(p.entry.is_some()));
+        if self.handles {
+            // A resumption is a function.
+            names.insert("apply".to_string());
         }
         self.methods = names.into_iter().collect();
         self.methods.sort();
@@ -393,12 +436,15 @@ impl Lower {
         }
         let k = self.fresh(ax::Rep::Ref);
         self.out.returns.insert(k);
+        // No handlers yet: the evidence a program starts with.
+        let ev = self.fresh(ax::Rep::Ref);
         // Built from the last value back: what follows each is the method of
         // the continuation its body answers.
         let mut sc = Scope {
-            env: vec![k],
+            env: vec![ev, k],
             ..Scope::default()
         };
+        sc.vars.insert(EV.to_string(), ev);
         // What each value's turn binds: the continuation that keeps it; in
         // that, the value, its place, and the unit keeping it answers.
         struct Turn<'a> {
@@ -448,9 +494,9 @@ impl Lower {
         }
         self.current = None;
         let mut rest = S::Substitute(
-            vec![k],
+            vec![k, ev],
             Box::new(Block {
-                params: vec![k],
+                params: vec![k, ev],
                 body: S::Jump(label),
             }),
         );
@@ -486,9 +532,9 @@ impl Lower {
                     },
                 }],
                 rest: Box::new(S::Substitute(
-                    vec![write],
+                    vec![write, ev],
                     Box::new(Block {
-                        params: vec![write],
+                        params: vec![write, ev],
                         body: S::Jump(label),
                     }),
                 )),
@@ -523,6 +569,14 @@ impl Lower {
                 rest: Box::new(body),
             };
         }
+        let none = meadow_rt::roles::evidence::NONE;
+        let rest = S::Let {
+            name: ev,
+            tag: self.tag_of(none),
+            ctor: InternedString::from(none),
+            fields: Vec::new(),
+            rest: Box::new(rest),
+        };
         let label = Label(self.out.defs.len() as u32);
         self.out.defs.push(ax::Def {
             label,
@@ -582,6 +636,7 @@ impl Lower {
                 for c in conts {
                     sel.push(self.reify(c, &mut sc, &mut steps)?);
                 }
+                sel.push(sc.var(EV)?);
                 let params = self.distinct(&sel);
                 S::Substitute(
                     sel,
@@ -641,41 +696,463 @@ impl Lower {
                 self.prim(op, names, conts, &sc)?
             }
             Statement::Error(msg) => S::Error(Box::leak(msg.clone().into_boxed_str())),
-            // An operation the runtime performs: its arguments, one, or
-            // packed into the tuple the runtime's operation takes.
-            Statement::Perform(op, args, c) => {
-                let Some(&(effect, name)) = self.natives.get(op) else {
-                    return Err(format!(
-                        "`{op}` is performed, and effects a program handles are not lowered to AxCut yet"
-                    ));
-                };
-                let arg = match &args[..] {
-                    [one] => self.atom(one, &mut sc, &mut steps)?,
-                    [] => self.atom(&Producer::Unit, &mut sc, &mut steps)?,
-                    several => self.data(meadow_rt::roles::TUPLE, several, &mut sc, &mut steps)?,
-                };
-                let rep = match c {
-                    Consumer::MuTilde(b, _) => rep_of(&b.rep)?,
-                    _ => self.answers.get(op).copied().unwrap_or(ax::Rep::Ref),
-                };
-                let r = self.fresh(rep);
-                let mut inner = sc.clone();
-                inner.push(r);
-                let body = self.give(r, c, &inner)?;
+            Statement::Perform(op, args, c) => self.perform(op, args, c, &mut sc, &mut steps)?,
+            Statement::Handle(h) => self.handle(h, &mut sc, &mut steps)?,
+        };
+        Ok(wrap(steps, last))
+    }
+
+    /// `names`, each once, in the order given.
+    fn once(names: &[Name]) -> Vec<Name> {
+        let mut seen = HashSet::new();
+        names.iter().copied().filter(|n| seen.insert(*n)).collect()
+    }
+
+    /// An object with the one method `apply`, at its place among the
+    /// program's methods.
+    fn function(&self, apply: Block) -> R<Vec<Block>> {
+        let tag = self.method("apply")? as usize;
+        let mut blocks: Vec<Block> = (0..self.methods.len())
+            .map(|_| Block {
+                params: Vec::new(),
+                body: S::Error("the object has no such method"),
+            })
+            .collect();
+        blocks[tag] = apply;
+        Ok(blocks)
+    }
+
+    /// The runtime performing `op`, of `args`, and giving what it answers to
+    /// the continuation named `k`: with `env` in scope, which holds them.
+    fn native(
+        &mut self,
+        effect: InternedString,
+        name: InternedString,
+        args: &[Name],
+        k: Name,
+        rep: ax::Rep,
+        env: &[Name],
+    ) -> S {
+        let r = self.fresh(rep);
+        let answered = |arg: Name, env: Vec<Name>| {
+            let mut after = env;
+            after.insert(0, r);
+            S::Extern {
+                op: Extern::Native(effect, name),
+                args: vec![arg],
+                blocks: vec![Block {
+                    params: after,
+                    body: S::Substitute(
+                        vec![k, r],
+                        Box::new(Block {
+                            params: vec![k, r],
+                            body: S::Invoke(k, 0),
+                        }),
+                    ),
+                }],
+            }
+        };
+        match args {
+            [one] => answered(*one, env.to_vec()),
+            // Nothing given is `unit`; several are the tuple the runtime's
+            // operation takes.
+            [] => {
+                let u = self.fresh(ax::Rep::Bits(desc::UNIT));
+                let mut with = env.to_vec();
+                with.insert(0, u);
                 S::Extern {
-                    op: Extern::Native(effect, name),
-                    args: vec![arg],
+                    op: Extern::Lit(Lit::Unit),
+                    args: Vec::new(),
                     blocks: vec![Block {
-                        params: inner.env,
-                        body,
+                        params: with.clone(),
+                        body: answered(u, with),
                     }],
                 }
             }
-            Statement::Handle(_) => {
-                return Err("effects a program handles are not lowered to AxCut yet".to_string());
+            several => {
+                let t = self.fresh(ax::Rep::Ref);
+                let mut with = env.to_vec();
+                with.insert(0, t);
+                S::Let {
+                    name: t,
+                    tag: self.tag_of(meadow_rt::roles::TUPLE),
+                    ctor: InternedString::from(meadow_rt::roles::TUPLE),
+                    fields: several.to_vec(),
+                    rest: Box::new(answered(t, with)),
+                }
             }
+        }
+    }
+
+    /// `perform op(args; c)`: the clause the evidence has for `op` entered,
+    /// or the runtime asked.
+    fn perform(
+        &mut self,
+        op: &Symbol,
+        args: &[Producer],
+        c: &Consumer,
+        sc: &mut Scope,
+        steps: &mut Vec<Step>,
+    ) -> R<S> {
+        let native = self.natives.get(op).copied();
+        let resumed = match c {
+            Consumer::MuTilde(b, _) => rep_of(&b.rep)?,
+            _ => self.answers.get(op).copied().unwrap_or(ax::Rep::Ref),
         };
-        Ok(wrap(steps, last))
+        let mut xs = Vec::new();
+        for a in args {
+            xs.push(self.atom(a, sc, steps)?);
+        }
+        let kc = self.reify(c, sc, steps)?;
+        // A program that handles nothing has nothing to search.
+        if !self.handles {
+            let Some((effect, name)) = native else {
+                return Err(format!(
+                    "`{op}` is performed, and nothing handles it or binds it to the runtime"
+                ));
+            };
+            return Ok(self.native(effect, name, &xs, kc, resumed, &sc.env));
+        }
+        let ev = sc.var(EV)?;
+        let key = self.fresh(ax::Rep::Str);
+        sc.push(key);
+        steps.push(Step::Extern(
+            Extern::Lit(Lit::Sym(InternedString::from(op.to_string().as_str()))),
+            Vec::new(),
+            sc.env.clone(),
+        ));
+        // What both of the search's answers hold: the arguments, and where
+        // what the operation is resumed with goes.
+        let mut held = xs.clone();
+        held.push(kc);
+        let held = Self::once(&held);
+
+        // Found: the entry, taken apart; a resumption made; the clause
+        // entered with the arguments, the resumption, and what its handler's
+        // value goes to now.
+        let entry = self.fresh(ax::Rep::Ref);
+        let (k2, clause, target, rest) = (
+            self.fresh(ax::Rep::Str),
+            self.fresh(ax::Rep::Ref),
+            self.fresh(ax::Rep::Ref),
+            self.fresh(ax::Rep::Ref),
+        );
+        let mut in_entry = vec![k2, clause, target, rest];
+        in_entry.extend(held.iter().copied());
+        in_entry.push(entry);
+        let resumption = self.fresh(ax::Rep::Ref);
+        let (v, after, unused, done) = (
+            self.fresh(resumed),
+            self.fresh(ax::Rep::Ref),
+            self.fresh(ax::Rep::Ref),
+            self.fresh(ax::Rep::Bits(desc::UNIT)),
+        );
+        // Called with a value and a continuation: that continuation is where
+        // the handler's value goes from now on, and the code that performed
+        // goes on with the value.
+        let apply = Block {
+            params: vec![kc, target, v, after, unused],
+            body: S::Extern {
+                op: Extern::Prim(Prim::SetRef),
+                args: vec![target, after],
+                blocks: vec![Block {
+                    params: vec![done, kc, target, v, after, unused],
+                    body: S::Substitute(
+                        vec![kc, v],
+                        Box::new(Block {
+                            params: vec![kc, v],
+                            body: S::Invoke(kc, 0),
+                        }),
+                    ),
+                }],
+            },
+        };
+        let methods = self.function(apply)?;
+        let now = self.fresh(ax::Rep::Ref);
+        let mut with_resumption = in_entry.clone();
+        with_resumption.insert(0, resumption);
+        let mut with_now = with_resumption.clone();
+        with_now.insert(0, now);
+        let mut enter = vec![clause];
+        enter.extend(xs.iter().copied());
+        enter.extend([resumption, now]);
+        let enter_params = self.distinct(&enter);
+        let entered = S::New {
+            name: resumption,
+            captures: vec![kc, target],
+            methods,
+            rest: Box::new(S::Extern {
+                op: Extern::Prim(Prim::GetRef),
+                args: vec![target],
+                blocks: vec![Block {
+                    params: with_now,
+                    body: S::Substitute(
+                        enter,
+                        Box::new(Block {
+                            params: enter_params,
+                            body: S::Invoke(clause, 0),
+                        }),
+                    ),
+                }],
+            }),
+        };
+        let mut found_params = held.clone();
+        found_params.push(entry);
+        let entry_tag = self.tag_of(meadow_rt::roles::evidence::ENTRY);
+        let found = self.fresh(ax::Rep::Ref);
+        self.out.continuations.insert(found);
+        steps.push(Step::New(
+            found,
+            held.clone(),
+            vec![Block {
+                params: found_params.clone(),
+                body: S::Switch {
+                    scrutinee: entry,
+                    arms: vec![(
+                        entry_tag,
+                        Block {
+                            params: in_entry,
+                            body: entered,
+                        },
+                    )],
+                    default: Box::new(Block {
+                        params: found_params,
+                        body: S::Error("the evidence holds what is not an entry"),
+                    }),
+                },
+            }],
+        ));
+        sc.push(found);
+
+        // Not found: the runtime's, if it is one of its operations.
+        let nothing = self.fresh(ax::Rep::Bits(desc::UNIT));
+        let mut missing_params = held.clone();
+        missing_params.push(nothing);
+        let body = match native {
+            Some((effect, name)) => self.native(effect, name, &xs, kc, resumed, &missing_params),
+            None => S::Error(Box::leak(format!("unhandled effect {op}").into_boxed_str())),
+        };
+        let missing = self.fresh(ax::Rep::Ref);
+        self.out.continuations.insert(missing);
+        steps.push(Step::New(
+            missing,
+            held,
+            vec![Block {
+                params: missing_params,
+                body,
+            }],
+        ));
+        sc.push(missing);
+
+        let sel = vec![ev, key, found, missing];
+        Ok(S::Substitute(
+            sel.clone(),
+            Box::new(Block {
+                params: sel,
+                body: S::Jump(self.search),
+            }),
+        ))
+    }
+
+    /// The block that looks an operation up: `(evidence, key, found,
+    /// missing)`, giving `found` the first entry whose key is `key`, or
+    /// `missing` `unit` if the evidence ends first.
+    fn search_block(&mut self) {
+        let (cur, key, found, missing) = (
+            self.fresh(ax::Rep::Ref),
+            self.fresh(ax::Rep::Str),
+            self.fresh(ax::Rep::Ref),
+            self.fresh(ax::Rep::Ref),
+        );
+        let (k2, clause, target, rest) = (
+            self.fresh(ax::Rep::Str),
+            self.fresh(ax::Rep::Ref),
+            self.fresh(ax::Rep::Ref),
+            self.fresh(ax::Rep::Ref),
+        );
+        let params = vec![cur, key, found, missing];
+        let in_entry = vec![k2, clause, target, rest, cur, key, found, missing];
+        let u = self.fresh(ax::Rep::Bits(desc::UNIT));
+        let ended = S::Extern {
+            op: Extern::Lit(Lit::Unit),
+            args: Vec::new(),
+            blocks: vec![Block {
+                params: vec![u, cur, key, found, missing],
+                body: S::Substitute(
+                    vec![missing, u],
+                    Box::new(Block {
+                        params: vec![missing, u],
+                        body: S::Invoke(missing, 0),
+                    }),
+                ),
+            }],
+        };
+        let next = vec![rest, key, found, missing];
+        let body = S::Switch {
+            scrutinee: cur,
+            arms: vec![(
+                self.tag_of(meadow_rt::roles::evidence::ENTRY),
+                Block {
+                    params: in_entry.clone(),
+                    body: S::Extern {
+                        op: Extern::BranchPrim(Prim::Eq),
+                        args: vec![k2, key],
+                        blocks: vec![
+                            Block {
+                                params: in_entry.clone(),
+                                body: S::Substitute(
+                                    next.clone(),
+                                    Box::new(Block {
+                                        params: next,
+                                        body: S::Jump(self.search),
+                                    }),
+                                ),
+                            },
+                            Block {
+                                params: in_entry,
+                                body: S::Substitute(
+                                    vec![found, cur],
+                                    Box::new(Block {
+                                        params: vec![found, cur],
+                                        body: S::Invoke(found, 0),
+                                    }),
+                                ),
+                            },
+                        ],
+                    },
+                },
+            )],
+            default: Box::new(Block {
+                params: params.clone(),
+                body: ended,
+            }),
+        };
+        debug_assert_eq!(self.search, Label(self.out.defs.len() as u32));
+        self.out.defs.push(ax::Def {
+            label: self.search,
+            name: InternedString::from("#perform"),
+            module: InternedString::from(""),
+            block: Block { params, body },
+        });
+    }
+
+    /// `handle { clauses; return } in μ b. body ; c`.
+    fn handle(&mut self, h: &crate::Handle, sc: &mut Scope, steps: &mut Vec<Step>) -> R<S> {
+        let outer = sc.var(EV)?;
+        let kc = self.reify(&h.cont, sc, steps)?;
+        // Where the handler's value goes, which a resumption changes.
+        let target = self.fresh(ax::Rep::Ref);
+        sc.push(target);
+        steps.push(Step::Extern(
+            Extern::Prim(Prim::NewRef),
+            vec![kc],
+            sc.env.clone(),
+        ));
+        let entry = meadow_rt::roles::evidence::ENTRY;
+        let entry_tag = self.tag_of(entry);
+        let mut ev = outer;
+        for c in &h.clauses {
+            // The clause: an object of what it mentions from around the
+            // handler, the evidence outside it among that.
+            let mut free = Free::default();
+            let bound: Vec<&str> = c
+                .params
+                .iter()
+                .map(|b| b.name.as_str())
+                .chain([c.resumption.as_str(), c.cont.as_str()])
+                .collect();
+            free.under(&bound, |f| f.statement(&c.body));
+            free.names.insert(EV.to_string());
+            let mut inside = sc.clone();
+            inside.vars.insert(EV.to_string(), outer);
+            let captures = free.among(&inside);
+            let mut inner = Scope {
+                env: captures.clone(),
+                vars: inside.vars.clone(),
+                halt: sc.halt,
+            };
+            for b in &c.params {
+                let n = self.fresh(rep_of(&b.rep)?);
+                inner.bind(&b.name, n);
+                self.called(n, &b.name);
+            }
+            for k in [&c.resumption, &c.cont] {
+                let n = self.fresh(ax::Rep::Ref);
+                inner.bind(k, n);
+                self.called(n, k);
+            }
+            let params = inner.env.clone();
+            let body = self.statement(&c.body, &inner)?;
+            let clause = self.fresh(ax::Rep::Ref);
+            steps.push(Step::New(clause, captures, vec![Block { params, body }]));
+            sc.push(clause);
+            let key = self.fresh(ax::Rep::Str);
+            sc.push(key);
+            steps.push(Step::Extern(
+                Extern::Lit(Lit::Sym(InternedString::from(c.op.to_string().as_str()))),
+                Vec::new(),
+                sc.env.clone(),
+            ));
+            let pushed = self.fresh(ax::Rep::Ref);
+            steps.push(Step::Let(
+                pushed,
+                entry_tag,
+                InternedString::from(entry),
+                vec![key, clause, target, ev],
+            ));
+            sc.push(pushed);
+            ev = pushed;
+        }
+        // What the body answers: the `return` clause, run where the target
+        // says the handler's value goes now, under the evidence outside.
+        let (x, k, ret) = &h.ret;
+        let mut free = Free::default();
+        free.under(&[&x.name, k], |f| f.statement(ret));
+        free.names.insert(EV.to_string());
+        let mut outside = sc.clone();
+        outside.vars.insert(EV.to_string(), outer);
+        let mut captures = free.among(&outside);
+        if !captures.contains(&target) {
+            captures.push(target);
+        }
+        let value = self.fresh(rep_of(&x.rep)?);
+        self.called(value, &x.name);
+        let now = self.fresh(ax::Rep::Ref);
+        self.called(now, k);
+        let mut inner = Scope {
+            env: captures.clone(),
+            vars: outside.vars.clone(),
+            halt: sc.halt,
+        };
+        inner.bind(&x.name, value);
+        let returned_params = inner.env.clone();
+        inner.push(now);
+        inner.vars.insert(k.clone(), now);
+        let after = inner.env.clone();
+        let returned = S::Extern {
+            op: Extern::Prim(Prim::GetRef),
+            args: vec![target],
+            blocks: vec![Block {
+                params: after,
+                body: self.statement(ret, &inner)?,
+            }],
+        };
+        let answers = self.fresh(ax::Rep::Ref);
+        self.out.continuations.insert(answers);
+        self.called(answers, &h.body_cont);
+        steps.push(Step::New(
+            answers,
+            captures,
+            vec![Block {
+                params: returned_params,
+                body: returned,
+            }],
+        ));
+        sc.push(answers);
+        let mut body = sc.clone();
+        body.vars.insert(h.body_cont.clone(), answers);
+        body.vars.insert(EV.to_string(), ev);
+        self.statement(&h.body, &body)
     }
 
     /// `sel` as a block's parameters: each name once, a second mention under
@@ -821,6 +1298,7 @@ impl Lower {
                 for k in conts {
                     sel.push(self.reify(k, &mut sc, &mut steps)?);
                 }
+                sel.push(sc.var(EV)?);
                 let params = self.distinct(&sel);
                 Ok(wrap(
                     steps,
@@ -902,6 +1380,7 @@ impl Lower {
         }
         let mut free = Free::default();
         free.consumer(c);
+        free.names.insert(EV.to_string());
         let captures = free.among(sc);
         let rep = match c {
             Consumer::MuTilde(b, _) => rep_of(&b.rep)?,
@@ -1023,6 +1502,8 @@ impl Lower {
                         self.called(n, k);
                         self.out.returns.insert(n);
                     }
+                    let ev = self.fresh(ax::Rep::Ref);
+                    inner.bind(EV, ev);
                     let params = inner.env.clone();
                     let body = self.statement(&m.body, &inner)?;
                     let tag = self.method(&m.name)? as usize;
@@ -1122,6 +1603,8 @@ struct Free {
     names: HashSet<String>,
     bound: Vec<String>,
     halt: bool,
+    /// Whether a `handle` was met.
+    handles: bool,
 }
 
 impl Free {
@@ -1223,6 +1706,7 @@ impl Free {
                 self.consumer(c);
             }
             Statement::Handle(h) => {
+                self.handles = true;
                 for c in &h.clauses {
                     let names: Vec<&str> = c
                         .params

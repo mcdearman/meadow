@@ -2271,10 +2271,9 @@ fn cut_answer(text: &str) -> String {
 
 /// How many of them answer so once that Cut is lowered to AxCut and run by
 /// its machine, which has every primitive the runtimes have and checks how
-/// each value is represented. The rest are a handler's, which the lowering
-/// to AxCut does not take yet, and a function generic in what it takes,
-/// whose values MeadowBoot calls a `ptr` whatever they are.
-const AXCUT_CASES_AGREEING: usize = 81;
+/// each value is represented. The rest are a function generic in what it
+/// takes, whose values MeadowBoot calls a `ptr` whatever they are.
+const AXCUT_CASES_AGREEING: usize = 87;
 
 /// What the AxCut machine answers of the Cut program `text` once it is
 /// lowered, or why it answered nothing.

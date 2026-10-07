@@ -212,7 +212,7 @@ fun erasedOf
              files)
       in
       let done = inferUnit r deps (V.map (\(i : Interface) -> i.types) imported) texts in
-      unitCore r done.typed "result"
+      unitCore r done "result"
 
 -- The unit at `dir` renamed: its modules, each with its path, and what
 -- renaming made of them.

@@ -2167,13 +2167,140 @@ fn term(t: &Term, out: &mut String) {
     }
 }
 
-/// Each glade case that compiles and has a `result`, written as a package of
-/// its own under `dir` -- no library, as the case is compiled -- with what
+/// Programs with traits, which the glade cases -- compiled with no library
+/// -- have none of: what dictionary passing has to get right.
+fn trait_programs() -> Vec<String> {
+    [
+        // A default, an `impl` that has its own, and a function of two
+        // dictionaries.
+        r#"trait Shape a {
+  fun area : a -> Int
+  fun twice : a -> Int
+    | twice x = area x + area x
+}
+
+data Sq = Sq Int
+
+data Rect = Rect Int Int
+
+impl Shape Sq {
+  fun area s = match s with | Sq n -> n * n
+}
+
+impl Shape Rect {
+  fun area r = match r with | Rect w h -> w * h
+  fun twice r = 0 - 1
+}
+
+fun total x y = area x + twice y
+
+def result = (total (Sq 3) (Rect 2 5), twice (Sq 2), total (Rect 1 1) (Sq 1))
+"#,
+        // An `impl` with a `where`: a dictionary made of another.
+        r#"trait Named a {
+  fun name : a -> String
+}
+
+data Box a = Box a
+
+data Dog = Dog
+
+data Cat = Cat
+
+impl Named Dog {
+  fun name d = "dog"
+}
+
+impl Named Cat {
+  fun name c = "cat"
+}
+
+impl Named (Box a) where Named a {
+  fun name b = match b with | Box x -> concatStrings #["box of ", name x]
+}
+
+fun both x y = concatStrings #[name x, " and ", name y]
+
+def result = (both (Box (Box Dog)) Cat, name (Box Cat))
+"#,
+        // A trait that requires one: the required trait's dictionary out of
+        // the requiring one's.
+        r#"trait Base a {
+  fun base : a -> Int
+}
+
+trait Scaled a <: Base a {
+  fun scale : a -> Int
+}
+
+data One = One
+
+data Wrap a = Wrap a
+
+impl Base One {
+  fun base x = 7
+}
+
+impl Scaled One {
+  fun scale x = 3
+}
+
+impl Base (Wrap a) where Base a {
+  fun base w = match w with | Wrap x -> base x + 1
+}
+
+impl Scaled (Wrap a) where Scaled a {
+  fun scale w = match w with | Wrap x -> scale x * 2
+}
+
+fun scaled x = base x * scale x
+
+fun count n x = if n <= 0 then 0 else scaled x + count (n - 1) x
+
+def result = (scaled One, scaled (Wrap (Wrap One)), count 3 (Wrap One))
+"#,
+        // Functions that call each other with one dictionary, and a method
+        // as a value.
+        r#"trait Step a {
+  fun step : a -> a
+  fun finished : a -> Bool
+}
+
+data Count = Count Int
+
+impl Step Count {
+  fun step c = match c with | Count n -> Count (n - 1)
+  fun finished c = match c with | Count n -> n <= 0
+}
+
+fun evens x = if finished x then 0 else 1 + odds (step x)
+
+fun odds x = if finished x then 0 else 1 + evens (step x)
+
+fun apply f x = f x
+
+def result = (evens (Count 5), match apply step (Count 3) with | Count n -> n)
+"#,
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// Each glade case that compiles and has a `result`, and then each of
+/// [`trait_programs`], written as a package of its own under `dir` -- no library, as the case is compiled -- with what
 /// the Rust CEK machine answers for it: the file to run, and the answer.
 fn run_cases(dir: &Path) -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
-    for (i, src) in glade_programs().iter().enumerate() {
-        let Ok(p) = compiled(src) else { continue };
+    let glade = glade_programs();
+    let theirs = glade.len();
+    let programs: Vec<String> = glade.into_iter().chain(trait_programs()).collect();
+    for (i, src) in programs.iter().enumerate() {
+        let p = match compiled(src) {
+            Ok(p) => p,
+            Err(why) if i >= theirs => panic!("a program with traits does not compile: {why}"),
+            Err(_) => continue,
+        };
         if p.entry.is_none() {
             continue;
         }
@@ -2204,12 +2331,12 @@ fn write_run_cases() {
     }
 }
 
-/// How many glade cases MeadowBoot has to compile and run to the Rust
-/// compiler's answer: what its lowering to core does today, which is not yet
-/// all of them. It goes up as the lowering learns more -- trait
-/// dictionaries, the copies a number's type chooses between -- and a case
-/// that stops agreeing is a failure whatever the count.
-const RUN_CASES_AGREEING: usize = 95;
+/// How many cases MeadowBoot has to compile and run to the Rust compiler's
+/// answer: what its lowering to core does today, which is not yet all of
+/// them. It goes up as the lowering learns more -- the copies a number's
+/// type chooses between -- and a case that stops agreeing is a failure
+/// whatever the count.
+const RUN_CASES_AGREEING: usize = 99;
 
 #[test]
 fn glade_cases_compiled_by_meadowboot_evaluate_as_the_rust_compiler_has_them() {
@@ -2244,7 +2371,7 @@ fn glade_cases_compiled_by_meadowboot_evaluate_as_the_rust_compiler_has_them() {
 /// the interpreter does not have -- the sized integers', the floats', `show`
 /// -- more than on the lowering. A case that stops agreeing is a failure
 /// whatever the count.
-const CUT_CASES_AGREEING: usize = 59;
+const CUT_CASES_AGREEING: usize = 63;
 
 /// What the reference interpreter prints of the Cut program `text`, or why
 /// it printed nothing. On a thread of its own with room to spare: the
@@ -2273,7 +2400,7 @@ fn cut_answer(text: &str) -> String {
 /// its machine, which has every primitive the runtimes have and checks how
 /// each value is represented. The rest are a function generic in what it
 /// takes, whose values MeadowBoot calls a `ptr` whatever they are.
-const AXCUT_CASES_AGREEING: usize = 87;
+const AXCUT_CASES_AGREEING: usize = 91;
 
 /// What the AxCut machine answers of the Cut program `text` once it is
 /// lowered, or why it answered nothing.

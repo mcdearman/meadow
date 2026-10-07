@@ -66,7 +66,10 @@ fun repOf (t : Type) : String =
 -- The package every symbol here is in: one program, built with no library.
 def package : String = "meadow:boot/"
 
-fun topSymbol (id : Int) : String = "${package}d${show id}"
+-- A definition's symbol, by its binder: an `impl`'s dictionary's binder is
+-- below every other, and is spelt for what it is.
+fun topSymbol (id : Int) : String =
+  if id < 0 then "${package}impl${show (0 - id)}" else "${package}d${show id}"
 
 -- A primitive's name in Cut: `meadow_rt::Prim`'s, its first letter small. A
 -- conversion to a sized integer is named for the type, as it is in source:

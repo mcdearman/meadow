@@ -20,6 +20,9 @@ use MeadowBoot.Rename
 use MeadowBoot.Rename (Hir!)
 use MeadowBoot.Infer
 use MeadowBoot.Infer (Typed!)
+use MeadowBoot.Infer (Inferred)
+use MeadowBoot.Solve (Evidence, TraitShape, ImplDef, Entry, Super)
+use MeadowBoot.Traits (methodKey)
 use MeadowBoot.Core
 use MeadowBoot.Core (Core!)
 use MeadowBoot.Types
@@ -37,6 +40,9 @@ use Std.Maybe.Maybe.*
 
 -- A type of inference's, as `Typed`'s nodes name it.
 type Ty = Type
+
+-- The dictionaries a mention is applied to, as `Typed` holds them.
+type Evs = [Evidence]
 
 -- `Typed` with nothing in an expression that is a written type.
 @pub(pkg) lang! {
@@ -58,13 +64,27 @@ pass! {
 -- arguments it takes, by its binder; each effect operation's effect and
 -- name; each constructor's name in core and how many arguments it takes;
 -- the names of its fields, for one that has them; and the next binder
--- nothing has, for a variable lowering makes.
+-- nothing has, for a variable lowering makes. And what a `where` comes to:
+-- the traits each binding asks dictionaries of, what each `impl`'s
+-- dictionary is built with, each `impl`'s trait by its dictionary's binder,
+-- every trait's shape, method types and defaults, each binder's name, the
+-- dictionaries the definition being lowered was given -- each with its trait
+-- -- and the next `impl`'s dictionary's binder.
 record Low s = {
   prims : HashMap Int (String, Int),
   ops : HashMap Int (String, String),
   ctors : HashMap Int (String, Int),
   fields : HashMap Int [String],
-  next : StRef s Int
+  next : StRef s Int,
+  wheres : HashMap Int [String],
+  evidence : HashMap String [Evidence],
+  implTr : HashMap Int String,
+  shapes : HashMap String TraitShape,
+  methods : HashMap String Scheme,
+  defaults : HashMap String Int,
+  names : [String],
+  dicts : StRef s [(Int, String)],
+  nextDict : StRef s Int
 }
 
 fun fresh (cx : Low s) : Int ! { St s | e } =
@@ -87,7 +107,7 @@ pass! {
     | Expr.Hole { typ } -> newCoreTermIll out here typ
     | Expr.MacCall { call, typ } -> newCoreTermIll out here typ
     | Expr.Lit { lit, typ } -> newCoreTermConst out here (literal out here lit typ) typ
-    | Expr.Var { ref, typ } -> mention out cx here ref typ
+    | Expr.Var { ref, ev, typ } -> mention out cx here ref ev typ
     | Lam { params, body } -> lambdas out cx here params body
     | App { raw func, args, typ } -> applied src out cx here func args typ
     | Let { binds, body } -> V.foldr (\b acc -> bound out cx here b acc) body binds
@@ -215,8 +235,8 @@ fun widthOf (name : String) : Maybe String =
 
 -- A name mentioned at type `t`: a primitive a function of as many arguments
 -- as it takes, an effect's operation a function that performs it, and
--- anything else itself.
-fun mention out (cx : Low s) (m : Meta) (id : Int) (t : Type) =
+-- anything else itself, given the dictionaries its `where` asks for.
+fun mention out (cx : Low s) (m : Meta) (id : Int) (ev : Evs) (t : Type) =
   match H.lookup id cx.prims with
   | Just (op, arity) ->
       if op == "RunSt" then
@@ -244,7 +264,223 @@ fun mention out (cx : Low s) (m : Meta) (id : Int) (t : Type) =
                   arg
                   (newCoreTermPerform out m eff op (newCoreTermVar out m x arg) result)
                   t)
-       | None -> newCoreTermVar out m id t)
+       | None -> withDicts out cx m id t ev)
+
+-- --- dictionaries --------------------------------------------------------------
+--
+-- A trait is a type of one constructor, its dictionary: a field for each
+-- trait it requires and one for each method. A method is the function that
+-- reads its field; an `impl` is a definition of a dictionary, a function of
+-- the dictionaries its own `where` asks for; and a function with a `where`
+-- takes a dictionary for each trait in it, before anything else.
+
+-- The type of trait `tr`'s dictionary.
+fun dictT (tr : String) : Type = Con tr []
+
+-- Its one constructor, in core.
+fun dictCtor (tr : String) : String = "${tr}.Dict"
+
+-- The dictionary `e` says answers a wanted trait, and the trait it is of.
+fun witness out (cx : Low s) (m : Meta) (e : Evidence) =
+  match e with
+  | Evidence.Given at ->
+      (match V.get (stGetRef cx.dicts) at with
+       | Just (d, tr) -> (newCoreTermVar out m d (dictT tr), tr)
+       | None -> (newCoreTermIll out m Error, ""))
+  | Evidence.Super inner label ->
+      (let w = witness out cx m inner in
+       let tr = S.drop label (stringByteLength "#super.") in
+       (newCoreTermSel out m (fst w) label (dictT tr), tr))
+  | Evidence.Impl dict args ->
+      (let tr = M.unwrapOr "" (H.lookup dict cx.implTr) in
+       (withDicts out cx m dict (dictT tr) args, tr))
+  | Evidence.Missing -> (newCoreTermIll out m Error, "")
+
+-- Binder `id`, of type `t` once it has its dictionaries, given them.
+fun withDicts out (cx : Low s) (m : Meta) (id : Int) (t : Type) (evs : [Evidence]) =
+  let ws = V.map (\e -> witness out cx m e) evs in
+  let whole = V.foldr (\w acc -> arrow (dictT (snd w)) acc) t ws in
+  applications out m (newCoreTermVar out m id whole) (V.map fst ws)
+
+-- `value` as a function of dictionaries `ds`.
+fun abstracted out ds value =
+  V.foldr
+    (\d acc ->
+      newCoreTermLam
+        out
+        nowhere
+        (fst d)
+        (dictT (snd d))
+        acc
+        (arrow (dictT (snd d)) (tyCoreTermIn out acc)))
+    value
+    ds
+
+-- The binder a top-level binding binds, where it binds one name.
+fun boundId (a : BareArena) b : Maybe Int =
+  if kindBareBind a b == BareBindKind.Fun then Just (bareBindFunId a b)
+  else
+    (let p = bareBindPatPat a b in
+     if kindBarePat a p == BarePatKind.Var then Just (barePatVarId a p) else None)
+
+-- A top-level binding: lowered under the dictionaries its `where` asks for,
+-- and a function of them.
+fun topBind (a : BareArena) out (cx : Low s) b =
+  let trs = M.unwrapOr [] (M.andThen (\id -> H.lookup id cx.wheres) (boundId a b)) in
+  let ds = V.map (\tr -> (fresh cx, tr)) trs in
+  let u = stSetRef cx.dicts ds in
+  match emitBind a out cx b with
+  | (pat, value, isFun) -> (let v = stSetRef cx.dicts [] in (pat, abstracted out ds value, isFun))
+
+-- A method's type, over its trait's parameters.
+fun methodType (cx : Low s) (tr : String) (name : String) : Type =
+  M.unwrapOr Error (M.map (\(sc : Scheme) -> sc.ty) (H.lookup (methodKey tr name) cx.methods))
+
+-- A trait's canonical name, by the name its module declares it under.
+fun traitCanon (items : [Item]) (name : String) : String =
+  M.unwrapOr
+    name
+    (M.map
+       (\(it : Item) -> it.canon)
+       (V.find (\(it : Item) -> it.kind == "t" and it.name == name) items))
+
+-- A `trait`'s definitions: each method the function that reads it out of a
+-- dictionary, and each default a function of the dictionary it is in.
+fun traitDefs out (cx : Low s) (items : [Item]) (a : BareArena) d =
+  let tname = bareNameText a (bareDeclTraitName a d) in
+  let canon = traitCanon items tname in
+  let self = dictT canon in
+  let selectors =
+    V.concatMap
+      (\mn ->
+        match V.find
+          (\(it : Item) -> it.kind == "v" and it.owner == tname and it.name == mn)
+          items with
+        | Just (it : Item) ->
+            (let dv = fresh cx in
+             let t = methodType cx canon mn in
+             [newCoreDef
+                out
+                nowhere
+                it.id
+                (newCoreTermLam
+                   out
+                   nowhere
+                   dv
+                   self
+                   (newCoreTermSel out nowhere (newCoreTermVar out nowhere dv self) mn t)
+                   (arrow self t))])
+        | None -> [])
+      (M.unwrapOr [] (M.map (\(sh : TraitShape) -> sh.methods) (H.lookup canon cx.shapes)))
+  in V.append
+       selectors
+       (V.concatMap (\b -> defsOf out cx (topBind a out cx b)) (bareDeclTraitDefaults a d))
+
+-- Those of `ds` a definition asking for `trs` takes: each trait's, in order.
+fun picked (ds : [(Int, String)]) (trs : [String]) : [(Int, String)] =
+  fst
+    (V.foldl
+       (\acc tr ->
+         match acc with
+         | (got, rest) ->
+             (match V.find (\k -> snd (V.getOr (0, "") rest k) == tr) (V.range 0 (V.len rest)) with
+              | Just k -> (V.pushBack got (V.getOr (0, "") rest k), V.drop rest (k + 1))
+              | None -> (got, rest)))
+       ([], ds)
+       trs)
+
+-- Binder `id`, a function of those of dictionaries `ds` it asks for, given
+-- them: of type `t` then.
+fun given out (cx : Low s) (id : Int) (ds : [(Int, String)]) (t : Type) =
+  let mine = picked ds (M.unwrapOr [] (H.lookup id cx.wheres)) in
+  applications
+    out
+    nowhere
+    (newCoreTermVar out nowhere id (V.foldr (\d acc -> arrow (dictT (snd d)) acc) t mine))
+    (V.map (\d -> newCoreTermVar out nowhere (fst d) (dictT (snd d))) mine)
+
+-- An `impl`'s definitions: its methods, and its dictionary under binder
+-- `dict` -- a function of the dictionaries its `where` asks for, holding
+-- the dictionary of each trait its own requires and then each method: the
+-- `impl`'s, or the trait's default given this dictionary.
+fun implDefs out (cx : Low s) (a : BareArena) d (dict : Int) =
+  let tr = M.unwrapOr "" (H.lookup dict cx.implTr) in
+  let binds = bareDeclImplMethods a d in
+  let methodDefs = V.concatMap (\b -> defsOf out cx (topBind a out cx b)) binds in
+  match H.lookup tr cx.shapes with
+  | None -> methodDefs
+  | Just (shape : TraitShape) ->
+      let own =
+        V.concatMap
+          (\b ->
+            match boundId a b with
+            | Just id -> [(V.getOr "" cx.names id, id)]
+            | None -> [])
+          binds
+      in
+      let self = dictT tr in
+      let ds = V.map (\t -> (fresh cx, t)) (M.unwrapOr [] (H.lookup dict cx.wheres)) in
+      let u = stSetRef cx.dicts ds in
+      let found = M.unwrapOr [] (H.lookup "dict:${show dict}" cx.evidence) in
+      let supers =
+        V.map
+          (\k ->
+            match V.get found k with
+            | Just e -> fst (witness out cx nowhere e)
+            | None -> newCoreTermIll out nowhere Error)
+          (V.range 0 (V.len shape.supers))
+      in
+      let fields =
+        V.map
+          (\mn ->
+            (let t = methodType cx tr mn in
+             match V.find (\o -> fst o == mn) own with
+             | Just (_, mid) -> given out cx mid ds t
+             | None ->
+                 (match H.lookup (methodKey tr mn) cx.defaults with
+                  | Just did ->
+                      (let whole = arrow self t in
+                       let me = given out cx dict ds self in
+                       let asks = not (V.isEmpty (M.unwrapOr [] (H.lookup did cx.wheres))) in
+                       let f =
+                         if asks then
+                           newCoreTermApp out nowhere (newCoreTermVar out nowhere did whole) me t
+                         else newCoreTermVar out nowhere did t
+                       in
+                       -- A function waits for its argument, so that the
+                       -- dictionary is not built of itself.
+                       match t with
+                       | Fun _ _ _ ->
+                           (let x = fresh cx in
+                            match applying t with
+                            | (arg, result) ->
+                                newCoreTermLam
+                                  out
+                                  nowhere
+                                  x
+                                  arg
+                                  (newCoreTermApp
+                                     out
+                                     nowhere
+                                     f
+                                     (newCoreTermVar out nowhere x arg)
+                                     result)
+                                  t)
+                       | _ -> f)
+                  | None -> newCoreTermIll out nowhere t)))
+          shape.methods
+      in
+      let v = stSetRef cx.dicts [] in
+      V.pushBack
+        methodDefs
+        (newCoreDef
+           out
+           nowhere
+           dict
+           (abstracted
+              out
+              ds
+              (newCoreTermCtor out nowhere (dictCtor tr) (V.append supers fields) self)))
 
 -- `\a b -> op(a, b)`, at type `t`: a function of each argument the
 -- primitive still wants, around the operation.
@@ -409,8 +645,12 @@ def nowhere : Meta = spanMeta 0 0
 
 -- Unit `r`, whose modules inference typed as `typed`, as one program of
 -- core entered at its `entry`; or `None` when nothing of that name is there.
-@pub fun unitCore (r : Renamed) (typed : [TypedProgram]) (entry : String) : Maybe CoreProgram =
-  let bares = V.map bare typed in
+@pub fun unitCore (r : Renamed) (done : Inferred) (entry : String) : Maybe CoreProgram =
+  let bares = V.map bare done.typed in
+  let itemsOf = \k -> M.unwrapOr [] (M.map (\(d : Declared) -> d.items) (V.get r.modules k)) in
+  let traitShapes =
+    V.foldl (\h (e : Entry TraitShape) -> H.insert e.key e.value h) H.empty done.types.shapes
+  in
   let items = V.concatMap (\(d : Declared) -> d.items) r.modules in
   let shapes = V.concatMap (\p -> shapesOf p) bares in
   let entryId =
@@ -428,10 +668,44 @@ def nowhere : Meta = spanMeta 0 0
                ops = opTable items,
                ctors = ctorTable r items shapes,
                fields = fieldTable items shapes,
-               next = stNewRef (V.len r.binders)
+               next = stNewRef (V.len r.binders),
+               wheres = done.wheres,
+               evidence = done.evidence,
+               implTr =
+                 V.foldl
+                   (\h (e : Entry ImplDef) ->
+                     match e.value.scheme.ty with
+                     | Con tr _ -> H.insert e.value.dict tr h
+                     | _ -> h)
+                   H.empty
+                   done.types.impls,
+               shapes = traitShapes,
+               methods =
+                 V.foldl
+                   (\h (e : Entry Scheme) -> H.insert e.key e.value h)
+                   H.empty
+                   done.types.methods,
+               defaults =
+                 V.foldl
+                   (\h k ->
+                     match V.get bares k with
+                     | Just p -> moduleDefaults (itemsOf k) (V.map binderName r.binders) p h
+                     | None -> h)
+                   H.empty
+                   (V.range 0 (V.len bares)),
+               names = V.map binderName r.binders,
+               dicts = stNewRef [],
+               nextDict = stNewRef (0 - 2)
              }
            in
-           let defs = V.concatMap (\p -> moduleDefs out cx p) bares in
+           let defs =
+             V.concatMap
+               (\k ->
+                 match V.get bares k with
+                 | Just p -> moduleDefs out cx (itemsOf k) p
+                 | None -> [])
+               (V.range 0 (V.len bares))
+           in
            let named =
              V.concatMap
                (\(i : Item) ->
@@ -440,7 +714,34 @@ def nowhere : Meta = spanMeta 0 0
                  | None -> [])
                items
            in
-           let datas = V.concatMap (\p -> moduleDatas out items p) bares in
+           -- A trait's dictionary is a type of one constructor, its fields
+           -- named.
+           let dictNamed =
+             V.map
+               (\kv ->
+                 (let sh : TraitShape = snd kv in
+                  newCoreNamed out nowhere (dictCtor (fst kv)) sh.labels))
+               (H.toVec traitShapes)
+           in
+           let dictDatas =
+             V.map
+               (\kv ->
+                 (let sh : TraitShape = snd kv in
+                  newCoreData
+                    out
+                    nowhere
+                    (fst kv)
+                    (sh.params + V.len sh.assocs)
+                    [newCoreDataCtor
+                       out
+                       nowhere
+                       (dictCtor (fst kv))
+                       (V.append
+                          (V.map (\(sup : Super) -> dictT sup.tr) sh.supers)
+                          (V.map (\mn -> methodType cx (fst kv) mn) sh.methods))]))
+               (H.toVec traitShapes)
+           in
+           let datas = V.append dictDatas (V.concatMap (\p -> moduleDatas out items p) bares) in
            let lists =
              if V.any (\(i : Item) -> i.kind == "c" and i.owner == "List") items then []
              else
@@ -450,8 +751,16 @@ def nowhere : Meta = spanMeta 0 0
                 ]]
            in
            let effects = V.concatMap (\p -> moduleEffects out p) bares in
-           let root = newCoreFile out nowhere e defs named (V.append lists datas) effects in
-           CoreProgram (freezeCore out) root))
+           let root =
+             newCoreFile
+               out
+               nowhere
+               e
+               defs
+               (V.append named dictNamed)
+               (V.append lists datas)
+               effects
+           in CoreProgram (freezeCore out) root))
        entryId
 
 -- Each primitive's operation and how many arguments it takes, by binder.
@@ -658,43 +967,72 @@ fun written (a : BareArena) (params : [String]) (t : BareType) : Type =
   else Error
 
 -- A module's bindings as definitions: a name its value, and a pattern a
--- definition of the value and one of each name in it, read out of that.
-fun moduleDefs out (cx : Low s) (p : BareProgram) =
+-- definition of the value and one of each name in it, read out of that. A
+-- `trait`'s and an `impl`'s are with them.
+fun moduleDefs out (cx : Low s) (items : [Item]) (p : BareProgram) =
   match p with
   | BareProgram a root ->
       V.concatMap
         (\d0 ->
           (let d = peeled a d0 in
-           if kindBareDecl a d != BareDeclKind.Bind then []
-           else
-             match emitBind a out cx (bareDeclBindBind a d) with
-             | (pat, value, _) ->
-                 if kindCorePatIn out pat == CorePatKind.PVar then
-                   [newCoreDef out nowhere (corePatPVarIdIn out pat) value]
-                 else
-                   (let v = fresh cx in
-                    let whole = tyCorePatIn out pat in
-                    V.pushFront
-                      (V.map
-                         (\x ->
-                           newCoreDef
-                             out
-                             nowhere
-                             (fst x)
-                             (newCoreTermCase
-                                out
-                                nowhere
-                                (newCoreTermVar out nowhere v whole)
-                                [newCoreArm
-                                   out
-                                   nowhere
-                                   pat
-                                   None
-                                   (newCoreTermVar out nowhere (fst x) (snd x))]
-                                (snd x)))
-                         (patVars out pat))
-                      (newCoreDef out nowhere v value))))
+           let k = kindBareDecl a d in
+           if k == BareDeclKind.Bind then defsOf out cx (topBind a out cx (bareDeclBindBind a d))
+           else if k == BareDeclKind.Trait then traitDefs out cx items a d
+           else if k == BareDeclKind.Impl then
+             (let dict = stGetRef cx.nextDict in
+              let u = stSetRef cx.nextDict (dict - 1) in
+              implDefs out cx a d dict)
+           else []))
         (bareModuleDecls a root)
+
+-- A lowered binding as definitions.
+fun defsOf out (cx : Low s) bind =
+  match bind with
+  | (pat, value, _) ->
+      if kindCorePatIn out pat == CorePatKind.PVar then
+        [newCoreDef out nowhere (corePatPVarIdIn out pat) value]
+      else
+        (let v = fresh cx in
+         let whole = tyCorePatIn out pat in
+         V.pushFront
+           (V.map
+              (\x ->
+                newCoreDef
+                  out
+                  nowhere
+                  (fst x)
+                  (newCoreTermCase
+                     out
+                     nowhere
+                     (newCoreTermVar out nowhere v whole)
+                     [newCoreArm out nowhere pat None (newCoreTermVar out nowhere (fst x) (snd x))]
+                     (snd x)))
+              (patVars out pat))
+           (newCoreDef out nowhere v value))
+
+-- Each trait's defaults a module declares: the default's binder, by the
+-- trait and the method.
+fun moduleDefaults (items : [Item]) (names : [String]) (p : BareProgram) (h : HashMap String Int)
+    : HashMap String Int =
+  match p with
+  | BareProgram a root ->
+      V.foldl
+        (\acc d0 ->
+          (let d = peeled a d0 in
+           if kindBareDecl a d != BareDeclKind.Trait then acc
+           else
+             (let canon = traitCanon items (bareNameText a (bareDeclTraitName a d)) in
+              V.foldl
+                (\acc2 b ->
+                  match boundId a b with
+                  | Just id -> H.insert (methodKey canon (V.getOr "" names id)) id acc2
+                  | None -> acc2)
+                acc
+                (bareDeclTraitDefaults a d))))
+        h
+        (bareModuleDecls a root)
+
+fun binderName (b : Binder) : String = b.name
 
 -- The variables a pattern of core binds, each with its type.
 fun patVars out p =

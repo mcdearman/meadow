@@ -100,13 +100,14 @@ fun want (i : Inf s) (p : Pred) (owner : Maybe Int) : Int ! { St s | e } =
 
 -- The scheme of a name mentioned, instantiated, wanting what its `where`
 -- asks for.
-@pub fun instantiateAt (i : Inf s) (sc : Scheme) : Type ! { St s | e } =
+@pub fun instantiateAt (i : Inf s) (node : String) (sc : Scheme) : Type ! { St s | e } =
   if V.isEmpty sc.preds then instantiate i sc
   else
     match instantiateWithPreds i sc with
     | (t, preds) ->
         let owner = stGetRef i.member in
-        let u = V.foldl (\w p -> (let k = want i p owner in ())) () preds in
+        let at = V.map (\p -> want i p owner) preds in
+        let u = stSetRef i.atNode (H.insert node at (stGetRef i.atNode)) in
         t
 
 -- A binding begins: what is wanted from here on is its body's.
@@ -151,8 +152,8 @@ fun answerWith (i : Inf s) (k : Int) (tys : [Type]) (found : ImplDef) : () ! { S
   match instantiateWithPreds i found.scheme with
   | (dictTy, context) ->
       let u = unifyAt i dictTy (Con w.pred.tr (V.append tys w.pred.assocs)) in
-      let v = V.foldl (\x p -> (let j = want i p w.owner in ())) () context in
-      setSol i k (Just ByImpl)
+      let subs = V.map (\p -> want i p w.owner) context in
+      setSol i k (Just (ByImpl found.dict subs))
 
 -- Wanted `k` is of a type nothing will ever say: answered by the trait's
 -- `impl` for every type, or at `Int` for an integer literal's or an
@@ -349,14 +350,49 @@ fun knownAssoc (i : Inf s) (owner : String) (assoc : String) (over : [Type])
         in
         let only = if V.len members == 1 then M.map fst (V.get members 0) else None in
         let w = V.foldl (\x pj -> placeWanted i lists only pj) () pending in
-        H.fromVec
-          (V.map
-             (\kv ->
-               (
-                 fst kv,
-                 V.map (\j -> V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j) (snd kv)
-               ))
-             (H.toVec lists))
+        -- A member mentioned from inside the group was monomorphic there, so
+        -- nothing was wanted at the mention: it is handed the mentioning
+        -- function's own dictionaries, trait for trait.
+        let mentioned = stGetRef i.mentions in
+        let w2 = stSetRef i.mentions [] in
+        let w3 =
+          V.foldl
+            (\x mention ->
+              match mention with
+              | (node, callee, from) ->
+                  (match (
+                     H.lookup callee lists,
+                     M.andThen
+                       (\f -> H.lookup f lists)
+                       (match from with | Just f -> Just f | None -> only)
+                   ) with
+                   | (Just theirs, Just ours) ->
+                       if V.isEmpty theirs then ()
+                       else
+                         stSetRef
+                           i.fixed
+                           (H.insert
+                              node
+                              (V.map
+                                 (\j ->
+                                   match V.find
+                                     (\at -> V.get ours at == Just j)
+                                     (V.range 0 (V.len ours)) with
+                                   | Just at -> Evidence.Given at
+                                   | None -> Evidence.Missing)
+                                 theirs)
+                              (stGetRef i.fixed))
+                   | _ -> ()))
+            ()
+            mentioned
+        in H.fromVec
+             (V.map
+                (\kv ->
+                  (
+                    fst kv,
+                    V.map (\j -> V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j) (snd kv)
+                  ))
+                (H.toVec lists))
 
 -- One wanted of the group's: through a given if one answers it, into the
 -- group's `where` if its variables are the group's, or left.
@@ -365,9 +401,9 @@ fun closeOne
     (level : Int)
     (signed : Bool)
     (signatureVars : [Int])
-    (acc : ([Pred], [(Int, Int)]))
+    (acc : ([Pred], [(Int, Int, [String])]))
     (k : Int)
-    : ([Pred], [(Int, Int)]) ! { St s | e } =
+    : ([Pred], [(Int, Int, [String])]) ! { St s | e } =
   match acc with
   | (all, pending) ->
       let w = wantedAt i k in
@@ -409,7 +445,7 @@ fun closeOne
                   (\x n -> unifyAt i (V.getOr Error w.pred.assocs n) (V.getOr Error theirs n))
                   ()
                   (V.range 0 (min (V.len w.pred.assocs) (V.len theirs)))
-              in (all, V.pushBack pending (k, j))
+              in (all, V.pushBack pending (k, j, V.map (\(sup : Super) -> sup.tr) path))
           | None ->
               if not ours then acc
               else if signed then
@@ -423,7 +459,7 @@ fun closeOne
                    in
                    let v = setSol i k (Just Failed) in
                    acc)
-              else (V.pushBack all w.pred, V.pushBack pending (k, V.len all))
+              else (V.pushBack all w.pred, V.pushBack pending (k, V.len all, []))
 
 -- The places in the group's `where` a member of type `t` asks for: every one
 -- whose types its own type settles, and those that settles in turn.
@@ -451,23 +487,27 @@ fun settleLoop (i : Inf s) (all : [Pred]) (settled : [Int]) (mine : [Int]) : [In
 
 -- A wanted is answered by its own function's parameter -- or, if its function
 -- does not ask for it, defaulted, or ambiguous.
-fun placeWanted (i : Inf s) (lists : HashMap Int [Int]) (only : Maybe Int) (pj : (Int, Int))
+fun placeWanted
+    (i : Inf s)
+    (lists : HashMap Int [Int])
+    (only : Maybe Int)
+    (pj : (Int, Int, [String]))
     : () ! { St s | e } =
-  let k = fst pj in
-  let j = snd pj in
+  let (k, j, path) = pj in
   let w = wantedAt i k in
   let owner = (match w.owner with | Just o -> Just o | None -> only) in
-  let placed =
+  let place =
     (match M.andThen (\o -> H.lookup o lists) owner with
-     | Just mine -> V.elem j mine
-     | None -> False)
-  in if placed then setSol i k (Just ByGiven)
-     else
-       let u = setSol i k None in
-       if defaultWanted i k then ()
-       else
-         (let v = report i "cannot tell which `impl ${spelling w.pred.tr}` is meant" in
-          setSol i k (Just Failed))
+     | Just mine -> V.find (\at -> V.get mine at == Just j) (V.range 0 (V.len mine))
+     | None -> None)
+  in match place with
+     | Just at -> setSol i k (Just (ByGiven at path))
+     | None ->
+         let u = setSol i k None in
+         if defaultWanted i k then ()
+         else
+           (let v = report i "cannot tell which `impl ${spelling w.pred.tr}` is meant" in
+            setSol i k (Just Failed))
 
 -- The unit is done: what is still wanted of a type nothing said is
 -- defaulted, one at a time, and what is left is ambiguous.
@@ -482,6 +522,22 @@ fun placeWanted (i : Inf s) (lists : HashMap Int [Int]) (only : Maybe Int) (pj :
          setSol i k (Just Failed)))
     ()
     (V.range 0 (B.len i.wanted))
+
+-- What each mention of a name with a `where` is applied to, once the unit
+-- is done: by where the mention is.
+@pub fun evidenceOfUnit (i : Inf s) : HashMap String [Evidence] ! { St s | e } =
+  V.foldl
+    (\h kv -> H.insert (fst kv) (V.map (evidenceOf i) (snd kv)) h)
+    (stGetRef i.fixed)
+    (H.toVec (stGetRef i.atNode))
+
+-- The dictionary that answers wanted `k`.
+@pub fun evidenceOf (i : Inf s) (k : Int) : Evidence ! { St s | e } =
+  match (wantedAt i k).sol with
+  | Just (ByGiven at path) ->
+      V.foldl (\e tr -> Evidence.Super e (superLabel tr)) (Evidence.Given at) path
+  | Just (ByImpl dict subs) -> Evidence.Impl dict (V.map (evidenceOf i) subs)
+  | _ -> Evidence.Missing
 
 fun finishFrom (i : Inf s) (k : Int) : () ! { St s | e } =
   if k >= B.len i.wanted then ()

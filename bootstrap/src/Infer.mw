@@ -363,6 +363,7 @@ fun choose (i : Inf s) (p : Pending) (k : Int) : () ! { St s | e } =
           | Ctor _ -> Error))
   in
   let v = setLevel i.ar outer in
+  let w = stSetRef i.chosenAt (H.insert p.node k (stGetRef i.chosenAt)) in
   unifyAt i p.ty t
 
 fun reportOverload (i : Inf s) (p : Pending) : () ! { St s | e } =
@@ -1712,6 +1713,15 @@ fun memberPat (cx : Cx s) out (seed : [(Int, Type)]) pat value =
 -- all it will.
 pass! {
   pub settle : Inferring -> Typed with st
+    -- A name with several meanings is the one inference chose.
+    | Ref { id, alts } ->
+        Ref {
+          id =
+            (match H.lookup "${show st.m}:${show node}" st.chosen with
+             | Just k -> V.getOr id alts k
+             | None -> id),
+          alts = alts
+        }
     | Expr.Lit { lit, typ } -> Expr.Lit { lit = lit, typ = settled st.ar typ }
     | Expr.Unit { typ } -> Expr.Unit { typ = settled st.ar typ }
     | Expr.Hole { typ } -> Expr.Hole { typ = settled st.ar typ }
@@ -2481,7 +2491,7 @@ fun inferImpl
     let tables = V.map (\x -> match x with | (md, _, k) -> (modArena md, rootDecls r k)) mods in
     let bindings = V.map (\x -> (fst x, bindingsOf (fst x) (snd x))) tables in
     let order = moduleOrder bindings H.empty in
-    let dicts = implDicts r in
+    let dicts = implDicts r (firstDictOf depTypes) in
     -- Each module's tables, which the pass writes a binding into as its turn
     -- comes; and what each binding became.
     let outs = V.map (\k -> newInferringBuilder ()) (V.range 0 (V.len i.mods)) in
@@ -2622,7 +2632,7 @@ fun writtenModule
       in
       let m = newInferringModule out (metaHirModule src root) ds in
       settleSt
-        { ar = i.ar, m = k, evidence = evidence, insts = insts }
+        { ar = i.ar, m = k, evidence = evidence, insts = insts, chosen = stGetRef i.chosenAt }
         (InferringProgram (freezeInferring out) m)
   | None -> runSt (\() -> TypedProgram (freezeTyped (newTypedBuilder ())) 0)
 
@@ -2756,7 +2766,7 @@ fun hereAtBind (i : Inf s) (k : Int) (b : Binding) : Here =
 
 -- A binder of its own for each `impl`'s dictionary, by module and node: below
 -- every binder the unit has, where nothing else is.
-fun implDicts (r : Renamed) : HashMap String Int =
+fun implDicts (r : Renamed) (first : Int) : HashMap String Int =
   fst
     (V.foldl
        (\acc k ->
@@ -2771,7 +2781,7 @@ fun implDicts (r : Renamed) : HashMap String Int =
              | None -> acc2)
            acc
            (rootDecls r k))
-       (H.empty, 0 - 2)
+       (H.empty, first)
        (V.range 0 (V.len r.programs)))
 
 fun newInf (r : Renamed) : Inf s ! { St s | e } =
@@ -2795,6 +2805,7 @@ fun newInf (r : Renamed) : Inf s ! { St s | e } =
     subsumptions = stNewRef [],
     atNode = stNewRef H.empty,
     instAt = stNewRef H.empty,
+    chosenAt = stNewRef H.empty,
     mentions = stNewRef [],
     fixed = stNewRef H.empty,
     assocEffectVars = stNewRef [],

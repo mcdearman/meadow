@@ -21,13 +21,15 @@ use MeadowBoot.Rename (Hir!)
 use MeadowBoot.Infer
 use MeadowBoot.Infer (Typed!)
 use MeadowBoot.Infer (Inferred)
-use MeadowBoot.Solve (Evidence, TraitShape, ImplDef, Entry, Super, Generalized)
+use MeadowBoot.Solve (
+  Evidence, TraitShape, ImplDef, Entry, Super, Generalized, TypeEnv, VariantSig, firstDictOf
+)
 use MeadowBoot.Traits (methodKey)
 use MeadowBoot.Core
 use MeadowBoot.Core (Core!)
 use MeadowBoot.Types
 use MeadowBoot.Types.Type.*
-use MeadowBoot.Scopes (Renamed, Item, Declared)
+use MeadowBoot.Scopes (Renamed, Item, Declared, Export)
 use MeadowBoot.Prims (primOps)
 use Std.Collections.Vector as V
 use Std.Collections.HashMap as H
@@ -81,6 +83,7 @@ record Low s = {
   evidence : HashMap String [Evidence],
   impls : HashMap Int ImplDef,
   generics : HashMap Int Generalized,
+  extTypes : HashMap Int Int,
   shapes : HashMap String TraitShape,
   methods : HashMap String Scheme,
   defaults : HashMap String Int,
@@ -329,9 +332,15 @@ fun tyvarsOf (cx : Low s) (id : Int) : [Int] =
 -- How many types binder `id` is generic in: an `impl`'s dictionary in its
 -- `impl`'s.
 fun typesOf (cx : Low s) (id : Int) : Int =
-  match H.lookup id cx.impls with
-  | Just (d : ImplDef) -> V.len (plainOf d.scheme d.scheme.quant VarKind.Plain)
-  | None -> V.len (tyvarsOf cx id)
+  match H.lookup id cx.extTypes with
+  | Just n -> n
+  | None ->
+      (match H.lookup id cx.impls with
+       | Just (d : ImplDef) -> plains d.scheme
+       | None -> V.len (tyvarsOf cx id))
+
+-- How many of a scheme's quantifiers are variables over types.
+fun plains (sc : Scheme) : Int = V.len (plainOf sc sc.quant VarKind.Plain)
 
 -- A mention of binder `id`, of type `t`, at types `tys`. One of a binding
 -- from inside it is at the binding's own variables, which nothing wrote.
@@ -777,57 +786,254 @@ fun constructedPat out (cx : Low s) (m : Meta) (id : Int) args (t : Type) =
 
 def nowhere : Meta = spanMeta 0 0
 
--- Unit `r`, whose modules inference typed as `typed`, as one program of
--- core entered at its `entry`; or `None` when nothing of that name is there.
-@pub fun unitCore (r : Renamed) (done : Inferred) (entry : String) : Maybe CoreProgram =
+-- What a unit gives the units after it to be lowered with: its package;
+-- each unit's declarations of Cut it is made with, its own last, by package;
+-- every declared type it knows, and each constructor's named fields; its
+-- own `impl`s' dictionaries' binders; and its own traits' defaults.
+@pub record Linked = {
+  package : String,
+  units : [Entry String],
+  datas : [DataSig],
+  named : [Entry [String]],
+  dicts : [Int],
+  defaults : [DefaultSig]
+}
+
+-- A declared type: its name in core, how many types it takes, and each
+-- constructor's fields' types.
+@pub record DataSig = {
+  name : String,
+  arity : Int,
+  ctors : [Entry [Type]]
+}
+
+-- A trait's default for a method: the trait and method (`methodKey`), its
+-- binder in its unit, the traits it asks dictionaries of, and its scheme.
+@pub record DefaultSig = {
+  key : String,
+  binder : Int,
+  asks : [String],
+  scheme : Scheme
+}
+
+-- A unit this one depends on: what it exports, what it knows about types,
+-- and what it is lowered with.
+@pub record Imported = {
+  package : String,
+  exports : [Export],
+  types : TypeEnv,
+  linked : Linked
+}
+
+-- A definition's symbol in Cut: its package, and its binder -- an `impl`'s
+-- dictionary's is below every other, and is spelt for what it is.
+@pub fun defSymbol (pkg : String) (id : Int) : String =
+  if id < 0 then "meadow:${pkg}/impl${show (0 - id)}" else "meadow:${pkg}/d${show id}"
+
+-- Unit `r` of package `pkg`, whose modules inference typed as `done` has
+-- them, as one program of core, entered at its `entry` if it is to have one
+-- -- or `None` when nothing of that name is there -- with the binders of
+-- its `impl`s' dictionaries and its traits' defaults. What it mentions of
+-- `deps` is named by symbol.
+@pub fun unitCore
+    (pkg : String)
+    (r : Renamed)
+    (done : Inferred)
+    (deps : [Imported])
+    (entry : Maybe String)
+    : Maybe (CoreProgram, [Int], [DefaultSig]) =
   let bares = V.map bare done.typed in
   let itemsOf = \k -> M.unwrapOr [] (M.map (\(d : Declared) -> d.items) (V.get r.modules k)) in
+  let allTypes = V.pushBack (V.map (\(d : Imported) -> d.types) deps) done.types in
   let traitShapes =
-    V.foldl (\h (e : Entry TraitShape) -> H.insert e.key e.value h) H.empty done.types.shapes
+    V.foldl
+      (\h (t : TypeEnv) ->
+        V.foldl (\g (e : Entry TraitShape) -> H.insert e.key e.value g) h t.shapes)
+      H.empty
+      allTypes
   in
   let items = V.concatMap (\(d : Declared) -> d.items) r.modules in
   let shapes = V.concatMap (\p -> shapesOf p) bares in
+  -- Each of the dependencies' exports, with the item it is here and its
+  -- package.
+  let theirs =
+    (let flat =
+       V.concatMap (\(d : Imported) -> V.map (\(e : Export) -> (d.package, e)) d.exports) deps
+     in V.concatMap
+          (\k ->
+            match (V.get r.depItems k, V.get flat k) with
+            | (Just (it : Item), Just (p, ex)) -> [(it, ex, p)]
+            | _ -> [])
+          (V.range 0 (V.len r.depItems)))
+  in
+  let variants =
+    V.concatMap
+      (\(t : TypeEnv) -> V.concatMap (\(e : Entry [VariantSig]) -> e.value) t.variants)
+      allTypes
+  in
   let entryId =
-    V.foldl
-      (\found (i : Item) -> if i.kind == "v" and i.name == entry then Just i.id else found)
-      None
-      items
+    (match entry with
+     | None -> Just (0 - 1)
+     | Just name ->
+         V.foldl
+           (\found (i : Item) -> if i.kind == "v" and i.name == name then Just i.id else found)
+           None
+           items)
   in M.map
        (\e ->
          runSt (\() ->
            let out = newCoreBuilder () in
+           let next = stNewRef (V.len r.binders) in
+           let names = V.map binderName r.binders in
+           let ownDefaults =
+             V.foldl
+               (\h k ->
+                 match V.get bares k with
+                 | Just p -> moduleDefaults (itemsOf k) names p h
+                 | None -> h)
+               H.empty
+               (V.range 0 (V.len bares))
+           in
+           -- A dependency's default has a binder made for it here.
+           let theirDefaults =
+             V.concatMap
+               (\(d : Imported) ->
+                 V.map
+                   (\(s : DefaultSig) ->
+                     (let n = stGetRef next in
+                      let u = stSetRef next (n + 1) in
+                      (n, d.package, s)))
+                   d.linked.defaults)
+               deps
+           in
+           let impls =
+             V.foldl
+               (\h (t : TypeEnv) ->
+                 V.foldl (\g (x : Entry ImplDef) -> H.insert x.value.dict x.value g) h t.impls)
+               H.empty
+               allTypes
+           in
+           let first = firstDictOf (V.map (\(d : Imported) -> d.types) deps) in
+           let externs =
+             V.concat [
+               V.concatMap
+                 (\x ->
+                   match x with
+                   | ((it : Item), (ex : Export), p) ->
+                       if it.kind != "v" or S.startsWith "op:" it.owner then []
+                       else
+                         [(
+                           it.id,
+                           defSymbol p ex.binder,
+                           if S.isEmpty it.owner then M.unwrapOr 0 (M.map plains ex.scheme) else 0
+                         )])
+                 theirs,
+               V.map
+                 (\x ->
+                   match x with
+                   | (id, p, (s : DefaultSig)) -> (id, defSymbol p s.binder, plains s.scheme))
+                 theirDefaults,
+               V.concatMap
+                 (\(d : Imported) ->
+                   V.map
+                     (\dict ->
+                       (
+                         dict,
+                         defSymbol d.package dict,
+                         M.unwrapOr
+                           0
+                           (M.map (\(i : ImplDef) -> plains i.scheme) (H.lookup dict impls))
+                       ))
+                     d.linked.dicts)
+                 deps
+             ]
+           in
            let cx =
              Low {
                prims = primTable r,
-               ops = opTable items,
-               ctors = ctorTable r items shapes,
-               fields = fieldTable items shapes,
-               next = stNewRef (V.len r.binders),
-               wheres = done.wheres,
-               evidence = done.evidence,
-               impls =
+               ops =
                  V.foldl
-                   (\h (e : Entry ImplDef) -> H.insert e.value.dict e.value h)
-                   H.empty
-                   done.types.impls,
-               generics = done.generics,
+                   (\h x ->
+                     match x with
+                     | ((it : Item), _, p) ->
+                         if it.kind == "v" and S.startsWith "op:" it.owner then
+                           H.insert it.id ("${p}/${S.drop it.owner 3}", it.name) h
+                         else h)
+                   (opTable pkg items)
+                   theirs,
+               ctors =
+                 V.foldl
+                   (\h x ->
+                     match x with
+                     | ((it : Item), (ex : Export), _) ->
+                         if it.kind != "c" then h
+                         else
+                           H.insert
+                             it.id
+                             (
+                               ex.canon,
+                               M.unwrapOr
+                                 0
+                                 (M.map
+                                    (\(v : VariantSig) -> V.len v.fields)
+                                    (V.find (\(v : VariantSig) -> v.name == ex.canon) variants))
+                             )
+                             h)
+                   (ctorTable r items shapes)
+                   theirs,
+               fields =
+                 V.foldl
+                   (\h x ->
+                     match x with
+                     | ((it : Item), (ex : Export), _) ->
+                         (match (it.kind == "c", ex.fields) with
+                          | (True, Just labels) -> H.insert it.id labels h
+                          | _ -> h))
+                   (fieldTable items shapes)
+                   theirs,
+               next = next,
+               wheres =
+                 V.foldl
+                   (\h x ->
+                     match x with
+                     | (id, _, (s : DefaultSig)) -> H.insert id s.asks h)
+                   done.wheres
+                   theirDefaults,
+               evidence = done.evidence,
+               impls = impls,
+               generics =
+                 V.foldl
+                   (\h x ->
+                     match x with
+                     | (id, _, (s : DefaultSig)) ->
+                         H.insert
+                           id
+                           (Generalized {
+                              scheme = s.scheme,
+                              vars = V.range 0 (V.len s.scheme.quant)
+                            })
+                           h)
+                   done.generics
+                   theirDefaults,
+               extTypes =
+                 V.foldl (\h x -> match x with | (id, _, n) -> H.insert id n h) H.empty externs,
                shapes = traitShapes,
                methods =
                  V.foldl
-                   (\h (e : Entry Scheme) -> H.insert e.key e.value h)
+                   (\h (t : TypeEnv) ->
+                     V.foldl (\g (x : Entry Scheme) -> H.insert x.key x.value g) h t.methods)
                    H.empty
-                   done.types.methods,
+                   allTypes,
                defaults =
                  V.foldl
-                   (\h k ->
-                     match V.get bares k with
-                     | Just p -> moduleDefaults (itemsOf k) (V.map binderName r.binders) p h
-                     | None -> h)
-                   H.empty
-                   (V.range 0 (V.len bares)),
-               names = V.map binderName r.binders,
+                   (\h x ->
+                     match x with
+                     | (id, _, (s : DefaultSig)) -> H.insert s.key id h)
+                   ownDefaults
+                   theirDefaults,
+               names = names,
                dicts = stNewRef [],
-               nextDict = stNewRef (0 - 2)
+               nextDict = stNewRef first
              }
            in
            let defs =
@@ -847,13 +1053,29 @@ def nowhere : Meta = spanMeta 0 0
                items
            in
            -- A trait's dictionary is a type of one constructor, its fields
-           -- named.
+           -- named: declared by the unit that declares the trait.
+           let ownTraits =
+             V.concatMap
+               (\k ->
+                 match V.get bares k with
+                 | Just p -> moduleTraits (itemsOf k) p
+                 | None -> [])
+               (V.range 0 (V.len bares))
+           in
+           let ownShapes =
+             V.concatMap
+               (\tr ->
+                 match H.lookup tr traitShapes with
+                 | Just (sh : TraitShape) -> [(tr, sh)]
+                 | None -> [])
+               ownTraits
+           in
            let dictNamed =
              V.map
                (\kv ->
                  (let sh : TraitShape = snd kv in
                   newCoreNamed out nowhere (dictCtor (fst kv)) sh.labels))
-               (H.toVec traitShapes)
+               ownShapes
            in
            let dictDatas =
              V.map
@@ -871,7 +1093,7 @@ def nowhere : Meta = spanMeta 0 0
                        (V.append
                           (V.map (\(sup : Super) -> dictT sup.tr) sh.supers)
                           (V.map (\mn -> methodType cx (fst kv) mn) sh.methods))]))
-               (H.toVec traitShapes)
+               ownShapes
            in
            let datas = V.append dictDatas (V.concatMap (\p -> moduleDatas out items p) bares) in
            let lists =
@@ -882,18 +1104,52 @@ def nowhere : Meta = spanMeta 0 0
                   newCoreDataCtor out nowhere "List.Cons" [Bound 0, Con "List" [Bound 0]]
                 ]]
            in
-           let effects = V.concatMap (\p -> moduleEffects out p) bares in
+           let effects = V.concatMap (\p -> moduleEffects out pkg p) bares in
            let root =
              newCoreFile
                out
                nowhere
+               pkg
                e
                defs
                (V.append named dictNamed)
                (V.append lists datas)
                effects
-           in CoreProgram (freezeCore out) root))
+               (V.map
+                  (\x ->
+                    match x with
+                    | (id, symbol, n) -> newCoreExtern out nowhere id symbol n)
+                  externs)
+           in
+           let last = stGetRef cx.nextDict in
+           (
+             CoreProgram (freezeCore out) root,
+             V.map (\k -> first - k) (V.range 0 (first - last)),
+             V.map
+               (\kv ->
+                 DefaultSig {
+                   key = fst kv,
+                   binder = snd kv,
+                   asks = M.unwrapOr [] (H.lookup (snd kv) done.wheres),
+                   scheme =
+                     M.unwrapOr
+                       (Scheme { quant = [], preds = [], ty = Error, lacks = [] })
+                       (M.map (\(g : Generalized) -> g.scheme) (H.lookup (snd kv) done.generics))
+                 })
+               (H.toVec ownDefaults)
+           )))
        entryId
+
+-- The traits a module declares, by their canonical names.
+fun moduleTraits (items : [Item]) (p : BareProgram) : [String] =
+  match p with
+  | BareProgram a root ->
+      V.concatMap
+        (\d0 ->
+          (let d = peeled a d0 in
+           if kindBareDecl a d != BareDeclKind.Trait then []
+           else [traitCanon items (bareNameText a (bareDeclTraitName a d))]))
+        (bareModuleDecls a root)
 
 -- Each primitive's operation and how many arguments it takes, by binder.
 fun primTable (r : Renamed) : HashMap Int (String, Int) =
@@ -905,12 +1161,13 @@ fun primTable (r : Renamed) : HashMap Int (String, Int) =
     H.empty
     r.prims
 
--- Each effect operation's effect and name, by binder.
-fun opTable (items : [Item]) : HashMap Int (String, String) =
+-- Each effect operation's effect -- under its package -- and name, by
+-- binder.
+fun opTable (pkg : String) (items : [Item]) : HashMap Int (String, String) =
   V.foldl
     (\h (i : Item) ->
       if i.kind == "v" and S.startsWith "op:" i.owner then
-        H.insert i.id (S.drop i.owner 3, i.name) h
+        H.insert i.id ("${pkg}/${S.drop i.owner 3}", i.name) h
       else h)
     H.empty
     items
@@ -1055,7 +1312,7 @@ fun moduleDatas out (items : [Item]) (p : BareProgram) =
 
 -- A module's effects, as core declares one: its name, and each operation
 -- with what it takes and what it answers.
-fun moduleEffects out (p : BareProgram) =
+fun moduleEffects out (pkg : String) (p : BareProgram) =
   match p with
   | BareProgram a root ->
       V.concatMap
@@ -1067,7 +1324,7 @@ fun moduleEffects out (p : BareProgram) =
               [newCoreEffect
                  out
                  nowhere
-                 (bareNameText a (bareDeclEffectName a d))
+                 "${pkg}/${bareNameText a (bareDeclEffectName a d)}"
                  (V.map
                     (\f ->
                       (let t = bareFieldTy a f in

@@ -30,8 +30,10 @@ use MeadowBoot.Unit (packageOf, absolute)
 use Std.Result as Res
 use MeadowBoot.Compiler (
   unitDatabase, buildUnits, givenUnits, setCompilerSource, compilerGrouped, compilerRenamed,
-  compilerInferred, compilerCore
+  compilerInferred, compilerCore, linkedCore, programText
 )
+use MeadowBoot.Elab (Linked)
+use Lingua.Make (unitImports)
 use Std.Path as Path
 use Lingua.Red as R
 use Lingua.Lang (metaStart, metaEnd)
@@ -201,13 +203,38 @@ fun cutFiles (files : [String]) =
 
 fun cutFile (path : String) =
   let file = absolute path in
-  let core =
+  let made =
     M.andThen
-      (\r -> M.andThen (\u -> compilerCore (unitDatabase u) 0) (Res.toMaybe (givenUnits r r)))
+      (\r ->
+        M.andThen
+          (\u ->
+            M.andThen
+              (\linked -> M.map (\x -> (fst x, linked)) (linkedCore u linked (Just "result")))
+              (importsLinked r u))
+          (Res.toMaybe (givenUnits r r)))
       (packageOf file)
-  in match core with
+  in match made with
      | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in True)
-     | Just p -> (let u = writeOutput "== ${path}\n${Seq.written p}" in True)
+     | Just (p, linked) -> (let u = writeOutput "== ${path}\n${programText p linked}" in True)
+
+-- What each unit `u` imports is lowered with, in the build at `root`: its
+-- own imports' first.
+fun importsLinked (root : String) u =
+  V.foldl
+    (\acc d ->
+      match acc with
+      | None -> None
+      | Just ls ->
+          M.map
+            (\l -> V.pushBack ls l)
+            (M.andThen
+               (\du ->
+                 M.andThen
+                   (\theirs -> M.map snd (linkedCore du theirs None))
+                   (importsLinked root du))
+               (Res.toMaybe (givenUnits root (fst d)))))
+    (Just [])
+    (unitImports u)
 
 fun runFile (path : String) =
   let file = absolute path in

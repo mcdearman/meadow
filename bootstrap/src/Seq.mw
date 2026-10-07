@@ -89,13 +89,14 @@ fun peel src value =
     (coreTermTyLamVars src value, coreTermTyLamBody src value)
   else ([], value)
 
--- The package every symbol here is in: one program, built with no library.
+-- The package what a program is entered and shown by is in: nothing a unit
+-- declares.
 def package : String = "meadow:boot/"
 
 -- A definition's symbol, by its binder: an `impl`'s dictionary's binder is
 -- below every other, and is spelt for what it is.
-fun topSymbol (id : Int) : String =
-  if id < 0 then "${package}impl${show (0 - id)}" else "${package}d${show id}"
+fun topSymbol (pkg : String) (id : Int) : String =
+  if id < 0 then "meadow:${pkg}/impl${show (0 - id)}" else "meadow:${pkg}/d${show id}"
 
 -- A primitive's name in Cut: `meadow_rt::Prim`'s, its first letter small. A
 -- conversion to a sized integer is named for the type, as it is in source:
@@ -133,11 +134,29 @@ pass! {
     | Var { id } ->
         (match H.lookup id cx.gtops with
          | Just vars ->
-             C.invoke out here (topSymbol id) (V.map (\v -> C.desc out here "ptr") vars) [cx.k]
+             C.invoke
+               out
+               here
+               (topSymbol cx.pkg id)
+               (V.map (\v -> C.desc out here "ptr") vars)
+               [cx.k]
          | None ->
-             if M.isSome (H.lookup id cx.tops) then
-               C.give out here (C.sym out here (topSymbol id)) cx.k
-             else C.give out here (C.var out here "v${show id}") cx.k)
+             (match H.lookup id cx.ext with
+              -- Another unit's: its symbol, asked for at no types in
+              -- particular where nothing said which.
+              | Just (symbol, n) ->
+                  if n > 0 then
+                    C.invoke
+                      out
+                      here
+                      symbol
+                      (V.map (\v -> C.desc out here "ptr") (V.range 0 n))
+                      [cx.k]
+                  else C.give out here (C.sym out here symbol) cx.k
+              | None ->
+                  if M.isSome (H.lookup id cx.tops) then
+                    C.give out here (C.sym out here (topSymbol cx.pkg id)) cx.k
+                  else C.give out here (C.var out here "v${show id}") cx.k))
     | TyLam { vars, raw body } -> lowerTerm src out cx body
     | TyApp { raw func, tys } -> instanced src out cx here func tys
     | Lam { param, paramTy, raw body } ->
@@ -430,7 +449,7 @@ fun lifted src out cx (m : Meta) binds body =
      let around =
        captured cx (V.foldl (\seen b -> free src (coreBindValue src b) ids seen) [] binds)
      in
-     let symbol = \id -> "${package}l${show id}" in
+     let symbol = \id -> "meadow:${cx.pkg}/l${show id}" in
      -- What each is given: the descriptors in scope, and what any of them
      -- mentions from around them.
      let given =
@@ -507,7 +526,7 @@ fun lifted src out cx (m : Meta) binds body =
 fun genericLet src out cx (m : Meta) (id : Int) value body =
   let (vars, inner) = peel src value in
   let around = captured cx (free src inner [] []) in
-  let symbol = "${package}g${show id}" in
+  let symbol = "meadow:${cx.pkg}/g${show id}" in
   let all = V.append cx.tvars vars in
   let made =
     C.genericDecl
@@ -542,8 +561,11 @@ fun instanced src out cx (m : Meta) func (tys : [Type]) =
              [cx.k]
        | None ->
            if M.isSome (H.lookup r.id cx.gtops) then
-             C.invoke out m (topSymbol r.id) (descsOf out cx m tys) [cx.k]
-           else lowerTerm src out cx func)
+             C.invoke out m (topSymbol cx.pkg r.id) (descsOf out cx m tys) [cx.k]
+           else
+             (match H.lookup r.id cx.ext with
+              | Just (symbol, _) -> C.invoke out m symbol (descsOf out cx m tys) [cx.k]
+              | None -> lowerTerm src out cx func))
   | _ -> lowerTerm src out cx func
 
 -- Of the variables a term mentions, those a definition lifted out of where
@@ -834,7 +856,7 @@ fun placeOf cx (t : Type) (label : String) =
   | _ -> None
 
 -- An effect's symbol, and an operation's: the effect's, and then its name.
-fun effectSymbol (eff : String) : String = "${package}${eff}"
+fun effectSymbol (eff : String) : String = "meadow:${eff}"
 
 fun opSymbol (eff : String) (op : String) : String = "${effectSymbol eff}.${op}"
 
@@ -849,12 +871,32 @@ fun bare (canon : String) : String =
 -- declared, a `val` to each definition -- the functions first, which read
 -- nothing when they are made -- an entry that turns the value into the text
 -- the CEK machine would display, and a definition that does that for each
--- type the entry's value is made of.
-@pub fun program (p : CoreProgram) : CutProgram =
+-- type the entry's value is made of. A unit with no entry is its
+-- declarations alone. `known` are the declared types of the units it
+-- depends on, which it does not declare again, and `labelled` their
+-- constructors' named fields.
+@pub fun program
+    (p : CoreProgram)
+    (known : [(String, Int, [(String, [Type])])])
+    (labelled : [(String, [String])])
+    : CutProgram =
   let a = coreArena p in
   let file = coreRoot p in
   let defs = coreFileDefs a file in
-  let tops = V.foldl (\h d -> H.insert (coreDefId a d) True h) H.empty defs in
+  let pkg = coreFilePackage a file in
+  -- What it mentions of another unit's, by the binder it has here.
+  let ext =
+    V.foldl
+      (\h x -> H.insert (coreExternId a x) (coreExternSymbol a x, coreExternTypes a x) h)
+      H.empty
+      (coreFileExterns a file)
+  in
+  let tops =
+    V.foldl
+      (\h x -> H.insert (coreExternId a x) True h)
+      (V.foldl (\h d -> H.insert (coreDefId a d) True h) H.empty defs)
+      (coreFileExterns a file)
+  in
   -- A definition generic in its type, with the variables it is generic in.
   let generics =
     V.foldl
@@ -879,18 +921,10 @@ fun bare (canon : String) : String =
         (V.map fst (free a (coreDefBody a d) [] []))
   in
   let ordered = V.append (V.filter isFun defs) (inOrder a values reads values []) in
-  let datas =
-    V.map
-      (\d ->
-        (
-          coreDataName a d,
-          coreDataArity a d,
-          V.map (\c -> (coreDataCtorName a c, coreDataCtorFields a c)) (coreDataCtors a d)
-        ))
-      (coreFileDatas a file)
-  in
+  let own = V.filter (\d -> not (V.any (\k -> fst3 k == fst3 d) known)) (datasOf p) in
+  let datas = V.append known own in
   -- Each constructor whose fields have names, with them.
-  let fields = V.map (\n -> (coreNamedName a n, coreNamedLabels a n)) (coreFileNamed a file) in
+  let fields = V.append labelled (namedOf p) in
   runSt (\() ->
     let out = C.builder () in
     let halt = C.halt out C.nowhere in
@@ -908,7 +942,7 @@ fun bare (canon : String) : String =
                 (V.map
                    (\c -> C.ctorDecl out C.nowhere (bare (fst c)) (V.map fieldRep (snd c)))
                    ctors))
-        datas
+        own
     in
     let effects =
       V.map
@@ -937,7 +971,9 @@ fun bare (canon : String) : String =
         fields = fields,
         tvars = [],
         gtops = generics,
-        locals = H.empty
+        locals = H.empty,
+        pkg = pkg,
+        ext = ext
       }
     in
     -- A definition generic in its type is a `def` of the descriptors,
@@ -950,14 +986,14 @@ fun bare (canon : String) : String =
              C.valDecl
                out
                C.nowhere
-               (topSymbol (coreDefId a d))
+               (topSymbol pkg (coreDefId a d))
                (repOf (tyCoreTerm a inner))
                (lowerTerm a out cx inner)
            else
              C.genericDecl
                out
                C.nowhere
-               (topSymbol (coreDefId a d))
+               (topSymbol pkg (coreDefId a d))
                (V.map tname vars)
                []
                [C.param out C.nowhere "k" "ptr"]
@@ -985,7 +1021,7 @@ fun bare (canon : String) : String =
              C.invoke
                out
                C.nowhere
-               (topSymbol entry)
+               (topSymbol pkg entry)
                (V.map (\v -> C.desc out C.nowhere "ptr") vars)
                [C.binding
                   out
@@ -994,17 +1030,44 @@ fun bare (canon : String) : String =
                   (repOf answerTy)
                   (shownTo sh (C.var out C.nowhere "r") answerTy (C.cont out C.nowhere "k"))]
          | None ->
-             shownTo sh (C.sym out C.nowhere (topSymbol entry)) answerTy (C.cont out C.nowhere "k"))
+             shownTo
+               sh
+               (C.sym out C.nowhere (topSymbol pkg entry))
+               answerTy
+               (C.cont out C.nowhere "k"))
     in
     let showers = showersOf sh [] in
     let root =
-      C.file
-        out
-        C.nowhere
-        "${package}\"#entry\""
-        "str"
-        (V.concat [declared, effects, stGetRef lifted, vals, [shown], showers])
+      if entry < 0 then
+        C.file out C.nowhere "" "none" (V.concat [declared, effects, stGetRef lifted, vals])
+      else
+        C.file
+          out
+          C.nowhere
+          "${package}\"#entry\""
+          "str"
+          (V.concat [declared, effects, stGetRef lifted, vals, [shown], showers])
     in C.finished out root)
+
+fun fst3 (t : (a, b, c)) : a = match t with | (x, _, _) -> x
+
+-- The types a program of core declares: each one's name, how many types it
+-- takes, and each constructor with its fields' types.
+@pub fun datasOf (p : CoreProgram) : [(String, Int, [(String, [Type])])] =
+  let a = coreArena p in
+  V.map
+    (\d ->
+      (
+        coreDataName a d,
+        coreDataArity a d,
+        V.map (\c -> (coreDataCtorName a c, coreDataCtorFields a c)) (coreDataCtors a d)
+      ))
+    (coreFileDatas a (coreRoot p))
+
+-- Each constructor whose fields have names, with them.
+@pub fun namedOf (p : CoreProgram) : [(String, [String])] =
+  let a = coreArena p in
+  V.map (\n -> (coreNamedName a n, coreNamedLabels a n)) (coreFileNamed a (coreRoot p))
 
 -- `todo` after what each reads, each once: `done` is what is placed already.
 fun inOrder (a : CoreArena) (all : [CoreDef]) reads (todo : [CoreDef]) (done : [CoreDef])
@@ -1445,4 +1508,25 @@ fun shower sh (key : String) (t : Type) =
 
 -- `p` as the text of a program of Cut: `program`'s, and the definitions its
 -- entry shows a number with.
-@pub fun written (p : CoreProgram) : String = C.text (program p) ++ C.showInt package
+@pub fun written (p : CoreProgram) : String = writtenWith p [] [] ""
+
+-- The same for a program of several units: `before` is the declarations of
+-- the units it depends on, as `declarations` wrote them, and `known` and
+-- `labelled` what they declare.
+@pub fun writtenWith
+    (p : CoreProgram)
+    (known : [(String, Int, [(String, [Type])])])
+    (labelled : [(String, [String])])
+    (before : String)
+    : String =
+  let cut = program p known labelled in
+  C.header cut ++ before ++ C.body cut ++ C.showInt package
+
+-- A unit's declarations as text, to go before those of a unit that depends
+-- on it.
+@pub fun declarations
+    (p : CoreProgram)
+    (known : [(String, Int, [(String, [Type])])])
+    (labelled : [(String, [String])])
+    : String =
+  C.body (program p known labelled) ++ "\n"

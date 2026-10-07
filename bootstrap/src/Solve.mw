@@ -124,6 +124,15 @@ use Std.Macro (Reflect)
   value : a
 }
 
+-- The binder the first of a unit's own `impl`s' dictionaries has: below
+-- every other binder, and below those of the units it knows the types of,
+-- so that a dictionary's binder is its own in a whole program.
+@pub fun firstDictOf (types : [TypeEnv]) : Int =
+  V.foldl
+    (\m (t : TypeEnv) -> V.foldl (\n (e : Entry ImplDef) -> min n (e.value.dict - 1)) m t.impls)
+    (0 - 2)
+    types
+
 -- An associated type's trait, and its place among the trait's; `effect`
 -- for an associated effect, which is a row where the rest are types.
 @derive(Debug, PartialEq, Reflect)
@@ -241,6 +250,9 @@ use Sol.*
   -- The types a mention of a generic name is at, one for each variable over
   -- types its scheme has: by where the mention is.
   instAt : StRef s (HashMap String [Type]),
+  -- Which of its meanings a name with several was found to have: by where
+  -- it is written, the meaning's place among them.
+  chosenAt : StRef s (HashMap String Int),
   -- Mentions of a member of the group being inferred from inside it, which
   -- are monomorphic and so wanted nothing: where, the member, and the
   -- member mentioning it.

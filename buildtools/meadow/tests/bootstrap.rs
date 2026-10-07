@@ -2397,6 +2397,108 @@ fn glade_cases_compiled_by_meadowboot_evaluate_as_the_rust_compiler_has_them() {
     );
 }
 
+/// A package the program of the next test depends on: a type, functions --
+/// one generic in its type -- a value, a trait with a default and two
+/// `impl`s, one of them of a type that takes one, an effect, and a record.
+const SHAPES: &str = r#"use Shape.*
+use Crate.*
+
+@pub data Shape = Circle Int | Rect Int Int
+
+@pub fun area s = match s with | Circle r -> 3 * r * r | Rect w h -> w * h
+
+@pub fun twice f x = f (f x)
+
+@pub def unitSquare = Rect 1 1
+
+@pub trait Measure a {
+  fun measure : a -> Int
+  fun more : a -> Int
+    | more x = measure x + 1
+}
+
+impl Measure Shape {
+  fun measure s = area s
+}
+
+@pub data Crate a = Crate a
+
+impl Measure (Crate a) where Measure a {
+  fun measure b = match b with | Crate x -> measure x * 2
+}
+
+@pub effect Tick { tick : () -> Int }
+
+@pub fun ticks u = tick () + tick ()
+
+@pub record Point = { x : Int, y : Int }
+"#;
+
+/// A program of two units: everything `SHAPES` exports used from another
+/// package, with an `impl` of its trait for a type of this one.
+const APP: &str = r#"use Shapes (Shape, area, twice, unitSquare, Measure, measure, more, Crate, Tick, tick, ticks, Point)
+use Shapes.Shape.*
+use Shapes.Crate.*
+
+data Mine = Mine
+
+impl Measure Mine {
+  fun measure m = 10
+}
+
+fun total x = measure x + more x
+
+def result =
+  (
+    area (Rect 2 3),
+    twice (\n -> n + 1) 5,
+    area unitSquare,
+    total (Rect 2 3),
+    total (Crate Mine.Mine),
+    more Mine.Mine,
+    handle ticks () with { tick u k -> k 4 },
+    (Point { x = 1, y = 2 }).y
+  )
+
+"#;
+
+/// A program of more than one unit is lowered as one: each unit's
+/// definitions under its own package's symbols, a mention of another unit's
+/// by its symbol, and the declarations of the units before a unit before
+/// its own. What the Rust compiler answers for this one -- built with the
+/// standard library, which it uses nothing of -- is written here.
+#[test]
+fn a_program_of_two_units_lowered_by_meadowboot_answers_as_the_rust_compiler_has_it() {
+    let dir = std::env::temp_dir().join(format!("meadowboot-units-{}", std::process::id()));
+    let package = |name: &str, manifest: &str, file: &str, text: &str| {
+        let pkg = dir.join(name);
+        std::fs::create_dir_all(pkg.join("src")).expect("a package directory");
+        std::fs::write(pkg.join("Meadow.toml"), manifest).expect("a manifest");
+        let path = pkg.join("src").join(file);
+        std::fs::write(&path, text).expect("a source file");
+        path
+    };
+    package(
+        "Shapes",
+        "[package]\nname = \"Shapes\"\nversion = \"0.1.0\"\n",
+        "Lib.mw",
+        SHAPES,
+    );
+    let main = package(
+        "App",
+        "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nShapes = { path = \"../Shapes\" }\n",
+        "Main.mw",
+        APP,
+    );
+    let lowered = per_file("cut", &[main]);
+    let text = &lowered[0].1;
+    let want = "(6, 7, 1, 13, 41, 11, 8, 2)";
+    let (interpreted, on_axcut) = (cut_answer(text), axcut_answer(text));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(interpreted, want, "on the Cut interpreter:\n{text}");
+    assert_eq!(on_axcut, want, "on the AxCut machine:\n{text}");
+}
+
 /// How many glade cases MeadowBoot has to lower to Cut so that the reference
 /// interpreter answers as the Rust compiler does. The rest wait on primitives
 /// the interpreter does not have -- the sized integers', the floats', `show`

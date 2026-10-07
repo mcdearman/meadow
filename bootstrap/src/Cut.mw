@@ -255,11 +255,18 @@ use Std.Char as C
 -- --- the text ----------------------------------------------------------------
 
 -- A program as `meadow_cut::parse` reads it.
-@pub(pkg) fun text (p : CutProgram) : String =
+@pub(pkg) fun text (p : CutProgram) : String = header p ++ body p
+
+-- What a program's text opens with: its version, its entry, and what
+-- becomes of its answer.
+@pub(pkg) fun header (p : CutProgram) : String =
   match p with
-  | CutProgram a root ->
-      "cut 0\nentry ${cutFileEntry a root}\nanswer ${cutFileAnswer a root}\n\n"
-        ++ S.join "\n" (V.map (\d -> decl a d) (cutFileDecls a root))
+  | CutProgram a root -> "cut 0\nentry ${cutFileEntry a root}\nanswer ${cutFileAnswer a root}\n\n"
+
+-- Its declarations.
+@pub(pkg) fun body (p : CutProgram) : String =
+  match p with
+  | CutProgram a root -> S.join "\n" (V.map (\d -> decl a d) (cutFileDecls a root))
 
 fun decl (a : CutArena) (d : CutDecl) : String =
   match viewCutDecl a d with

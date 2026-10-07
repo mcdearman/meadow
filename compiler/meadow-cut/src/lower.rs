@@ -48,9 +48,18 @@
 //! front end, and one called again goes on from the `perform` again, as an
 //! operation marked `@many` wants.
 //!
-//! **Not lowered yet**: a definition generic in a representation; a
-//! descriptor; and a `μ` that is an argument, whose representation nothing
-//! says. A program with one of them is refused, with which.
+//! # Representations: descriptors
+//!
+//! A definition generic in a representation takes, for each variable, a
+//! descriptor: a number that says which representation the variable is
+//! where it was called. A name represented as a variable says so by its
+//! descriptor's name, and wherever such a name is, its descriptor is too:
+//! `meadow_axcut::describe` adds it to each environment that lacks it, as
+//! it does for this compiler's own lowering.
+//!
+//! **Not lowered**: a `μ` where a value is wanted, anywhere but as the
+//! argument of a definition whose parameter says how it is represented. A
+//! program with one is refused, saying so.
 
 use std::collections::{HashMap, HashSet};
 
@@ -164,6 +173,10 @@ fn lowered(p: &Program, prints: bool) -> R<Lowered> {
         current: None,
         handles: false,
         search: Label(0),
+        rep_vars: HashMap::new(),
+        descs: HashSet::new(),
+        params: HashMap::new(),
+        expected: None,
         prints,
         natives: HashMap::new(),
         answers: HashMap::new(),
@@ -176,17 +189,26 @@ fn lowered(p: &Program, prints: bool) -> R<Lowered> {
     };
     l.declare(p)?;
     for (i, d) in p.defs.iter().enumerate() {
-        if !d.rep_vars.is_empty() {
-            return Err(format!(
-                "`{}` is generic in a representation, which is not lowered yet",
-                d.symbol
-            ));
-        }
         l.current = Some(d.symbol.clone());
         l.map.blocks.insert(Label(i as u32), d.symbol.clone());
         let mut sc = Scope::default();
-        for b in &d.params {
-            let n = l.fresh(rep_of(&b.rep)?);
+        // Each parameter's name first: one may be represented as a variable
+        // whose descriptor is a parameter after it.
+        let names: Vec<Name> = d.params.iter().map(|_| l.fresh(ax::Rep::Ref)).collect();
+        l.rep_vars.clear();
+        for (var, descriptor) in &d.rep_vars {
+            let Some(at) = d.params.iter().position(|b| b.name == *descriptor) else {
+                return Err(format!(
+                    "`{}`: `'{var}` is described by `{descriptor}`, which is not a parameter",
+                    d.symbol
+                ));
+            };
+            l.rep_vars.insert(var.clone(), names[at]);
+            l.descs.insert(names[at]);
+        }
+        for (b, n) in d.params.iter().zip(names) {
+            let rep = l.rep(&b.rep)?;
+            l.out.reps.insert(n, rep);
             sc.bind(&b.name, n);
             l.called(n, &b.name);
         }
@@ -208,9 +230,18 @@ fn lowered(p: &Program, prints: bool) -> R<Lowered> {
         });
     }
     l.current = None;
+    l.rep_vars.clear();
     l.start(p)?;
     if l.handles {
         l.search_block();
+    }
+    // Every value represented as a variable has its descriptor wherever it
+    // is: each environment that lacks one is given it.
+    let unmet = ax::describe::close(&mut l.out.defs, &l.out.reps, &l.out.threads, &l.descs);
+    if !unmet.is_empty() {
+        return Err(
+            "a value is represented as a variable that nothing in scope describes".to_string(),
+        );
     }
     Ok(Lowered {
         program: l.out,
@@ -224,6 +255,15 @@ struct Lower {
     handles: bool,
     /// The block that finds an operation's entry in the evidence.
     search: Label,
+    /// Each definition's parameters' representations, as written.
+    params: HashMap<Symbol, Vec<Rep>>,
+    /// How the `μ` about to be lowered as an argument is represented.
+    expected: Option<ax::Rep>,
+    /// The representation variables of the definition being lowered, each
+    /// with the name its descriptor is in scope by.
+    rep_vars: HashMap<String, Name>,
+    /// Every name that holds a descriptor.
+    descs: HashSet<Name>,
     /// What each block and name made so far came from.
     map: Map,
     /// The declaration being lowered, which the names made now are of.
@@ -286,6 +326,11 @@ enum Step {
     New(Name, Vec<Name>, Vec<Block>),
     /// A primitive with one continuation, whose parameters are these.
     Extern(Extern, Vec<Name>, Vec<Name>),
+    /// `μ k. s` where a value is wanted: `s` runs, with `k` an object of
+    /// what is in scope, and what follows is that object's method, taking
+    /// the value `s` gives it. The object, what it captures, the method's
+    /// parameters, and `s`.
+    Mu(Name, Vec<Name>, Vec<Name>, S),
 }
 
 fn wrap(steps: Vec<Step>, mut rest: S) -> S {
@@ -308,6 +353,12 @@ fn wrap(steps: Vec<Step>, mut rest: S) -> S {
                 op,
                 args,
                 blocks: vec![Block { params, body: rest }],
+            },
+            Step::Mu(name, captures, params, body) => S::New {
+                name,
+                captures,
+                methods: vec![Block { params, body: rest }],
+                rest: Box::new(body),
             },
         };
     }
@@ -374,6 +425,10 @@ impl Lower {
                 .insert(r, InternedString::from(ctor.to_string().as_str()));
         }
         for (i, d) in p.defs.iter().enumerate() {
+            self.params.insert(
+                d.symbol.clone(),
+                d.params.iter().map(|b| b.rep.clone()).collect(),
+            );
             self.defs.insert(
                 d.symbol.clone(),
                 (Label(i as u32), d.params.len() + d.conts.len()),
@@ -381,7 +436,7 @@ impl Lower {
         }
         for (i, v) in p.vals.iter().enumerate() {
             self.vals
-                .insert(v.symbol.clone(), (i as i64, rep_of(&v.rep)?));
+                .insert(v.symbol.clone(), (i as i64, self.rep(&v.rep)?));
         }
         for (op, runtime) in &p.natives {
             let Some((effect, name)) = runtime.split_once('.') else {
@@ -394,8 +449,10 @@ impl Lower {
         }
         for e in &p.effects {
             for op in &e.ops {
-                self.answers
-                    .insert(e.symbol.child(&op.name), rep_of(&op.result)?);
+                self.answers.insert(
+                    e.symbol.child(&op.name),
+                    self.rep(&op.result).unwrap_or(ax::Rep::Ref),
+                );
             }
         }
         let mut names = HashSet::new();
@@ -462,7 +519,7 @@ impl Lower {
         let mut turns: Vec<Turn> = Vec::new();
         for v in &p.vals {
             self.current = Some(v.symbol.clone());
-            let rep = rep_of(&v.rep)?;
+            let rep = self.rep(&v.rep)?;
             let keep = self.fresh(ax::Rep::Ref);
             self.out.continuations.insert(keep);
             let before = sc.env.clone();
@@ -629,10 +686,17 @@ impl Lower {
                         "`{f}` is called with the wrong number of arguments"
                     ));
                 }
+                let wanted = self.params.get(f).cloned().unwrap_or_default();
                 let mut sel = Vec::new();
-                for a in args {
+                for (i, a) in args.iter().enumerate() {
+                    // A `μ` is represented as the parameter it is given for.
+                    self.expected = match (a, wanted.get(i)) {
+                        (Producer::Mu(..), Some(r)) => self.rep(r).ok(),
+                        _ => None,
+                    };
                     sel.push(self.atom(a, &mut sc, &mut steps)?);
                 }
+                self.expected = None;
                 for c in conts {
                     sel.push(self.reify(c, &mut sc, &mut steps)?);
                 }
@@ -668,7 +732,7 @@ impl Lower {
                     }
                     ("select", None) => {
                         let rep = match c {
-                            Consumer::MuTilde(b, _) => rep_of(&b.rep)?,
+                            Consumer::MuTilde(b, _) => self.rep(&b.rep)?,
                             _ => ax::Rep::Ref,
                         };
                         (Extern::Select(label, None), vec![record], rep)
@@ -700,6 +764,41 @@ impl Lower {
             Statement::Handle(h) => self.handle(h, &mut sc, &mut steps)?,
         };
         Ok(wrap(steps, last))
+    }
+
+    /// How a representation of Cut's is one of AxCut's: a variable by the
+    /// name its descriptor has in the definition being lowered.
+    fn rep(&self, r: &Rep) -> R<ax::Rep> {
+        use meadow_rt::num::Width;
+        Ok(match r {
+            Rep::I64 => ax::Rep::Int,
+            Rep::F64 => ax::Rep::Float,
+            Rep::F32 => ax::Rep::Bits(desc::FLOAT32),
+            Rep::I8 => ax::Rep::Bits(desc::word(Width::I8)),
+            Rep::I16 => ax::Rep::Bits(desc::word(Width::I16)),
+            Rep::I32 => ax::Rep::Bits(desc::word(Width::I32)),
+            Rep::U8 => ax::Rep::Bits(desc::word(Width::U8)),
+            Rep::U16 => ax::Rep::Bits(desc::word(Width::U16)),
+            Rep::U32 => ax::Rep::Bits(desc::word(Width::U32)),
+            Rep::U64 => ax::Rep::Bits(desc::word(Width::U64)),
+            Rep::Bool => ax::Rep::Bits(desc::BOOL),
+            Rep::Char => ax::Rep::Bits(desc::CHAR),
+            Rep::Unit => ax::Rep::Bits(desc::UNIT),
+            // A string is an object on the heap. AxCut's `Str` is a symbol's:
+            // an interned name, whose word is its key.
+            Rep::Str | Rep::Ptr | Rep::Any => ax::Rep::Ref,
+            Rep::Sym => ax::Rep::Str,
+            // A descriptor is a number: which representation.
+            Rep::Desc => ax::Rep::Int,
+            Rep::Var(a) => match self.rep_vars.get(a) {
+                Some(n) => ax::Rep::Var(n.0),
+                None => {
+                    return Err(format!(
+                        "`'{a}` is not a representation variable of the definition it is in"
+                    ));
+                }
+            },
+        })
     }
 
     /// `names`, each once, in the order given.
@@ -796,7 +895,7 @@ impl Lower {
     ) -> R<S> {
         let native = self.natives.get(op).copied();
         let resumed = match c {
-            Consumer::MuTilde(b, _) => rep_of(&b.rep)?,
+            Consumer::MuTilde(b, _) => self.rep(&b.rep)?,
             _ => self.answers.get(op).copied().unwrap_or(ax::Rep::Ref),
         };
         let mut xs = Vec::new();
@@ -1072,7 +1171,7 @@ impl Lower {
                 halt: sc.halt,
             };
             for b in &c.params {
-                let n = self.fresh(rep_of(&b.rep)?);
+                let n = self.fresh(self.rep(&b.rep)?);
                 inner.bind(&b.name, n);
                 self.called(n, &b.name);
             }
@@ -1115,7 +1214,7 @@ impl Lower {
         if !captures.contains(&target) {
             captures.push(target);
         }
-        let value = self.fresh(rep_of(&x.rep)?);
+        let value = self.fresh(self.rep(&x.rep)?);
         self.called(value, &x.name);
         let now = self.fresh(ax::Rep::Ref);
         self.called(now, k);
@@ -1196,7 +1295,7 @@ impl Lower {
             }),
             [c] => {
                 let rep = match c {
-                    Consumer::MuTilde(b, _) => rep_of(&b.rep)?,
+                    Consumer::MuTilde(b, _) => self.rep(&b.rep)?,
                     _ => self.answer_of(p, &args),
                 };
                 let r = self.fresh(rep);
@@ -1336,7 +1435,7 @@ impl Lower {
                 halt: sc.halt,
             };
             for f in &arm.fields {
-                let n = self.fresh(rep_of(&f.rep)?);
+                let n = self.fresh(self.rep(&f.rep)?);
                 inner.bind(&f.name, n);
                 self.called(n, &f.name);
             }
@@ -1383,7 +1482,7 @@ impl Lower {
         free.names.insert(EV.to_string());
         let captures = free.among(sc);
         let rep = match c {
-            Consumer::MuTilde(b, _) => rep_of(&b.rep)?,
+            Consumer::MuTilde(b, _) => self.rep(&b.rep)?,
             _ => ax::Rep::Ref,
         };
         let x = self.fresh(rep);
@@ -1492,7 +1591,7 @@ impl Lower {
                         halt: sc.halt,
                     };
                     for b in &m.params {
-                        let n = self.fresh(rep_of(&b.rep)?);
+                        let n = self.fresh(self.rep(&b.rep)?);
                         inner.bind(&b.name, n);
                         self.called(n, &b.name);
                     }
@@ -1514,14 +1613,45 @@ impl Lower {
                 steps.push(Step::New(n, captures, blocks));
                 n
             }
-            Producer::Mu(..) => {
-                return Err(
-                    "a `μ` that is an argument is not lowered yet: nothing says how its value is represented"
-                        .to_string(),
-                );
+            Producer::Mu(k, body) => {
+                let Some(rep) = self.expected.take() else {
+                    return Err(
+                        "a `μ` is lowered only as a definition's argument: elsewhere nothing says how its value is represented"
+                            .to_string(),
+                    );
+                };
+                // What follows captures everything in scope, and goes on
+                // with the value.
+                let captures = sc.env.clone();
+                let object = self.fresh(ax::Rep::Ref);
+                self.out.continuations.insert(object);
+                self.called(object, k);
+                let mut inside = sc.clone();
+                inside.push(object);
+                inside.vars.insert(k.clone(), object);
+                let lowered = self.statement(body, &inside)?;
+                let value = self.fresh(rep);
+                sc.env.push(value);
+                steps.push(Step::Mu(object, captures, sc.env.clone(), lowered));
+                value
             }
-            Producer::Desc(_) => {
-                return Err("a descriptor is not lowered yet".to_string());
+            // A descriptor: the one in scope for a variable, a constant for
+            // a representation that is known.
+            Producer::Desc(Rep::Var(a)) => match self.rep_vars.get(a) {
+                Some(n) => *n,
+                None => {
+                    return Err(format!(
+                        "`'{a}` is not a representation variable of the definition it is in"
+                    ));
+                }
+            },
+            Producer::Desc(r) => {
+                let Some(code) = self.rep(r)?.desc() else {
+                    return Err(format!("`{r}` has no descriptor"));
+                };
+                let n = lit(self, sc, steps, Lit::Int(i64::from(code)), ax::Rep::Int);
+                self.descs.insert(n);
+                n
             }
         })
     }
@@ -1543,33 +1673,6 @@ impl Lower {
         steps.push(Step::Let(n, tag, InternedString::from(ctor), fields));
         Ok(n)
     }
-}
-
-/// How a representation of Cut's is one of AxCut's.
-fn rep_of(r: &Rep) -> R<ax::Rep> {
-    use meadow_rt::num::Width;
-    Ok(match r {
-        Rep::I64 => ax::Rep::Int,
-        Rep::F64 => ax::Rep::Float,
-        Rep::F32 => ax::Rep::Bits(desc::FLOAT32),
-        Rep::I8 => ax::Rep::Bits(desc::word(Width::I8)),
-        Rep::I16 => ax::Rep::Bits(desc::word(Width::I16)),
-        Rep::I32 => ax::Rep::Bits(desc::word(Width::I32)),
-        Rep::U8 => ax::Rep::Bits(desc::word(Width::U8)),
-        Rep::U16 => ax::Rep::Bits(desc::word(Width::U16)),
-        Rep::U32 => ax::Rep::Bits(desc::word(Width::U32)),
-        Rep::U64 => ax::Rep::Bits(desc::word(Width::U64)),
-        Rep::Bool => ax::Rep::Bits(desc::BOOL),
-        Rep::Char => ax::Rep::Bits(desc::CHAR),
-        Rep::Unit => ax::Rep::Bits(desc::UNIT),
-        // A string is an object on the heap. AxCut's `Str` is a symbol's: an
-        // interned name, whose word is its key.
-        Rep::Str | Rep::Ptr | Rep::Any => ax::Rep::Ref,
-        Rep::Sym => ax::Rep::Str,
-        Rep::Desc | Rep::Var(_) => {
-            return Err(format!("a value represented as `{r}` is not lowered yet"));
-        }
-    })
 }
 
 /// The primitive Cut calls `name`: `meadow_rt::Prim`'s name, its first

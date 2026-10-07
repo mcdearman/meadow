@@ -371,14 +371,27 @@ fn a_program_of_cut_runs_on_glade_and_as_an_executable_of_silos() {
     }
     std::fs::write(
         dir.join("generic.cut"),
-        "cut 0\nentry t:Main/main\nanswer none\n\n\
+        "cut 0\nentry t:Main/main\nanswer str\n\n\
          def t:Main/id <'a = d> (d: desc, x: 'a; k: ptr) =\n  <x | k>\n\n\
-         def t:Main/main (; k: ptr) =\n  t:Main/id(desc(i64), 1; k)\n",
+         def t:Main/main (; k: ptr) =\n  t:Main/id(desc(i64), 1; μ̃ n: i64. t:Main/id(desc(str), \"generic\"; k))\n",
     )
     .unwrap();
-    let (ok, out, err) = meadow(&dir, &["cut", "generic.cut"]);
+    for runtime in [&[][..], &["--runtime", "silo"]] {
+        let mut args = vec!["cut", "generic.cut"];
+        args.extend_from_slice(runtime);
+        let (ok, out, err) = meadow(&dir, &args);
+        assert!(ok, "{runtime:?}: {err}");
+        assert_eq!(out, "generic", "{runtime:?}");
+    }
+    std::fs::write(
+        dir.join("refused.cut"),
+        "cut 0\nentry t:Main/main\nanswer none\n\n\
+         def t:Main/main (; k: ptr) =\n  prim add(μ j. <1 | j>, 1; k)\n",
+    )
+    .unwrap();
+    let (ok, out, err) = meadow(&dir, &["cut", "refused.cut"]);
     assert!(!ok && out.is_empty(), "{out}");
-    assert!(err.contains("not lowered yet"), "{err}");
+    assert!(err.contains("`μ`"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

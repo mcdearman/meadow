@@ -355,22 +355,96 @@ fn a_reader_refuses_what_it_cannot_read() {
 #[test]
 fn what_is_not_lowered_to_axcut_yet_is_refused_and_says_what() {
     let lowered = |text: &str| meadow_cut::lower::lower(&parse(text).expect("a program"));
-    let generic = lowered(
+    // A `μ` where an argument is wanted: nothing says how its value is
+    // represented.
+    let mu = lowered(
         "cut 0
 entry idyll:Main/main
 answer none
 
-def idyll:Main/id <'a = d> (d: desc, x: 'a; k: ptr) =
+def idyll:Main/main (; k: ptr) =
+  prim add(μ j. <1 | j>, 1; k)
+",
+    );
+    assert!(mu.as_ref().is_err_and(|e| e.contains("`μ`")), "{mu:?}");
+    // A representation variable nothing describes.
+    let undescribed = lowered(
+        "cut 0
+entry idyll:Main/main
+answer none
+
+def idyll:Main/id (x: 'a; k: ptr) =
   <x | k>
 
 def idyll:Main/main (; k: ptr) =
-  idyll:Main/id(desc(i64), 1; k)
+  idyll:Main/id(1; k)
 ",
     );
     assert!(
-        generic.as_ref().is_err_and(|e| e.contains("generic")),
-        "{generic:?}"
+        undescribed
+            .as_ref()
+            .is_err_and(|e| e.contains("representation variable")),
+        "{undescribed:?}"
     );
+}
+
+#[test]
+fn a_mu_is_an_argument_of_a_definition() {
+    // What it gives its continuation is the argument, and what is in scope
+    // where it is written is still in scope after it.
+    let out = runs(
+        "cut 0
+entry idyll:Main/main
+answer str
+
+def idyll:Main/sum (a: i64, b: i64; k: ptr) =
+  prim add(a, b; k)
+
+def idyll:Main/main (; k: ptr) =
+  let twenty: i64 = 20 in
+  idyll:Main/sum(μ j. prim add(twenty, 1; j), μ j. <twenty | j>; μ̃ n: i64.
+    prim add(n, 1; μ̃ m: i64.
+      prim eq(m, 42; μ̃ u: unit. <\"no\" | k>, μ̃ u: unit. <\"42\" | k>)))
+",
+    );
+    assert_eq!(out.output, "42");
+}
+
+#[test]
+fn a_definition_generic_in_a_representation_takes_its_descriptor() {
+    // The same definitions at an `i64` and at a `str`: a value passed
+    // through, one taken out of data whose field is the variable, and one a
+    // closure keeps -- each with its descriptor wherever it is, which the
+    // AxCut machine checks.
+    let out = runs(
+        "cut 0
+entry idyll:Main/main
+answer str
+
+data idyll:Main/Box <'a> { Box('a) }
+
+def idyll:Main/id <'a = d> (d: desc, x: 'a; k: ptr) =
+  <x | k>
+
+def idyll:Main/unbox <'a = d> (b: ptr, d: desc; k: ptr) =
+  <b | case { idyll:Main/Box.Box(v: 'a) => idyll:Main/id(d, v; k) }>
+
+def idyll:Main/always <'a = d> (d: desc, x: 'a; k: ptr) =
+  <cocase { apply(u: unit; k1: ptr) => <x | k1> } | k>
+
+def idyll:Main/main (; k: ptr) =
+  idyll:Main/id(desc(i64), 20; μ̃ n: i64.
+    idyll:Main/unbox(idyll:Main/Box.Box(n), desc(i64); μ̃ m: i64.
+      idyll:Main/always(desc(i64), 2; μ̃ f: ptr.
+        <f | apply(unit; μ̃ two: i64.
+          prim add(n, m; μ̃ s: i64.
+            prim add(s, two; μ̃ t: i64.
+              idyll:Main/always(desc(str), \"forty-two\"; μ̃ g: ptr.
+                <g | apply(unit; μ̃ text: str.
+                  prim eq(t, 42; μ̃ u: unit. <\"no\" | k>, μ̃ u: unit. <text | k>))>))))>)))
+",
+    );
+    assert_eq!(out.output, "forty-two");
 }
 
 #[test]

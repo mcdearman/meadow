@@ -167,18 +167,21 @@ use Meaning.*
 -- place there, and the required traits to go through from it -- by an
 -- `impl`, its dictionary applied to what its own `where` wanted in turn, or
 -- not at all.
-@pub data Sol = ByGiven Int [String] | ByImpl Int [Int] | Failed
+@pub data Sol
+  = ByGiven Int [String]
+  | ByImpl Int [Type] [Int]
+  | Failed
 
 -- How a wanted trait is answered, as elaboration builds it: the enclosing
 -- function's own dictionary parameter, by its place; a required trait's
 -- dictionary out of one that requires it, by the field's label; an `impl`'s
--- dictionary, by its binder, applied to the dictionaries its `where` asks
--- for; or nothing, reported already.
+-- dictionary, by its binder, at the types its own variables are and applied
+-- to the dictionaries its `where` asks for; or nothing, reported already.
 @derive(Debug, PartialEq, Reflect)
 @pub data Evidence
   = Given Int
   | Super Evidence String
-  | Impl Int [Evidence]
+  | Impl Int [Type] [Evidence]
   | Missing
 
 use Sol.*
@@ -235,6 +238,9 @@ use Sol.*
   -- What each mention of a name with a `where` wanted, by where it is: the
   -- module and the node, as an overloaded name's meanings are kept.
   atNode : StRef s (HashMap String [Int]),
+  -- The types a mention of a generic name is at, one for each variable over
+  -- types its scheme has: by where the mention is.
+  instAt : StRef s (HashMap String [Type]),
   -- Mentions of a member of the group being inferred from inside it, which
   -- are monomorphic and so wanted nothing: where, the member, and the
   -- member mentioning it.

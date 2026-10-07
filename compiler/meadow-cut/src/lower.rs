@@ -390,7 +390,7 @@ impl Lower {
     }
 
     fn tag_of(&mut self, ctor: &str) -> Tag {
-        let ctor = InternedString::from(ctor);
+        let ctor = InternedString::from(ctor_name(ctor).as_str());
         if let Some(t) = self.out.tags.get(&ctor) {
             return *t;
         }
@@ -420,9 +420,10 @@ impl Lower {
             let Some(r) = ax::Role::named(role) else {
                 return Err(format!("`{role}` is not a role a runtime knows"));
             };
-            self.out
-                .roles
-                .insert(r, InternedString::from(ctor.to_string().as_str()));
+            self.out.roles.insert(
+                r,
+                InternedString::from(ctor_name(&ctor.to_string()).as_str()),
+            );
         }
         for (i, d) in p.defs.iter().enumerate() {
             self.params.insert(
@@ -1670,7 +1671,12 @@ impl Lower {
         let tag = self.tag_of(ctor);
         let n = self.fresh(ax::Rep::Ref);
         sc.push(n);
-        steps.push(Step::Let(n, tag, InternedString::from(ctor), fields));
+        steps.push(Step::Let(
+            n,
+            tag,
+            InternedString::from(ctor_name(ctor).as_str()),
+            fields,
+        ));
         Ok(n)
     }
 }
@@ -1883,5 +1889,26 @@ fn methods_of(s: &Statement, out: &mut HashSet<String>) {
             consumer(&h.cont, out);
         }
         Statement::Error(_) => {}
+    }
+}
+
+/// A constructor's name as a runtime has it, of its symbol as text. A
+/// runtime hashes a value of a data type by its constructor's name, and
+/// Meadow's rule is the name the compiler's own lowering hands a runtime: the
+/// package and then the path, `Json.Value.Null` -- the list every program
+/// has is `List.Cons`, with no package -- so that is what one of Meadow's is
+/// called. Any other language's is its whole symbol.
+fn ctor_name(symbol: &str) -> String {
+    let Some((package, path)) = symbol
+        .strip_prefix("meadow:")
+        .and_then(|s| s.split_once('/'))
+    else {
+        return symbol.to_string();
+    };
+    let package = package.split('@').next().unwrap_or(package);
+    if package == "Std" && path.starts_with("List.") {
+        path.to_string()
+    } else {
+        format!("{package}.{path}")
     }
 }

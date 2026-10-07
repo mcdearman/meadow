@@ -101,14 +101,38 @@ fun want (i : Inf s) (p : Pred) (owner : Maybe Int) : Int ! { St s | e } =
 -- The scheme of a name mentioned, instantiated, wanting what its `where`
 -- asks for.
 @pub fun instantiateAt (i : Inf s) (node : String) (sc : Scheme) : Type ! { St s | e } =
-  if V.isEmpty sc.preds then instantiate i sc
+  if V.isEmpty sc.quant then instantiate i sc
   else
-    match instantiateWithPreds i sc with
-    | (t, preds) ->
-        let owner = stGetRef i.member in
-        let at = V.map (\p -> want i p owner) preds in
-        let u = stSetRef i.atNode (H.insert node at (stGetRef i.atNode)) in
-        t
+    let fresh = freshQuantifiers i.ar sc in
+    let types = overTypes sc fresh in
+    let u0 =
+      if V.isEmpty types then () else stSetRef i.instAt (H.insert node types (stGetRef i.instAt))
+    in
+    let t = substBound sc.ty fresh in
+    if V.isEmpty sc.preds then t
+    else
+      let owner = stGetRef i.member in
+      let at = V.map (\p -> want i p owner) (predsAt sc fresh) in
+      let u = stSetRef i.atNode (H.insert node at (stGetRef i.atNode)) in
+      t
+
+-- Those of `fresh`, one for each of `sc`'s quantifiers, that are variables
+-- over types: what a value's representation can depend on.
+@pub fun overTypes (sc : Scheme) (fresh : [Type]) : [Type] =
+  V.concatMap
+    (\k -> if V.getOr Plain sc.quant k == Plain then [V.getOr Error fresh k] else [])
+    (V.range 0 (V.len sc.quant))
+
+-- A scheme's `where`, its quantifiers `fresh`.
+fun predsAt (sc : Scheme) (fresh : [Type]) : [Pred] =
+  V.map
+    (\(p : Pred) ->
+      Pred {
+        tr = p.tr,
+        tys = V.map (\t -> substBound t fresh) p.tys,
+        assocs = V.map (\t -> substBound t fresh) p.assocs
+      })
+    sc.preds
 
 -- A binding begins: what is wanted from here on is its body's.
 @pub fun beginBinding (i : Inf s) : Int ! { St s | e } =
@@ -149,11 +173,12 @@ fun solveOne (i : Inf s) (k : Int) : Bool ! { St s | e } =
 -- wanted in turn.
 fun answerWith (i : Inf s) (k : Int) (tys : [Type]) (found : ImplDef) : () ! { St s | e } =
   let w = wantedAt i k in
-  match instantiateWithPreds i found.scheme with
-  | (dictTy, context) ->
-      let u = unifyAt i dictTy (Con w.pred.tr (V.append tys w.pred.assocs)) in
-      let subs = V.map (\p -> want i p w.owner) context in
-      setSol i k (Just (ByImpl found.dict subs))
+  let fresh = freshQuantifiers i.ar found.scheme in
+  let u =
+    unifyAt i (substBound found.scheme.ty fresh) (Con w.pred.tr (V.append tys w.pred.assocs))
+  in
+  let subs = V.map (\p -> want i p w.owner) (predsAt found.scheme fresh) in
+  setSol i k (Just (ByImpl found.dict (overTypes found.scheme fresh) subs))
 
 -- Wanted `k` is of a type nothing will ever say: answered by the trait's
 -- `impl` for every type, or at `Int` for an integer literal's or an
@@ -531,12 +556,20 @@ fun placeWanted
     (stGetRef i.fixed)
     (H.toVec (stGetRef i.atNode))
 
+-- The types each mention of a generic name is at, once the unit is done.
+@pub fun instsOfUnit (i : Inf s) : HashMap String [Type] ! { St s | e } =
+  V.foldl
+    (\h kv -> H.insert (fst kv) (V.map (settled i.ar) (snd kv)) h)
+    H.empty
+    (H.toVec (stGetRef i.instAt))
+
 -- The dictionary that answers wanted `k`.
 @pub fun evidenceOf (i : Inf s) (k : Int) : Evidence ! { St s | e } =
   match (wantedAt i k).sol with
   | Just (ByGiven at path) ->
       V.foldl (\e tr -> Evidence.Super e (superLabel tr)) (Evidence.Given at) path
-  | Just (ByImpl dict subs) -> Evidence.Impl dict (V.map (evidenceOf i) subs)
+  | Just (ByImpl dict tys subs) ->
+      Evidence.Impl dict (V.map (settled i.ar) tys) (V.map (evidenceOf i) subs)
   | _ -> Evidence.Missing
 
 fun finishFrom (i : Inf s) (k : Int) : () ! { St s | e } =

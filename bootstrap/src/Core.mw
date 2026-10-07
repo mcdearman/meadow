@@ -207,6 +207,10 @@ type Ty = Type
 -- type declared: its name, how many types it takes, and its constructors
 -- with their fields' types -- a type it takes written `Bound`, by its place
 -- -- and each effect, with what each of its operations takes and answers.
+-- A value generic in its type says so, `TyLam`, naming the variables its
+-- types are written with, and a mention of one says the types it is at,
+-- `TyApp`: how a value of a variable's type is represented is the type's to
+-- say, at run time.
 -- What `Elab` makes of a program, and what is lowered to Cut, which needs to
 -- know how each value is represented.
 @pub(pkg) lang! {
@@ -222,6 +226,8 @@ type Ty = Type
     + Clause { eff : String, op : String, param : Int, paramTy : Ty, resume : Int, body : Term }
   Term - Lam
   Term + Lam { param : Int, paramTy : Ty, body : Term }
+  Term + TyLam { vars : [Int], body : Term }
+  Term + TyApp { func : Term, tys : [Ty] }
   Term * { ty : Ty }
   Pat * { ty : Ty }
 }
@@ -232,6 +238,8 @@ pass! {
     | File { entry, defs, named } -> File { entry = entry, defs = defs, named = named }
     | Var { id } -> Var { id = id }
     | Lam { param, body } -> Lam { param = param, body = body }
+    | TyLam { body } -> body
+    | TyApp { func } -> func
     | App { func, arg } -> App { func = func, arg = arg }
     | Let { id, value, body } -> Let { id = id, value = value, body = body }
     | LetRec { binds, body } -> LetRec { binds = binds, body = body }

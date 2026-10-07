@@ -24,7 +24,7 @@ use Std.Char as C
   Op + Op { name : String, params : [String], result : String }
   Decl + Effect { symbol : String, ops : [Op] }
   Decl + Val { symbol : String, rep : String, body : Stmt }
-  Decl + Def { symbol : String, params : [Param], conts : [Param], body : Stmt }
+  Decl + Def { symbol : String, reps : [String], params : [Param], conts : [Param], body : Stmt }
   Param + Param { name : String, rep : String }
   Prod + Var { name : String }
   Prod + Sym { symbol : String }
@@ -34,6 +34,7 @@ use Std.Char as C
   Prod + Str { text : String }
   Prod + Bool { value : Bool }
   Prod + Unit {}
+  Prod + Desc { rep : String }
   Prod + Con { symbol : String, args : [Prod] }
   Prod + Tuple { items : [Prod] }
   Prod + Array { items : [Prod] }
@@ -103,7 +104,23 @@ use Std.Char as C
 
 -- `def symbol (params; conts) = s`.
 @pub(pkg) fun defDecl out (m : Meta) (symbol : String) params conts body =
-  newCutDeclDef out m symbol params conts body
+  newCutDeclDef out m symbol [] params conts body
+
+-- `def symbol <'a = da, ...> (da: desc, ..., params; conts) = s`: a
+-- definition generic in how values are represented, a descriptor to each of
+-- `reps` before what else it takes.
+@pub(pkg) fun genericDecl out (m : Meta) (symbol : String) (reps : [String]) params conts body =
+  newCutDeclDef
+    out
+    m
+    symbol
+    reps
+    (V.append (V.map (\r -> newCutParam out m "d${r}" "desc") reps) params)
+    conts
+    body
+
+-- `desc(rep)`: a representation's descriptor, a value.
+@pub(pkg) fun desc out (m : Meta) (rep : String) = newCutProdDesc out m rep
 
 @pub(pkg) fun param out (m : Meta) (name : String) (rep : String) = newCutParam out m name rep
 
@@ -258,7 +275,10 @@ fun decl (a : CutArena) (d : CutDecl) : String =
   | CutDeclView.Effect r ->
       let op = \o -> "${cutOpName a o}(${S.join ", " (cutOpParams a o)}) -> ${cutOpResult a o}" in
       "effect ${r.symbol} { ${S.join "; " (V.map op r.ops)} }\n"
-  | CutDeclView.Def r -> "def ${r.symbol} ${params a r.params r.conts} =\n  ${stmt a 1 r.body}\n"
+  | CutDeclView.Def r ->
+      (let reps =
+         if V.isEmpty r.reps then "" else "<${S.join ", " (V.map (\x -> "'${x} = d${x}") r.reps)}> "
+       in "def ${r.symbol} ${reps}${params a r.params r.conts} =\n  ${stmt a 1 r.body}\n")
 
 fun paramText (a : CutArena) (p : CutParam) : String = "${cutParamName a p}: ${cutParamRep a p}"
 
@@ -300,6 +320,7 @@ fun prod (a : CutArena) (depth : Int) (p : CutProd) : String =
   | CutProdView.Str r -> quoted r.text
   | CutProdView.Bool r -> if r.value then "true" else "false"
   | CutProdView.Unit _ -> "unit"
+  | CutProdView.Desc r -> "desc(${r.rep})"
   | CutProdView.Con r ->
       if V.isEmpty r.args then r.symbol
       else "${r.symbol}(${S.join ", " (V.map (prod a depth) r.args)})"

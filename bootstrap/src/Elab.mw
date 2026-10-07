@@ -21,7 +21,7 @@ use MeadowBoot.Rename (Hir!)
 use MeadowBoot.Infer
 use MeadowBoot.Infer (Typed!)
 use MeadowBoot.Infer (Inferred)
-use MeadowBoot.Solve (Evidence, TraitShape, ImplDef, Entry, Super)
+use MeadowBoot.Solve (Evidence, TraitShape, ImplDef, Entry, Super, Generalized)
 use MeadowBoot.Traits (methodKey)
 use MeadowBoot.Core
 use MeadowBoot.Core (Core!)
@@ -66,7 +66,8 @@ pass! {
 -- the names of its fields, for one that has them; and the next binder
 -- nothing has, for a variable lowering makes. And what a `where` comes to:
 -- the traits each binding asks dictionaries of, what each `impl`'s
--- dictionary is built with, each `impl`'s trait by its dictionary's binder,
+-- dictionary is built with, each `impl` by its dictionary's binder, each
+-- generalized binding with its scheme and the variables it is generic in,
 -- every trait's shape, method types and defaults, each binder's name, the
 -- dictionaries the definition being lowered was given -- each with its trait
 -- -- and the next `impl`'s dictionary's binder.
@@ -78,7 +79,8 @@ record Low s = {
   next : StRef s Int,
   wheres : HashMap Int [String],
   evidence : HashMap String [Evidence],
-  implTr : HashMap Int String,
+  impls : HashMap Int ImplDef,
+  generics : HashMap Int Generalized,
   shapes : HashMap String TraitShape,
   methods : HashMap String Scheme,
   defaults : HashMap String Int,
@@ -107,7 +109,7 @@ pass! {
     | Expr.Hole { typ } -> newCoreTermIll out here typ
     | Expr.MacCall { call, typ } -> newCoreTermIll out here typ
     | Expr.Lit { lit, typ } -> newCoreTermConst out here (literal out here lit typ) typ
-    | Expr.Var { ref, ev, typ } -> mention out cx here ref ev typ
+    | Expr.Var { ref, ev, inst, typ } -> mention out cx here ref ev inst typ
     | Lam { params, body } -> lambdas out cx here params body
     | App { raw func, args, typ } -> applied src out cx here func args typ
     | Let { binds, body } -> V.foldr (\b acc -> bound out cx here b acc) body binds
@@ -236,7 +238,7 @@ fun widthOf (name : String) : Maybe String =
 -- A name mentioned at type `t`: a primitive a function of as many arguments
 -- as it takes, an effect's operation a function that performs it, and
 -- anything else itself, given the dictionaries its `where` asks for.
-fun mention out (cx : Low s) (m : Meta) (id : Int) (ev : Evs) (t : Type) =
+fun mention out (cx : Low s) (m : Meta) (id : Int) (ev : Evs) (inst : [Type]) (t : Type) =
   match H.lookup id cx.prims with
   | Just (op, arity) ->
       if op == "RunSt" then
@@ -264,7 +266,7 @@ fun mention out (cx : Low s) (m : Meta) (id : Int) (ev : Evs) (t : Type) =
                   arg
                   (newCoreTermPerform out m eff op (newCoreTermVar out m x arg) result)
                   t)
-       | None -> withDicts out cx m id t ev)
+       | None -> withDicts out cx m id t inst ev)
 
 -- --- dictionaries --------------------------------------------------------------
 --
@@ -291,16 +293,91 @@ fun witness out (cx : Low s) (m : Meta) (e : Evidence) =
       (let w = witness out cx m inner in
        let tr = S.drop label (stringByteLength "#super.") in
        (newCoreTermSel out m (fst w) label (dictT tr), tr))
-  | Evidence.Impl dict args ->
-      (let tr = M.unwrapOr "" (H.lookup dict cx.implTr) in
-       (withDicts out cx m dict (dictT tr) args, tr))
+  | Evidence.Impl dict tys args ->
+      (let tr = implTrait cx dict in (withDicts out cx m dict (dictT tr) tys args, tr))
   | Evidence.Missing -> (newCoreTermIll out m Error, "")
 
--- Binder `id`, of type `t` once it has its dictionaries, given them.
-fun withDicts out (cx : Low s) (m : Meta) (id : Int) (t : Type) (evs : [Evidence]) =
+-- Binder `id`, of type `t` once it has its dictionaries, at types `tys`
+-- and given them.
+fun withDicts out (cx : Low s) (m : Meta) (id : Int) (t : Type) (tys : [Type]) (evs : [Evidence]) =
   let ws = V.map (\e -> witness out cx m e) evs in
   let whole = V.foldr (\w acc -> arrow (dictT (snd w)) acc) t ws in
-  applications out m (newCoreTermVar out m id whole) (V.map fst ws)
+  applications out m (instance out cx m id whole tys) (V.map fst ws)
+
+-- --- types -------------------------------------------------------------------
+--
+-- How a value of a variable's type is represented is the type's to say, so
+-- a binding generic in its type is a function of its types -- `TyLam`, over
+-- the variables its types are written with -- and a mention of one says the
+-- types it is at, `TyApp`. Only a variable over types counts: a row or an
+-- effect is how nothing is represented.
+
+-- Those of `xs`, one for each of `sc`'s quantifiers, that are for variables
+-- over types.
+fun plainOf (sc : Scheme) (xs : [a]) (other : a) : [a] =
+  V.concatMap
+    (\k -> if V.getOr VarKind.Plain sc.quant k == VarKind.Plain then [V.getOr other xs k] else [])
+    (V.range 0 (V.len sc.quant))
+
+-- The variables binder `id`'s types are written with, which it is generic
+-- in.
+fun tyvarsOf (cx : Low s) (id : Int) : [Int] =
+  match H.lookup id cx.generics with
+  | Just (g : Generalized) -> plainOf g.scheme g.vars 0
+  | None -> []
+
+-- How many types binder `id` is generic in: an `impl`'s dictionary in its
+-- `impl`'s.
+fun typesOf (cx : Low s) (id : Int) : Int =
+  match H.lookup id cx.impls with
+  | Just (d : ImplDef) -> V.len (plainOf d.scheme d.scheme.quant VarKind.Plain)
+  | None -> V.len (tyvarsOf cx id)
+
+-- A mention of binder `id`, of type `t`, at types `tys`. One of a binding
+-- from inside it is at the binding's own variables, which nothing wrote.
+fun instance out (cx : Low s) (m : Meta) (id : Int) (t : Type) (tys : [Type]) =
+  let n = typesOf cx id in
+  let head = newCoreTermVar out m id t in
+  if n == 0 then head
+  else if V.len tys == n then newCoreTermTyApp out m head tys t
+  else
+    (let own = V.map (\v -> Var v) (tyvarsOf cx id) in
+     newCoreTermTyApp out m head (V.map (\k -> V.getOr Error own k) (V.range 0 n)) t)
+
+-- `value`, generic in `vars`.
+fun typeAbs out (vars : [Int]) value =
+  if V.isEmpty vars then value else newCoreTermTyLam out nowhere vars value (tyCoreTermIn out value)
+
+-- What each of `pattern`'s quantifiers is where it is `actual`, after `h`.
+fun matchTy (pattern : Type) (actual : Type) (h : HashMap Int Type) : HashMap Int Type =
+  let all = \ps ts acc -> V.foldl (\x pt -> matchTy (fst pt) (snd pt) x) acc (V.zip ps ts) in
+  match (pattern, actual) with
+  | (Bound k, _) -> if M.isSome (H.lookup k h) then h else H.insert k actual h
+  | (Con _ ps, Con _ ts) -> all ps ts h
+  | (Fun ps pr pe, Fun ts tr te) ->
+      if V.len ps == V.len ts then matchTy pe te (matchTy pr tr (all ps ts h)) else h
+  | (Tuple ps, Tuple ts) -> all ps ts h
+  | (Record p, Record t) -> matchTy p t h
+  | (RowExtend pl pf pr, RowExtend tl tf tr) ->
+      if pl == tl then matchTy pr tr (matchTy pf tf h) else h
+  | _ -> h
+
+-- The types binder `id` is at where its type is `expected`.
+fun instOf (cx : Low s) (id : Int) (expected : Type) : [Type] =
+  match H.lookup id cx.generics with
+  | Just (g : Generalized) ->
+      (let h = matchTy g.scheme.ty expected H.empty in
+       plainOf
+         g.scheme
+         (V.map (\k -> M.unwrapOr Error (H.lookup k h)) (V.range 0 (V.len g.scheme.quant)))
+         Error)
+  | None -> []
+
+-- The trait an `impl` is of, by its dictionary's binder.
+fun implTrait (cx : Low s) (dict : Int) : String =
+  match H.lookup dict cx.impls with
+  | Just (d : ImplDef) -> (match d.scheme.ty with | Con tr _ -> tr | _ -> "")
+  | None -> ""
 
 -- `value` as a function of dictionaries `ds`.
 fun abstracted out ds value =
@@ -330,7 +407,10 @@ fun topBind (a : BareArena) out (cx : Low s) b =
   let ds = V.map (\tr -> (fresh cx, tr)) trs in
   let u = stSetRef cx.dicts ds in
   match emitBind a out cx b with
-  | (pat, value, isFun) -> (let v = stSetRef cx.dicts [] in (pat, abstracted out ds value, isFun))
+  | (pat, value, isFun) ->
+      (let v = stSetRef cx.dicts [] in
+       let vars = M.unwrapOr [] (M.map (\id -> tyvarsOf cx id) (boundId a b)) in
+       (pat, typeAbs out vars (abstracted out ds value), isFun))
 
 -- A method's type, over its trait's parameters.
 fun methodType (cx : Low s) (tr : String) (name : String) : Type =
@@ -389,14 +469,14 @@ fun picked (ds : [(Int, String)]) (trs : [String]) : [(Int, String)] =
        ([], ds)
        trs)
 
--- Binder `id`, a function of those of dictionaries `ds` it asks for, given
--- them: of type `t` then.
-fun given out (cx : Low s) (id : Int) (ds : [(Int, String)]) (t : Type) =
+-- Binder `id`, a function of those of dictionaries `ds` it asks for, at
+-- types `tys` and given them: of type `t` then.
+fun given out (cx : Low s) (id : Int) (ds : [(Int, String)]) (t : Type) (tys : [Type]) =
   let mine = picked ds (M.unwrapOr [] (H.lookup id cx.wheres)) in
   applications
     out
     nowhere
-    (newCoreTermVar out nowhere id (V.foldr (\d acc -> arrow (dictT (snd d)) acc) t mine))
+    (instance out cx nowhere id (V.foldr (\d acc -> arrow (dictT (snd d)) acc) t mine) tys)
     (V.map (\d -> newCoreTermVar out nowhere (fst d) (dictT (snd d))) mine)
 
 -- An `impl`'s definitions: its methods, and its dictionary under binder
@@ -404,7 +484,7 @@ fun given out (cx : Low s) (id : Int) (ds : [(Int, String)]) (t : Type) =
 -- the dictionary of each trait its own requires and then each method: the
 -- `impl`'s, or the trait's default given this dictionary.
 fun implDefs out (cx : Low s) (a : BareArena) d (dict : Int) =
-  let tr = M.unwrapOr "" (H.lookup dict cx.implTr) in
+  let tr = implTrait cx dict in
   let binds = bareDeclImplMethods a d in
   let methodDefs = V.concatMap (\b -> defsOf out cx (topBind a out cx b)) binds in
   match H.lookup tr cx.shapes with
@@ -419,6 +499,49 @@ fun implDefs out (cx : Low s) (a : BareArena) d (dict : Int) =
           binds
       in
       let self = dictT tr in
+      let sc =
+        M.unwrapOr
+          (Scheme { quant = [], preds = [], ty = Error, lacks = [] })
+          (M.map (\(i : ImplDef) -> i.scheme) (H.lookup dict cx.impls))
+      in
+      -- The variable each of the `impl`'s quantifiers is, in the dictionary:
+      -- the one inference gave it, where the dictionary was generalized --
+      -- what it is built with is written with those -- or one of its own.
+      let known =
+        (match H.lookup dict cx.generics with
+         | Just (g : Generalized) ->
+             (let h = matchTy g.scheme.ty sc.ty H.empty in
+              V.concatMap
+                (\kv ->
+                  match snd kv with
+                  | Bound k -> [(k, V.getOr 0 g.vars (fst kv))]
+                  | _ -> [])
+                (H.toVec h))
+         | None -> [])
+      in
+      let ws =
+        V.map
+          (\k ->
+            match V.find (\x -> fst x == k) known with
+            | Just (_, v) -> v
+            | None -> 0 - fresh cx)
+          (V.range 0 (V.len sc.quant))
+      in
+      let typed = plainOf sc ws 0 in
+      -- The trait's parameters and associated types, at this `impl`.
+      let at =
+        (match sc.ty with
+         | Con _ args -> V.map (\x -> substBound x (V.map (\w -> Var w) ws)) args
+         | _ -> [])
+      in
+      -- A method's type here: the trait's, at them.
+      let here =
+        \mn ->
+          (match H.lookup (methodKey tr mn) cx.methods with
+           | Just (m : Scheme) ->
+               substBound m.ty (V.map (\k -> V.getOr Error at k) (V.range 0 (V.len m.quant)))
+           | None -> Error)
+      in
       let ds = V.map (\t -> (fresh cx, t)) (M.unwrapOr [] (H.lookup dict cx.wheres)) in
       let u = stSetRef cx.dicts ds in
       let found = M.unwrapOr [] (H.lookup "dict:${show dict}" cx.evidence) in
@@ -435,17 +558,22 @@ fun implDefs out (cx : Low s) (a : BareArena) d (dict : Int) =
           (\mn ->
             (let t = methodType cx tr mn in
              match V.find (\o -> fst o == mn) own with
-             | Just (_, mid) -> given out cx mid ds t
+             | Just (_, mid) -> given out cx mid ds t (instOf cx mid (here mn))
              | None ->
                  (match H.lookup (methodKey tr mn) cx.defaults with
                   | Just did ->
                       (let whole = arrow self t in
-                       let me = given out cx dict ds self in
+                       let me = given out cx dict ds self (V.map (\w -> Var w) typed) in
                        let asks = not (V.isEmpty (M.unwrapOr [] (H.lookup did cx.wheres))) in
                        let f =
                          if asks then
-                           newCoreTermApp out nowhere (newCoreTermVar out nowhere did whole) me t
-                         else newCoreTermVar out nowhere did t
+                           newCoreTermApp
+                             out
+                             nowhere
+                             (instance out cx nowhere did whole (instOf cx did (here mn)))
+                             me
+                             t
+                         else instance out cx nowhere did t (instOf cx did (here mn))
                        in
                        -- A function waits for its argument, so that the
                        -- dictionary is not built of itself.
@@ -477,10 +605,13 @@ fun implDefs out (cx : Low s) (a : BareArena) d (dict : Int) =
            out
            nowhere
            dict
-           (abstracted
+           (typeAbs
               out
-              ds
-              (newCoreTermCtor out nowhere (dictCtor tr) (V.append supers fields) self)))
+              typed
+              (abstracted
+                 out
+                 ds
+                 (newCoreTermCtor out nowhere (dictCtor tr) (V.append supers fields) self))))
 
 -- `\a b -> op(a, b)`, at type `t`: a function of each argument the
 -- primitive still wants, around the operation.
@@ -561,9 +692,12 @@ fun bound out (cx : Low s) (m : Meta) b body =
   let t = tyCoreTermIn out body in
   match b with
   | (p, value, isFun) ->
-      if isFun then newCoreTermLetRec out m [newCoreBind out m (corePatPVarIdIn out p) value] body t
+      if isFun then
+        (let id = corePatPVarIdIn out p in
+         newCoreTermLetRec out m [newCoreBind out m id (typeAbs out (tyvarsOf cx id) value)] body t)
       else if kindCorePatIn out p == CorePatKind.PVar then
-        newCoreTermLet out m (corePatPVarIdIn out p) value body t
+        (let id = corePatPVarIdIn out p in
+         newCoreTermLet out m id (typeAbs out (tyvarsOf cx id) value) body t)
       else if kindCorePatIn out p == CorePatKind.PWild then
         newCoreTermLet out m (fresh cx) value body t
       else newCoreTermCase out m value [newCoreArm out m p None body] t
@@ -671,14 +805,12 @@ def nowhere : Meta = spanMeta 0 0
                next = stNewRef (V.len r.binders),
                wheres = done.wheres,
                evidence = done.evidence,
-               implTr =
+               impls =
                  V.foldl
-                   (\h (e : Entry ImplDef) ->
-                     match e.value.scheme.ty with
-                     | Con tr _ -> H.insert e.value.dict tr h
-                     | _ -> h)
+                   (\h (e : Entry ImplDef) -> H.insert e.value.dict e.value h)
                    H.empty
                    done.types.impls,
+               generics = done.generics,
                shapes = traitShapes,
                methods =
                  V.foldl

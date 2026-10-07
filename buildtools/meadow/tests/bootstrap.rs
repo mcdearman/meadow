@@ -2281,6 +2281,37 @@ fun apply f x = f x
 
 def result = (evens (Count 5), match apply step (Count 3) with | Count n -> n)
 "#,
+        // Values that are not pointers through generic code: an `impl` at
+        // `Int` and at `Float`, one generic in two types made of them, and a
+        // local function used at two types.
+        r#"trait Double a {
+  fun double : a -> a
+}
+
+data Pair a b = Pair a b
+
+impl Double Int {
+  fun double n = n * 2
+}
+
+impl Double Float {
+  fun double x = x *. 2.0
+}
+
+impl Double (Pair a b) where Double a, Double b {
+  fun double p = match p with | Pair x y -> Pair (double x) (double y)
+}
+
+fun quad x = double (double x)
+
+fun first p = match p with | Pair x y -> x
+
+fun both p = match p with | Pair x y -> (x, y)
+
+def result =
+  let same = \x -> x in
+  (quad 3, first (quad (Pair 1 2.5)), both (quad (Pair 0.5 7)), same 4, same "s")
+"#,
     ]
     .iter()
     .map(|s| s.to_string())
@@ -2336,7 +2367,7 @@ fn write_run_cases() {
 /// them. It goes up as the lowering learns more -- the copies a number's
 /// type chooses between -- and a case that stops agreeing is a failure
 /// whatever the count.
-const RUN_CASES_AGREEING: usize = 99;
+const RUN_CASES_AGREEING: usize = 100;
 
 #[test]
 fn glade_cases_compiled_by_meadowboot_evaluate_as_the_rust_compiler_has_them() {
@@ -2400,7 +2431,7 @@ fn cut_answer(text: &str) -> String {
 /// its machine, which has every primitive the runtimes have and checks how
 /// each value is represented. The rest are a function generic in what it
 /// takes, whose values MeadowBoot calls a `ptr` whatever they are.
-const AXCUT_CASES_AGREEING: usize = 91;
+const AXCUT_CASES_AGREEING: usize = 100;
 
 /// What the AxCut machine answers of the Cut program `text` once it is
 /// lowered, or why it answered nothing.

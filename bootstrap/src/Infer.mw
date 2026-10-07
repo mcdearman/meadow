@@ -644,7 +644,7 @@ type Evs = [Evidence]
 @pub(pkg) lang! {
   pub Typed extends Hir
   Expr - Var
-  Expr + Var { ref : Ref, ev : Evs }
+  Expr + Var { ref : Ref, ev : Evs, inst : [Ty] }
   Expr * { typ : Ty }
   Pat * { typ : Ty }
 }
@@ -1722,6 +1722,7 @@ pass! {
         Expr.Var {
           ref = settleRef src out st ref,
           ev = M.unwrapOr [] (H.lookup "${show st.m}:${show ref}" st.evidence),
+          inst = M.unwrapOr [] (H.lookup "${show st.m}:${show ref}" st.insts),
           typ = settled st.ar typ
         }
     | Lam { params, body, typ } -> Lam { params = params, body = body, typ = settled st.ar typ }
@@ -2431,7 +2432,10 @@ fun inferImpl
   wheres : HashMap Int [String],
   -- What each `impl`'s dictionary is built with for the traits its own
   -- requires, by `dict:` and its binder.
-  evidence : HashMap String [Evidence]
+  evidence : HashMap String [Evidence],
+  -- Each generalized binding with its scheme and the variable behind each
+  -- of its quantifiers, as the typed tree's types have it.
+  generics : HashMap Int Generalized
 }
 
 -- Infer unit `r`, whose dependencies exported `deps` -- their values' schemes
@@ -2563,8 +2567,11 @@ fun inferImpl
     in
     let dumps = V.map (\k -> dumpModule i r k general texts) (V.range 0 (V.len r.modules)) in
     let evidence = evidenceOfUnit i in
+    let insts = instsOfUnit i in
     let typed =
-      V.map (\k -> writtenModule i r outs (stGetRef done) evidence k) (V.range 0 (V.len r.programs))
+      V.map
+        (\k -> writtenModule i r outs (stGetRef done) evidence insts k)
+        (V.range 0 (V.len r.programs))
     in
     let asked = \(sc : Scheme) -> V.map (\(p : Pred) -> p.tr) sc.preds in
     let wheres =
@@ -2581,7 +2588,14 @@ fun inferImpl
          types = ownTypes i,
          typed = typed,
          wheres = wheres,
-         evidence = evidence
+         evidence = evidence,
+         generics =
+           V.foldl
+             (\h kv ->
+               (let g : Generalized = snd kv in
+                if V.isEmpty g.vars then h else H.insert (fst kv) g h))
+             H.empty
+             (H.toVec (stGetRef i.generalized))
        })
 
 -- Module `k` as inference wrote it, every type settled.
@@ -2591,6 +2605,7 @@ fun writtenModule
     outs
     (done : HashMap String Int)
     (evidence : HashMap String [Evidence])
+    (insts : HashMap String [Type])
     (k : Int)
     : TypedProgram ! { St s | e } =
   match V.get r.programs k with
@@ -2606,7 +2621,9 @@ fun writtenModule
           (hirModuleDecls src root)
       in
       let m = newInferringModule out (metaHirModule src root) ds in
-      settleSt { ar = i.ar, m = k, evidence = evidence } (InferringProgram (freezeInferring out) m)
+      settleSt
+        { ar = i.ar, m = k, evidence = evidence, insts = insts }
+        (InferringProgram (freezeInferring out) m)
   | None -> runSt (\() -> TypedProgram (freezeTyped (newTypedBuilder ())) 0)
 
 -- A module's declaration as inference wrote it: a binding as its group did, a
@@ -2777,6 +2794,7 @@ fun newInf (r : Renamed) : Inf s ! { St s | e } =
     pending = stNewRef [],
     subsumptions = stNewRef [],
     atNode = stNewRef H.empty,
+    instAt = stNewRef H.empty,
     mentions = stNewRef [],
     fixed = stNewRef H.empty,
     assocEffectVars = stNewRef [],

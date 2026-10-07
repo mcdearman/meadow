@@ -74,6 +74,15 @@ fun expansionsOf (dir : String) : [String] ! { Fs, Process | e } =
 @pub fun manifestOf (dir : String) : String = Path.normalize (Path.join dir "Meadow.toml")
 
 -- The name a manifest gives its package.
+-- The names a manifest's `text` gives the units it depends on, in the order
+-- it lists them: what a `use` knows each by, which is not always what the
+-- package calls itself -- `Anstyle = { git = "…/MeadowAnstyle" }` is a
+-- package named `Bloom`.
+@pub fun dependencyNames (text : String) : [String] =
+  V.map
+    (\(e : Entry) -> e.key)
+    (V.filter (\(e : Entry) -> e.section == "dependencies") (readToml text))
+
 @pub fun packageName (text : String) : String =
   match V.find (\(e : Entry) -> e.section == "package" and e.key == "name") (readToml text) with
   | Just e ->

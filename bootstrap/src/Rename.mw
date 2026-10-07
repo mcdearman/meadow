@@ -118,6 +118,7 @@ use Std.Sort (sortOn)
   ctors : HashMap String [Int],
   ctorFields : HashMap Int [String],
   typeCtors : HashMap Int (HashMap String Int),
+  stdTypes : HashMap String Int,
   unknown : Int,
   builtinType : Int,
   builtinCtor : Int,
@@ -258,12 +259,21 @@ fun recordLabels out (e : HirExpr) =
   | _ -> None
 
 -- `ty`'s constructor `name`, if `ty` is a type this module can name. A name
--- a macro wrote is the name it wrote, whatever marks it.
+-- a macro wrote is the name it wrote, whatever marks it; and a type a
+-- built-in derive wrote -- `Datum.Tag`, its name marked as the prelude's --
+-- is the standard library's of that name, whether or not the module names
+-- it (`meadow-rename`'s `resolve_qualified_ctor`).
 fun typeCtor (env : Env) (ty : String) (name : String) : Maybe (Int, Int) =
-  match H.lookup (unmarked ty) env.scope.types with
-  | Just t ->
+  let ctorIn =
+    \t ->
       M.map (\c -> (t, c)) (M.andThen (H.lookup (unmarked name)) (H.lookup t env.scope.typeCtors))
-  | None -> None
+  in
+  let named = M.andThen ctorIn (H.lookup (unmarked ty) env.scope.types) in
+  if S.endsWith "#0" ty then
+    (match M.andThen ctorIn (H.lookup (unmarked ty) env.scope.stdTypes) with
+     | Just found -> Just found
+     | None -> named)
+  else named
 
 -- --- the pass ----------------------------------------------------------------
 
@@ -362,8 +372,12 @@ pass! {
          Bind.Fun { id = id, params = ps, ret = M.map (\r -> r within) ret, body = body within })
     | Pat.Var { name } -> Pat.Var { id = patVar out env name }
     | Pat.As { name, pat } -> Pat.As { id = patVar out env name, pat = pat }
-    | Pat.Cons { name, args } ->
-        (let n = textOf out name in
+    -- A view's function sees the names the pattern bound to its left:
+    -- `(k, lookup k -> Just v)`.
+    | Pat.Tuple { later items } -> Pat.Tuple { items = inTurn out env items }
+    | Pat.Cons { name, later args } ->
+        (let args = inTurn out env args in
+         let n = textOf out name in
          match (
            H.lookup (unmarked n) env.scope.ctors,
            lookupValue env "$m${show (V.len args)}${n}"
@@ -601,6 +615,17 @@ fun qualifiedCtor out (env : Env) (qual : HirName) (name : HirName) =
   | Just (t, c) ->
       (let u = mention env t (nameMeta out qual) in refTo out env c (nameMeta out name))
   | None -> refTo out env (ctorOf env (textOf out name)) (nameMeta out name)
+
+-- Each of a pattern's parts renamed in turn, one after what those to its
+-- left bind.
+fun inTurn out (env : Env) parts =
+  fst
+    (V.foldl
+       (\acc part ->
+         match acc with
+         | (done, e) -> (let p = part e in (V.pushBack done p, bindAll e (patBinders out p))))
+       ([], env)
+       parts)
 
 -- `T.C a b`: the constructor applied, rather than a call of it.
 fun applied out (m : Meta) (func : Int) (args : [Int]) =

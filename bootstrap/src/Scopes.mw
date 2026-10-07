@@ -639,6 +639,7 @@ record Shared = {
   builtinType : Int,
   builtinCtor : Int,
   typeCtors : HashMap Int (HashMap String Int),
+  stdTypes : HashMap String Int,
   bools : HashMap String Int,
   builtinTypes : [(String, Int)],
   builtinCtors : [(String, Int)],
@@ -708,6 +709,7 @@ fun scopeOf (cx : UnitCx) (sh : Shared) (m : ModFrame) : (Scope, [Item], [(Meta,
       ctors = candidates (firstWins (V.append sh.builtinCtors base.ctors)) used.ctors,
       ctorFields = sh.ctorFields,
       typeCtors = sh.typeCtors,
+      stdTypes = sh.stdTypes,
       unknown = sh.unknown,
       builtinType = sh.builtinType,
       builtinCtor = sh.builtinCtor,
@@ -816,6 +818,17 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExpo
       H.empty
       groups
   in
+  -- The standard library's types, by name, wherever in it they are: what a
+  -- type's name means where a built-in derive wrote it, whether or not the
+  -- module names that type itself.
+  let stdTypes =
+    V.foldl
+      (\h (t : Item) ->
+        if t.kind == "t" and M.isNone (H.lookup t.name h) then H.insert t.name t.id h else h)
+      H.empty
+      (if isStd then V.concatMap (\(f : ModFrame) -> f.items) frames
+       else V.concatMap (\(d : Dep) -> if d.name == "Std" then V.map snd d.items else []) depCx)
+  in
   -- `and` and `or` are `Bool`'s constructors, whatever is in scope.
   let allItems =
     V.append
@@ -902,6 +915,7 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExpo
       builtinType = builtinType,
       builtinCtor = builtinCtor,
       typeCtors = typeCtors,
+      stdTypes = stdTypes,
       bools = bools,
       builtinTypes = builtinTypes,
       builtinCtors = builtinCtors,

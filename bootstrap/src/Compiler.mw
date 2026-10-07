@@ -25,7 +25,7 @@ use Lingua.Diagnostic (Diagnostic, collect, renderAll)
 use MeadowBoot.Syntax
 use MeadowBoot.Parse (checkedTree)
 use MeadowBoot.Fixity (Fixity, Grouped, declare, grouped)
-use MeadowBoot.Unit (dependenciesOf, unitFilesOf, manifestOf, packageName)
+use MeadowBoot.Unit (dependenciesOf, unitFilesOf, manifestOf, packageName, dependencyNames)
 use MeadowBoot.Lower (lowered)
 use MeadowBoot.Rename (mentionsOf)
 use MeadowBoot.Scopes (Source, Export, Renamed, DepExports, renameUnit)
@@ -171,9 +171,11 @@ fun inferredOf
   | (sources, r) ->
       let deps =
         V.map
-          (\(i : Interface) ->
-            DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis })
-          imported
+          (\x ->
+            match x with
+            | (name, (i : Interface)) ->
+                DepExports { name = name, exports = i.exports, anyVis = i.anyVis })
+          (namedDeps files imported)
       in
       let texts =
         H.fromVec
@@ -216,9 +218,11 @@ fun checkedOf
       let m1 = mark "renamed" in
       let deps =
         V.map
-          (\(i : Interface) ->
-            DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis })
-          imported
+          (\x ->
+            match x with
+            | (name, (i : Interface)) ->
+                DepExports { name = name, exports = i.exports, anyVis = i.anyVis })
+          (namedDeps files imported)
       in
       let texts =
         H.fromVec
@@ -285,7 +289,7 @@ fun checkedOf
         M.map
           (\made ->
             match made with
-            | (core, dicts, defaults) ->
+            | (core, dicts, defaults, aliases) ->
                 (let ownDatas =
                    V.concatMap
                      (\d ->
@@ -310,7 +314,8 @@ fun checkedOf
                             labelled
                             (V.map (\n -> Entry { key = fst n, value = snd n }) (Seq.namedOf core)),
                         dicts = dicts,
-                        defaults = defaults
+                        defaults = defaults,
+                        aliases = aliases
                       },
                       Seq.declarations
                         core
@@ -327,8 +332,19 @@ fun sigsOf (datas : [DataSig]) : [(String, Int, [(String, [Type])])] =
     (\(d : DataSig) -> (d.name, d.arity, V.map (\(c : Entry [Type]) -> (c.key, c.value)) d.ctors))
     datas
 
+fun packageOfUnit (u : (String, Interface, String)) : String =
+  match u with | (_, (i : Interface), _) -> i.package
+
 fun emptyLinked () : Linked =
-  Linked { package = "", packages = [], datas = [], named = [], dicts = [], defaults = [] }
+  Linked {
+    package = "",
+    packages = [],
+    datas = [],
+    named = [],
+    dicts = [],
+    defaults = [],
+    aliases = []
+  }
 
 -- A unit's declarations of Cut, where its compiler writes them: its object.
 fun objectIn (out : String) (pkg : String) : String = Path.join out "${pkg}.cut"
@@ -366,6 +382,18 @@ fun linkProgram (l : Linking Interface) : Result String () ! { Fs | e } =
                    (sigsOf root.linked.datas)
                    (V.filter (\p -> p != "Std") root.linked.packages)
                in
+               -- A package reached by two names is one package: its object
+               -- goes in once.
+               let once =
+                 V.foldl
+                   (\acc u ->
+                     match u with
+                     | (_, (i : Interface), _) ->
+                         if V.any (\x -> packageOfUnit x == i.package) acc then acc
+                         else V.pushBack acc u)
+                   []
+                   units
+               in
                let objects =
                  V.foldl
                    (\acc u ->
@@ -376,7 +404,7 @@ fun linkProgram (l : Linking Interface) : Result String () ! { Fs | e } =
                           | Ok text -> Ok (V.pushBack texts text)
                           | Err why -> Err "${i.package} wrote no object: ${why}\n"))
                    (Ok [])
-                   units
+                   once
                in match objects with
                   | Err why -> Err why
                   | Ok texts ->
@@ -436,9 +464,41 @@ fun unitOf
   in
   let deps =
     V.map
-      (\(i : Interface) -> DepExports { name = i.package, exports = i.exports, anyVis = i.anyVis })
-      imported
+      (\x ->
+        match x with
+        | (name, (i : Interface)) ->
+            DepExports { name = name, exports = i.exports, anyVis = i.anyVis })
+      (namedDeps files imported)
   in (sources, renameUnit pkg isStd (V.map snd sources) deps)
+
+-- Each unit a unit imports with the name its manifest gives it, which a
+-- `use` knows it by: the manifest's dependencies in the order it lists
+-- them, as the build gives them, and the standard library after.
+fun namedDeps
+    (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
+    (imported : [Interface])
+    : [(String, Interface)] =
+  let names =
+    M.unwrapOr
+      []
+      (M.map
+         (\x -> match x with | (_, text, _) -> dependencyNames text)
+         (V.find (\x -> match x with | (p, _, _) -> S.endsWith "Meadow.toml" p) files))
+  in V.map
+       (\k ->
+         (let i = V.getOr (emptyInterface ()) imported k in
+          (if i.package == "Std" then "Std" else V.getOr i.package names k, i)))
+       (V.range 0 (V.len imported))
+
+fun emptyInterface () : Interface =
+  Interface {
+    fixities = [],
+    package = "",
+    exports = [],
+    anyVis = False,
+    types = noTypes,
+    linked = emptyLinked ()
+  }
 
 fun fileOf (s : Source) : String = s.file
 

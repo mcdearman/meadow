@@ -2168,7 +2168,8 @@ fn term(t: &Term, out: &mut String) {
 }
 
 /// Programs with traits, which the glade cases -- compiled with no library
-/// -- have none of: what dictionary passing has to get right.
+/// -- have none of: what dictionary passing has to get right. And one with
+/// views in its patterns.
 fn trait_programs() -> Vec<String> {
     [
         // A default, an `impl` that has its own, and a function of two
@@ -2312,6 +2313,25 @@ def result =
   let same = \x -> x in
   (quad 3, first (quad (Pair 1 2.5)), both (quad (Pair 0.5 7)), same 4, same "s")
 "#,
+        // Views in patterns: one under a guard, and one whose function is
+        // written with a name the pattern bound to its left.
+        r#"use M.*
+
+data M = N | J Int
+
+fun half n = if n % 2 == 0 then J (n / 2) else N
+
+fun f x = match x with
+  | (half -> J k) if k > 10 -> k + 1000
+  | (half -> J k) -> k
+  | _ -> 0 - 1
+
+fun g p = match p with
+  | (k, (\n -> if n > k then J (n - k) else N) -> J d) -> d
+  | _ -> 0
+
+def result = (f 8, f 7, f 40, g (3, 10), g (3, 1))
+"#,
     ]
     .iter()
     .map(|s| s.to_string())
@@ -2367,7 +2387,7 @@ fn write_run_cases() {
 /// them. It goes up as the lowering learns more -- the copies a number's
 /// type chooses between -- and a case that stops agreeing is a failure
 /// whatever the count.
-const RUN_CASES_AGREEING: usize = 100;
+const RUN_CASES_AGREEING: usize = 101;
 
 #[test]
 fn glade_cases_compiled_by_meadowboot_evaluate_as_the_rust_compiler_has_them() {
@@ -2569,7 +2589,7 @@ fn a_program_with_the_standard_library_lowered_by_meadowboot_answers_as_the_rust
 /// the interpreter does not have -- the sized integers', the floats', `show`
 /// -- more than on the lowering. A case that stops agreeing is a failure
 /// whatever the count.
-const CUT_CASES_AGREEING: usize = 63;
+const CUT_CASES_AGREEING: usize = 64;
 
 /// What the reference interpreter prints of the Cut program `text`, or why
 /// it printed nothing. On a thread of its own with room to spare: the
@@ -2598,7 +2618,7 @@ fn cut_answer(text: &str) -> String {
 /// its machine, which has every primitive the runtimes have and checks how
 /// each value is represented. The rest are a function generic in what it
 /// takes, whose values MeadowBoot calls a `ptr` whatever they are.
-const AXCUT_CASES_AGREEING: usize = 100;
+const AXCUT_CASES_AGREEING: usize = 101;
 
 /// What the AxCut machine answers of the Cut program `text` once it is
 /// lowered, or why it answered nothing.

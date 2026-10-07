@@ -235,7 +235,9 @@ fun isNumericTrait (tr : String) : Bool =
     ]
 
 -- One trait at one type has one set of associated types: tie wanted `k`'s to
--- those of whatever else asks the same.
+-- those of whatever else asks the same. What else asks is looked for among
+-- the unanswered before it: one answered has its own from what answered
+-- it, and every wanted the unit ever had is far more than those.
 fun agree (i : Inf s) (k : Int) (tys : [Type]) : () ! { St s | e } =
   let w = wantedAt i k in
   if V.isEmpty w.pred.assocs then ()
@@ -245,7 +247,7 @@ fun agree (i : Inf s) (k : Int) (tys : [Type]) : () ! { St s | e } =
         (\j ->
           (let o = wantedAt i j in
            if o.pred.tr == w.pred.tr then [(o.pred.tys, o.pred.assocs)] else []))
-        (V.range 0 k)
+        (V.filter (\j -> j < k) (stGetRef i.unanswered))
     in
     let given =
       V.concatMap

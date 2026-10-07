@@ -2587,8 +2587,8 @@ fun goesBefore (there : Fixity) (here : Fixity) : Bool =
 fun applyOp b (outs : [Int]) o =
   match (o, V.get outs (V.len outs - 2), V.get outs (V.len outs - 1)) with
   | ((op, _), Just l, Just r) ->
-      let lm = metaAstExprIn b l in
-      let rm = metaAstExprIn b r in
+      let lm = metaAstExpr b l in
+      let rm = metaAstExpr b r in
       let m = spanMeta (min (metaStart lm) (metaStart rm)) (max (metaEnd lm) (metaEnd rm)) in
       let rest = V.take outs (V.len outs - 2) in
       if jstr op 3 == "::" then

@@ -152,7 +152,7 @@ pass! {
            (fst named)
            (snd named)
            (fst binder)
-           (tyCorePatIn out param)
+           (tyCorePat param)
            resume
            (snd binder))
     | Ret { pat, body } -> binderOf out cx here pat body
@@ -178,7 +178,7 @@ pass! {
     | Bind.Pat { pat, value } -> (pat, value, False)
     | Bind.Fun { id, params, body } ->
         (let f = lambdas out cx here params body in
-         (newCorePatPVar out here id (tyCoreTermIn out f), f, True))
+         (newCorePatPVar out here id (tyCoreTerm f), f, True))
 }
 
 -- The type of a function from `param` to `result`.
@@ -355,7 +355,7 @@ fun instance out (cx : Low s) (m : Meta) (id : Int) (t : Type) (tys : [Type]) =
 
 -- `value`, generic in `vars`.
 fun typeAbs out (vars : [Int]) value =
-  if V.isEmpty vars then value else newCoreTermTyLam out nowhere vars value (tyCoreTermIn out value)
+  if V.isEmpty vars then value else newCoreTermTyLam out nowhere vars value (tyCoreTerm out value)
 
 -- What each of `pattern`'s quantifiers is where it is `actual`, after `h`.
 fun matchTy (pattern : Type) (actual : Type) (h : HashMap Int Type) : HashMap Int Type =
@@ -398,7 +398,7 @@ fun abstracted out ds value =
         (fst d)
         (dictT (snd d))
         acc
-        (arrow (dictT (snd d)) (tyCoreTermIn out acc)))
+        (arrow (dictT (snd d)) (tyCoreTerm out acc)))
     value
     ds
 
@@ -659,7 +659,7 @@ fun applied src out (cx : Low s) (m : Meta) func args (t : Type) =
 -- `f` applied to each of `args` in turn, each application of the type the
 -- function's says it is.
 fun applications out (m : Meta) f args =
-  V.foldl (\g a -> newCoreTermApp out m g a (snd (applying (tyCoreTermIn out g)))) f args
+  V.foldl (\g a -> newCoreTermApp out m g a (snd (applying (tyCoreTerm out g)))) f args
 
 -- A function of `params`: each a variable, or a fresh one taken apart at the
 -- top of the body.
@@ -667,47 +667,47 @@ fun lambdas out (cx : Low s) (m : Meta) params body =
   V.foldr
     (\p acc ->
       (let binder = binderOf out cx m p acc in
-       let pty = tyCorePatIn out p in
+       let pty = tyCorePat out p in
        newCoreTermLam
          out
          m
          (fst binder)
          pty
          (snd binder)
-         (arrow pty (tyCoreTermIn out (snd binder)))))
+         (arrow pty (tyCoreTerm out (snd binder)))))
     body
     params
 
 -- What binds pattern `p` around `body`: the variable to bind, and the body
 -- -- under a `case` of that variable where the pattern is more than a name.
 fun binderOf out (cx : Low s) (m : Meta) p body =
-  if kindCorePatIn out p == CorePatKind.PVar then (corePatPVarIdIn out p, body)
+  if kindCorePat out p == CorePatKind.PVar then (corePatPVarId out p, body)
   else
     (let v = fresh cx in
-     if kindCorePatIn out p == CorePatKind.PWild then (v, body)
+     if kindCorePat out p == CorePatKind.PWild then (v, body)
      else
        (
          v,
          newCoreTermCase
            out
            m
-           (newCoreTermVar out m v (tyCorePatIn out p))
+           (newCoreTermVar out m v (tyCorePat out p))
            [newCoreArm out m p None body]
-           (tyCoreTermIn out body)
+           (tyCoreTerm out body)
        ))
 
 -- A `let`'s binding around what it is in scope for.
 fun bound out (cx : Low s) (m : Meta) b body =
-  let t = tyCoreTermIn out body in
+  let t = tyCoreTerm out body in
   match b with
   | (p, value, isFun) ->
       if isFun then
-        (let id = corePatPVarIdIn out p in
+        (let id = corePatPVarId out p in
          newCoreTermLetRec out m [newCoreBind out m id (typeAbs out (tyvarsOf cx id) value)] body t)
-      else if kindCorePatIn out p == CorePatKind.PVar then
-        (let id = corePatPVarIdIn out p in
+      else if kindCorePat out p == CorePatKind.PVar then
+        (let id = corePatPVarId out p in
          newCoreTermLet out m id (typeAbs out (tyvarsOf cx id) value) body t)
-      else if kindCorePatIn out p == CorePatKind.PWild then
+      else if kindCorePat out p == CorePatKind.PWild then
         newCoreTermLet out m (fresh cx) value body t
       else newCoreTermCase out m value [newCoreArm out m p None body] t
 
@@ -1378,11 +1378,11 @@ fun moduleDefs out (cx : Low s) (items : [Item]) (p : BareProgram) =
 fun defsOf out (cx : Low s) bind =
   match bind with
   | (pat, value, _) ->
-      if kindCorePatIn out pat == CorePatKind.PVar then
-        [newCoreDef out nowhere (corePatPVarIdIn out pat) value]
+      if kindCorePat out pat == CorePatKind.PVar then
+        [newCoreDef out nowhere (corePatPVarId out pat) value]
       else
         (let v = fresh cx in
-         let whole = tyCorePatIn out pat in
+         let whole = tyCorePat out pat in
          V.pushFront
            (V.map
               (\x ->
@@ -1425,13 +1425,13 @@ fun binderName (b : Binder) : String = b.name
 
 -- The variables a pattern of core binds, each with its type.
 fun patVars out p =
-  let k = kindCorePatIn out p in
-  if k == CorePatKind.PVar then [(corePatPVarIdIn out p, tyCorePatIn out p)]
+  let k = kindCorePat out p in
+  if k == CorePatKind.PVar then [(corePatPVarId out p, tyCorePat out p)]
   else if k == CorePatKind.PAs then
-    V.pushFront (patVars out (corePatPAsPatIn out p)) (corePatPAsIdIn out p, tyCorePatIn out p)
-  else if k == CorePatKind.PTuple then V.concatMap (patVars out) (corePatPTupleItemsIn out p)
-  else if k == CorePatKind.PArray then V.concatMap (patVars out) (corePatPArrayItemsIn out p)
-  else if k == CorePatKind.PCtor then V.concatMap (patVars out) (corePatPCtorArgsIn out p)
+    V.pushFront (patVars out (corePatPAsPat out p)) (corePatPAsId out p, tyCorePat out p)
+  else if k == CorePatKind.PTuple then V.concatMap (patVars out) (corePatPTupleItems out p)
+  else if k == CorePatKind.PArray then V.concatMap (patVars out) (corePatPArrayItems out p)
+  else if k == CorePatKind.PCtor then V.concatMap (patVars out) (corePatPCtorArgs out p)
   else if k == CorePatKind.PRecord then
-    V.concatMap (\f -> patVars out (corePFieldPatIn out f)) (corePatPRecordFieldsIn out p)
+    V.concatMap (\f -> patVars out (corePFieldPat out f)) (corePatPRecordFields out p)
   else []

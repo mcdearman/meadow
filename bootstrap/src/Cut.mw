@@ -17,7 +17,7 @@ use Std.Char as C
 -- --- the language ------------------------------------------------------------
 
 @pub(pkg) lang! {
-  pub Cut with In
+  pub Cut
   File + File { entry : String, answer : String, decls : [Decl] }
   DataCtor + DataCtor { name : String, fields : [String] }
   Decl + Data { symbol : String, params : [String], ctors : [DataCtor] }
@@ -217,7 +217,7 @@ use Std.Char as C
 -- given to `k` -- so that a consumer written once is not written again in
 -- every branch.
 @pub(pkg) fun shared out k (m : Meta) (name : String) build =
-  let kind = kindCutConsIn out k in
+  let kind = kindCutCons out k in
   if kind == CutConsKind.KVar or kind == CutConsKind.Halt then build k
   else newCutStmtCut out m (newCutProdMu out m name (build (newCutConsKVar out m name))) k
 

@@ -165,7 +165,7 @@ lang! { Printed from CoreText }
 -- Erased core: a binder is a number, a name or a text is itself, and a
 -- literal is its value.
 @pub(pkg) lang! {
-  pub Erased extends Printed with In
+  pub Erased extends Printed
   File + File { entry : Int, defs : [Def], named : [Named] }
   Def + Def { id : Int, body : Term }
   Named + Named { name : String, labels : [String] }
@@ -216,7 +216,7 @@ type Ty = Type
 -- What `Elab` makes of a program, and what is lowered to Cut, which needs to
 -- know how each value is represented.
 @pub(pkg) lang! {
-  pub Core extends Erased with In
+  pub Core extends Erased
   DataCtor + DataCtor { name : String, fields : [Ty] }
   Data + Data { name : String, arity : Int, ctors : [DataCtor] }
   Op + Op { name : String, arg : Ty, result : Ty }
@@ -329,7 +329,7 @@ pass! {
     | PCtor { name, args } -> PCtor { name = unquoted name, args = args }
     | PField { label, pat } -> PField { label = unquoted label, pat = pat }
     | Arm { pat, guard, body } ->
-        Arm { pat = pat, guard = M.map (\g -> erasedGuardCondIn out g) guard, body = body }
+        Arm { pat = pat, guard = M.map (\g -> erasedGuardCond g) guard, body = body }
 }
 
 -- The program `input` writes, or what is wrong with it.

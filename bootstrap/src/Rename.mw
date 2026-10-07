@@ -30,7 +30,7 @@ use Std.Maybe.Maybe.*
 use Std.Sort (sortOn)
 
 @pub(pkg) lang! {
-  pub Hir extends Ast with In
+  pub Hir extends Ast
   Ref + Ref { id : Int, alts : [Int] }
   Expr - Var
   Expr + Var { ref : Ref }
@@ -250,10 +250,10 @@ fun ctorApplied out (env : Env) (name : String) (args : [HirExpr]) =
 
 -- The labels of a record with no base, `{ x = 1, y = 2 }`.
 fun recordLabels out (e : HirExpr) =
-  match viewHirExprIn out e with
+  match viewHirExpr out e with
   | HirExprView.Record r ->
       (match r.base with
-       | None -> Just (V.map (\f -> textOf out (hirExprFieldNameIn out f)) r.fields)
+       | None -> Just (V.map (\f -> textOf out (hirExprFieldName out f)) r.fields)
        | Just _ -> None)
   | _ -> None
 
@@ -402,7 +402,7 @@ pass! {
          let w =
            V.foldl
              (\acc v ->
-               (let n = hirVariantNameIn out v in
+               (let n = hirVariantName v in
                 mention
                   env
                   (M.unwrapOr env.scope.builtinCtor (H.lookup (textOf out n) own))
@@ -434,8 +434,7 @@ pass! {
          let w =
            V.foldl
              (\acc a ->
-               (let n = hirAssocNameIn out a in
-                mention env (typeOf env (textOf out n)) (nameMeta out n)))
+               (let n = hirAssocName a in mention env (typeOf env (textOf out n)) (nameMeta out n)))
              ()
              assocs
          in Decl.Trait {
@@ -470,9 +469,9 @@ pass! {
     | AssocEffDef { name, later args, row } -> AssocEffDef { name = name, args = [], row = row }
 }
 
-fun textOf out (n : HirName) = hirNameTextIn out n
+fun textOf out (n : HirName) = hirNameText out n
 
-fun nameMeta out (n : HirName) = metaHirNameIn out n
+fun nameMeta out (n : HirName) = metaHirName out n
 
 fun siteOf (env : Env) (m : Meta) : String = "${env.scope.file}@${show (metaStart m)}"
 
@@ -603,8 +602,8 @@ fun qualifiedCtor out (env : Env) (qual : HirName) (name : HirName) =
 
 -- `T.C a b`: the constructor applied, rather than a call of it.
 fun applied out (m : Meta) (func : Int) (args : [Int]) =
-  if kindHirExprIn out func == HirExprKind.Cons and V.isEmpty (hirExprConsArgsIn out func) then
-    newHirExprCons out m (hirExprConsRefIn out func) args
+  if kindHirExpr out func == HirExprKind.Cons and V.isEmpty (hirExprConsArgs out func) then
+    newHirExprCons out m (hirExprConsRef out func) args
   else newHirExprApp out m func args
 
 -- `"a ${x} b"`: `concatStrings #["a ", display x, " b"]` -- `display` and
@@ -612,11 +611,10 @@ fun applied out (m : Meta) (func : Int) (args : [Int]) =
 fun interpolated out (env : Env) (m : Meta) (texts : [String]) (holes : [Int]) =
   let render =
     \h ->
-      (let e = hirHoleExprIn out h in
-       let hm = metaHirExprIn out e in
+      (let e = hirHoleExpr out h in
+       let hm = metaHirExpr out e in
        let f =
-         (if hirHoleDebugIn out h then baseOr env "debug" "show"
-          else baseOr env "display" "display")
+         (if hirHoleDebug out h then baseOr env "debug" "show" else baseOr env "display" "display")
        in newHirExprApp out hm (newHirExprVar out hm (refTo out env f hm)) [e])
   in
   let parts =
@@ -646,19 +644,19 @@ fun isUpper (s : String) : Bool =
 -- What a pattern binds, read back from what was written: each name with its
 -- binder.
 fun patBinders out (p : Int) : [(String, Int)] ! { Table Binder | e } =
-  let k = kindHirPatIn out p in
-  if k == HirPatKind.Var then named (hirPatVarIdIn out p)
+  let k = kindHirPat out p in
+  if k == HirPatKind.Var then named (hirPatVarId out p)
   else if k == HirPatKind.As then
-    V.append (named (hirPatAsIdIn out p)) (patBinders out (hirPatAsPatIn out p))
-  else if k == HirPatKind.Ann then patBinders out (hirPatAnnPatIn out p)
-  else if k == HirPatKind.Cons then V.concatMap (patBinders out) (hirPatConsArgsIn out p)
-  else if k == HirPatKind.Tuple then V.concatMap (patBinders out) (hirPatTupleItemsIn out p)
-  else if k == HirPatKind.Array then V.concatMap (patBinders out) (hirPatArrayItemsIn out p)
-  else if k == HirPatKind.Vector then V.concatMap (patBinders out) (hirPatVectorItemsIn out p)
-  else if k == HirPatKind.List then V.concatMap (patBinders out) (hirPatListItemsIn out p)
+    V.append (named (hirPatAsId out p)) (patBinders out (hirPatAsPat out p))
+  else if k == HirPatKind.Ann then patBinders out (hirPatAnnPat out p)
+  else if k == HirPatKind.Cons then V.concatMap (patBinders out) (hirPatConsArgs out p)
+  else if k == HirPatKind.Tuple then V.concatMap (patBinders out) (hirPatTupleItems out p)
+  else if k == HirPatKind.Array then V.concatMap (patBinders out) (hirPatArrayItems out p)
+  else if k == HirPatKind.Vector then V.concatMap (patBinders out) (hirPatVectorItems out p)
+  else if k == HirPatKind.List then V.concatMap (patBinders out) (hirPatListItems out p)
   else if k == HirPatKind.Record then
-    V.concatMap (\f -> patBinders out (hirPatFieldPatIn out f)) (hirPatRecordFieldsIn out p)
-  else if k == HirPatKind.View then patBinders out (hirPatViewPatIn out p)
+    V.concatMap (\f -> patBinders out (hirPatFieldPat out f)) (hirPatRecordFields out p)
+  else if k == HirPatKind.View then patBinders out (hirPatViewPat out p)
   else []
 
 fun named (id : Int) : [(String, Int)] ! { Table Binder | e } =
@@ -668,8 +666,8 @@ fun named (id : Int) : [(String, Int)] ! { Table Binder | e } =
 
 -- What a `let`'s binding binds: a function its name, a pattern what it does.
 fun bindBinders out (b : Int) : [(String, Int)] ! { Table Binder | e } =
-  if kindHirBindIn out b == HirBindKind.Fun then named (hirBindFunIdIn out b)
-  else patBinders out (hirBindPatPatIn out b)
+  if kindHirBind out b == HirBindKind.Fun then named (hirBindFunId out b)
+  else patBinders out (hirBindPatPat out b)
 
 -- --- what was named where ----------------------------------------------------
 

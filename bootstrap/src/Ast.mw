@@ -12,7 +12,7 @@
 use Lingua (lang!)
 
 @pub(pkg) lang! {
-  pub Ast with In, set
+  pub Ast with set
   Module + Module { decls : [Decl] }
   Name + Name { text : String }
   Decl + Bind { bind : Bind }

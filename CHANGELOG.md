@@ -39,6 +39,19 @@ beyond the last release is under _Unreleased_.
 
 ### Added
 
+- A program of Cut keeps the continuation a call answers through on the
+  stack, as a program the Rust compiler lowers does, and no longer on the
+  heap: a handled body runs on a stack segment of its own, which an
+  operation that captures its continuation cuts off and its resumption puts
+  back, once. A program with an operation marked `@many` is lowered as
+  before. `MEADOW_CUT_FRAMES=none` asks for the old lowering.
+- `main` is `() -> () ! Eff` wherever its type is shown, not the row its body
+  happened to perform; and a row of every effect the runtime answers is
+  written `Eff`.
+- `Std.Collections.Vector` folds and searches a vector where it stands; each
+  of `foldl`, `find`, `any`, `elem` and their kin copied it whole first.
+- `Std.Json` writes a value in time and room in its size, escapes control
+  characters as `\u00XX`, and reads `\uXXXX` back.
 - `meadow cut FILE -- ARGS` gives the program what follows `--` as its
   arguments.
 - `meadow cut` on Glade compiles what runs often to machine code as it goes,

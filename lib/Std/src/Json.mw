@@ -444,7 +444,7 @@ fun emit (out : Pieces s) (v : Json) : () ! { St s | e } =
   | Null -> say out "null"
   | Bool True -> say out "true"
   | Bool False -> say out "false"
-  | Int n -> say out (S.fromInt n)
+  | Int n -> say out (show n)
   | Float x -> say out (showFloat x)
   | String s -> emitString out s
   | Array xs ->

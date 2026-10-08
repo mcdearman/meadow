@@ -1188,16 +1188,14 @@ fun lowered
     H.fromVec (V.map (\d -> (coreDefId a d, V.map fst (free a (coreDefBody a d) [] []))) defs)
   in
   let isValue = V.foldl (\h v -> H.insert (coreDefId a v) True h) H.empty values in
-  let reads =
-    \d ->
-      reached
-        mentions
-        isValue
-        (M.unwrapOr [] (H.lookup (coreDefId a d) mentions))
-        (H.insert (coreDefId a d) True H.empty)
-        []
+  let byId = V.foldl (\h d -> H.insert (coreDefId a d) d h) H.empty defs in
+  let ordered =
+    V.append
+      (V.filter isFun defs)
+      (V.concatMap
+         (\id -> match H.lookup id byId with | Just d -> [d] | None -> [])
+         (inOrder mentions isValue (V.map (\d -> coreDefId a d) values) 0 [] H.empty []))
   in
-  let ordered = V.append (V.filter isFun defs) (inOrder a values reads values []) in
   let own = V.filter (\d -> not (V.any (\k -> fst3 k == fst3 d) known)) (datasOf p) in
   let datas = V.append known own in
   -- Each constructor whose fields have names, with them.
@@ -1548,51 +1546,55 @@ fun loose (a : CoreArena) (t : CoreTerm) (scope : [Int]) (n : (Int, Int)) : (Int
   let a = coreArena p in
   V.map (\n -> (coreNamedName a n, coreNamedLabels a n)) (coreFileNamed a (coreRoot p))
 
--- The values reached from `todo`, through the functions among them: what
--- each definition mentions is `mentions`, and `found` those reached so far.
-fun reached
+-- The values among `roots` and what they reach, each after every value it
+-- reads -- the values it mentions, and those the functions it mentions do,
+-- which it may call -- whatever order they were written in. One walk of
+-- what mentions what, a definition placed when everything it mentions has
+-- been: `stack` is the definitions being walked, each with how many of its
+-- mentions are done, and one met again while it is still on it -- two that
+-- read each other -- is not waited for.
+fun inOrder
     (mentions : HashMap Int [Int])
     (isValue : HashMap Int Bool)
-    (todo : [Int])
+    (roots : [Int])
+    (r : Int)
+    (stack : [(Int, Int)])
     (seen : HashMap Int Bool)
-    (found : [Int])
+    (out : [Int])
     : [Int] =
-  if V.isEmpty todo then found
-  else
-    (let id = V.getOr 0 todo (V.len todo - 1) in
-     let rest = V.take todo (V.len todo - 1) in
-     if M.isSome (H.lookup id seen) then reached mentions isValue rest seen found
-     else if M.isSome (H.lookup id isValue) then
-       reached mentions isValue rest (H.insert id True seen) (V.pushBack found id)
-     else
-       reached
-         mentions
-         isValue
-         (V.append rest (M.unwrapOr [] (H.lookup id mentions)))
-         (H.insert id True seen)
-         found)
-
--- `todo` after what each reads, each once: `done` is what is placed already.
-fun inOrder (a : CoreArena) (all : [CoreDef]) reads (todo : [CoreDef]) (done : [CoreDef])
-    : [CoreDef] =
-  V.foldl
-    (\placed d ->
-      if V.any (\p -> coreDefId a p == coreDefId a d) placed then placed
-      else
-        (let first =
-           V.filter
-             (\v ->
-               coreDefId a v != coreDefId a d
-                 and V.elem (coreDefId a v) (reads d)
-                 and not (V.any (\p -> coreDefId a p == coreDefId a v) placed))
-             all
-         in
-         -- What it reads first; itself held as placed meanwhile, so that two
-         -- that read each other end.
-         let before = inOrder a all reads first (V.pushBack placed d) in
-         V.pushBack (V.filter (\p -> coreDefId a p != coreDefId a d) before) d))
-    done
-    todo
+  match V.get stack (V.len stack - 1) with
+  | None ->
+      (match V.get roots r with
+       | None -> out
+       | Just root ->
+           if M.isSome (H.lookup root seen) then
+             inOrder mentions isValue roots (r + 1) stack seen out
+           else inOrder mentions isValue roots (r + 1) [(root, 0)] (H.insert root True seen) out)
+  | Just (id, i) ->
+      let rest = V.take stack (V.len stack - 1) in
+      (match V.get (M.unwrapOr [] (H.lookup id mentions)) i with
+       | None ->
+           inOrder
+             mentions
+             isValue
+             roots
+             r
+             rest
+             seen
+             (if M.isSome (H.lookup id isValue) then V.pushBack out id else out)
+       | Just m ->
+           let waiting = V.pushBack rest (id, i + 1) in
+           if M.isSome (H.lookup m seen) or M.isNone (H.lookup m mentions) then
+             inOrder mentions isValue roots r waiting seen out
+           else
+             inOrder
+               mentions
+               isValue
+               roots
+               r
+               (V.pushBack waiting (m, 0))
+               (H.insert m True seen)
+               out)
 
 -- How a field of a declared type is represented: one of the type's own
 -- parameters as that parameter.

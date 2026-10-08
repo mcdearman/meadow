@@ -863,27 +863,41 @@ fun armsFrom src out cx (m : Meta) (s : String) arms (i : Int) =
   | None -> C.fail out m "non-exhaustive pattern match"
   | Just arm ->
       let stop = distinct src arms i [] in
-      if stop - i >= 2 then
+      let group =
+        V.map (\j -> V.getOr arm arms j) (V.range i (if stop - i >= 2 then stop else i + 1))
+      in
+      let cased =
+        \(fail : String) rest ->
+          C.give
+            out
+            m
+            (C.var out m s)
+            (C.caseOf
+               out
+               m
+               (V.pushBack
+                  (V.map
+                     (\a ->
+                       taken src out cx m (coreArmPat src a) fail (\() ->
+                         armBody src out cx m a fail))
+                     group)
+                  (C.arm out m "_" [] rest)))
+      in
+      -- Arms that cannot give up -- a constructor over names, and no guard --
+      -- need nowhere to give up to: what comes after them is what the `case`
+      -- does with any other constructor, written there. A continuation for
+      -- it is one more thing made every time the match is run.
+      if V.all (\a -> plain src a) group then
+        cased "#never" (armsFrom src out cx m s arms (i + V.len group))
+      else if sure src (coreArmPat src arm) and M.isNone (coreArmGuard src arm) then
+        matched src out cx m s (coreArmPat src arm) "#never" (\() ->
+          armBody src out cx m arm "#never")
+      else if stop - i >= 2 then
         C.orElse
           out
           m
           "n${show arm}"
-          (\fail ->
-            C.give
-              out
-              m
-              (C.var out m s)
-              (C.caseOf
-                 out
-                 m
-                 (V.pushBack
-                    (V.map
-                       (\j ->
-                         (let a = V.getOr arm arms j in
-                          taken src out cx m (coreArmPat src a) fail (\() ->
-                            armBody src out cx m a fail)))
-                       (V.range i stop))
-                    (C.arm out m "_" [] (C.gaveUp out m fail)))))
+          (\fail -> cased fail (C.gaveUp out m fail))
           (armsFrom src out cx m s arms stop)
       else
         C.orElse
@@ -893,6 +907,25 @@ fun armsFrom src out cx (m : Meta) (s : String) arms (i : Int) =
           (\fail ->
             matched src out cx m s (coreArmPat src arm) fail (\() -> armBody src out cx m arm fail))
           (armsFrom src out cx m s arms (i + 1))
+
+-- Whether a pattern matches whatever it is given: a name, or names put
+-- together as a tuple or a record is.
+fun sure src p : Bool =
+  match viewCorePat src p with
+  | CorePatView.PWild _ -> True
+  | CorePatView.PVar _ -> True
+  | CorePatView.PAs r -> sure src r.pat
+  | CorePatView.PTuple r -> V.all (\q -> sure src q) r.items
+  | CorePatView.PRecord r -> V.all (\f -> sure src (corePFieldPat src f)) r.fields
+  | _ -> False
+
+-- Whether an arm takes a constructor apart and nothing under it can fail
+-- to match, with no guard to turn it down after.
+fun plain src arm : Bool =
+  M.isNone (coreArmGuard src arm)
+    and (match viewCorePat src (coreArmPat src arm) with
+     | CorePatView.PCtor r -> V.all (\q -> sure src q) r.args
+     | _ -> False)
 
 -- Where the arms from `i` on stop each taking apart a constructor none
 -- before it in `seen` did.

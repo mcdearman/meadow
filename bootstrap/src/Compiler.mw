@@ -27,7 +27,7 @@ use MeadowBoot.Parse (checkedTree)
 use MeadowBoot.Fixity (Fixity, Grouped, declare, grouped)
 use MeadowBoot.Unit (dependenciesOf, unitFilesOf, manifestOf, packageName, dependencyNames)
 use MeadowBoot.Lower (lowered)
-use MeadowBoot.Rename (mentionsOf)
+use MeadowBoot.Rename (mentionsOf, Binder)
 use MeadowBoot.Scopes (Source, Export, Renamed, DepExports, renameUnit)
 use MeadowBoot.Infer (inferUnit, Inferred)
 use MeadowBoot.Elab (unitCore, defSymbol, Linked, DataSig, DefaultSig, Imported)
@@ -114,6 +114,7 @@ database! {
                 (queryFiles unit))
              (Just "result")
              True
+             False
              False
              (\x -> ()))
 }
@@ -221,6 +222,7 @@ fun checkedOf
     (entry : Maybe String)
     (keep : Bool)
     (inlines : Bool)
+    (naming : Bool)
     (mark : String -> () ! e)
     : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, Object)) ! e =
   let m0 = mark "start" in
@@ -293,84 +295,98 @@ fun checkedOf
       in
       let cored = unitCore pkg r done theirs entry in
       let m3 = mark "core" in
-      (
-        exports,
-        r.anyVis,
-        done.types,
-        M.map
-          (\made ->
-            match made with
-            | (plain, dicts, defaults, aliases) ->
-                (let traits =
-                   Inline.traitsOf
-                     (V.append
-                        (V.map (\(e : Entry [String]) -> e.key) labelled)
-                        (V.map fst (Seq.namedOf plain)))
-                 in
-                 let core =
-                   if keep and not inlines then plain
-                   else
-                     Inline.program
-                       plain
-                       (V.map (\(l : Linked) -> l.bodies) linked)
-                       (V.map (\(l : Linked) -> l.summary) linked)
-                       (V.concatMap (\(l : Linked) -> l.arities) linked)
-                       traits
-                       (not keep)
-                       inlines
-                 in
-                 let m4 = mark "optimised" in
-                 let ownDatas =
-                   V.concatMap
-                     (\d ->
-                       match d with
-                       | (name, arity, ctors) ->
-                           if V.any (\(x : DataSig) -> x.name == name) known then []
-                           else
-                             [DataSig {
-                                name,
-                                arity,
-                                ctors = V.map (\c -> Entry { key = fst c, value = snd c }) ctors
-                              }])
-                     (Seq.datasOf core)
-                 in (
-                      core,
-                      Linked {
-                        package = pkg,
-                        packages = V.pushBack packages pkg,
-                        datas = V.append known ownDatas,
-                        named =
-                          V.append
-                            labelled
-                            (V.map (\n -> Entry { key = fst n, value = snd n }) (Seq.namedOf core)),
-                        dicts,
-                        defaults,
-                        aliases,
-                        arities =
-                          V.append
-                            (V.map
-                               (\x -> Entry { key = fst x, value = snd x })
-                               (Seq.aritiesOf core))
-                            (V.concatMap
-                               (\(al : Entry String) ->
-                                 V.concatMap
-                                   (\(l : Linked) ->
-                                     V.filter (\(x : Entry Int) -> x.key == al.value) l.arities)
-                                   linked)
-                               aliases),
-                        summary = Dictionaries.summary plain,
-                        bodies =
-                          if keep and not inlines then Inline.nothing ()
-                          else Inline.exports core traits
-                      },
-                      Seq.declarations
-                        core
-                        (sigsOf known)
-                        (V.map (\(e : Entry [String]) -> (e.key, e.value)) labelled)
-                        (V.filter (\p -> p != "Std") (V.pushBack packages pkg))
-                    )))
-          cored
-      )
+      -- `MEADOWBOOT_NAMES`: each definition's symbol beside the name it was
+      -- written with, for whoever reads a profile of what this compiles.
+      let named =
+        if naming then
+          V.foldl
+            (\u k ->
+              match V.get r.binders k with
+              | Just (b : Binder) -> mark "name ${defSymbol pkg k} ${b.name} ${b.site}"
+              | None -> ())
+            ()
+            (V.range 0 (V.len r.binders))
+        else ()
+      in (
+           exports,
+           r.anyVis,
+           done.types,
+           M.map
+             (\made ->
+               match made with
+               | (plain, dicts, defaults, aliases) ->
+                   (let traits =
+                      Inline.traitsOf
+                        (V.append
+                           (V.map (\(e : Entry [String]) -> e.key) labelled)
+                           (V.map fst (Seq.namedOf plain)))
+                    in
+                    let core =
+                      if keep and not inlines then plain
+                      else
+                        Inline.program
+                          plain
+                          (V.map (\(l : Linked) -> l.bodies) linked)
+                          (V.map (\(l : Linked) -> l.summary) linked)
+                          (V.concatMap (\(l : Linked) -> l.arities) linked)
+                          traits
+                          (not keep)
+                          inlines
+                    in
+                    let m4 = mark "optimised" in
+                    let ownDatas =
+                      V.concatMap
+                        (\d ->
+                          match d with
+                          | (name, arity, ctors) ->
+                              if V.any (\(x : DataSig) -> x.name == name) known then []
+                              else
+                                [DataSig {
+                                   name,
+                                   arity,
+                                   ctors = V.map (\c -> Entry { key = fst c, value = snd c }) ctors
+                                 }])
+                        (Seq.datasOf core)
+                    in (
+                         core,
+                         Linked {
+                           package = pkg,
+                           packages = V.pushBack packages pkg,
+                           datas = V.append known ownDatas,
+                           named =
+                             V.append
+                               labelled
+                               (V.map
+                                  (\n -> Entry { key = fst n, value = snd n })
+                                  (Seq.namedOf core)),
+                           dicts,
+                           defaults,
+                           aliases,
+                           arities =
+                             V.append
+                               (V.map
+                                  (\x -> Entry { key = fst x, value = snd x })
+                                  (Seq.aritiesOf core))
+                               (V.concatMap
+                                  (\(al : Entry String) ->
+                                    V.concatMap
+                                      (\(l : Linked) ->
+                                        V.filter (\(x : Entry Int) -> x.key == al.value) l.arities)
+                                      linked)
+                                  aliases),
+                           summary = Dictionaries.summary plain,
+                           bodies =
+                             if keep and not inlines then Inline.nothing ()
+                             else Inline.exports core traits
+                         },
+                         Seq.declarations
+                           core
+                           (sigsOf known)
+                           (V.map (\(e : Entry [String]) -> (e.key, e.value)) labelled)
+                           (V.filter (\p -> p != "Std") (V.pushBack packages pkg))
+                       )))
+             cored
+         )
 
 -- Declared types as the lowering takes them.
 fun sigsOf (datas : [DataSig]) : [(String, Int, [(String, [Type])])] =
@@ -728,7 +744,7 @@ fun compileUnit (u : Given Interface) =
   | Err why -> Err "${show why}\n"
 
 fun compiling (u : Given Interface) =
-  let timed = M.isSome (getEnv "MEADOWBOOT_TIMES") in
+  let timed = M.isSome (getEnv "MEADOWBOOT_TIMES") or M.isSome (getEnv "MEADOWBOOT_NAMES") in
   let mark =
     \what -> if timed then writeError "${show (monotonic ())} ${unitDir u} ${what}\n" else ()
   in
@@ -781,6 +797,7 @@ fun compiling (u : Given Interface) =
               None
               (M.isSome (getEnv "MEADOWBOOT_KEEP_DICTIONARIES"))
               (not (M.isSome (getEnv "MEADOWBOOT_KEEP_CALLS")))
+              (M.isSome (getEnv "MEADOWBOOT_NAMES"))
               mark with
             | (exports, anyVis, types, made) ->
                 let m9 = mark "cut" in

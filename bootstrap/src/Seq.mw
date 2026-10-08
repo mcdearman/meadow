@@ -156,6 +156,13 @@ pass! {
               | None ->
                   if M.isSome (H.lookup id cx.tops) then
                     C.give out here (C.sym out here (topSymbol cx.pkg id)) cx.k
+                  else if M.isSome (H.lookup id cx.recs) then
+                    -- A local function that names itself, as a value: its
+                    -- definition asked for it.
+                    (match H.lookup id cx.locals with
+                     | Just (symbol, outer, around) ->
+                         C.invoke out here symbol (leading out cx here outer around) [cx.k]
+                     | None -> C.unsupported out here "a local function nothing defines")
                   else C.give out here (C.var out here "v${show id}") cx.k))
     | TyLam { vars, raw body } -> lowerTerm src out cx body
     | TyApp { raw func, tys } -> instanced src out cx here func tys
@@ -166,8 +173,8 @@ pass! {
     | App { raw func, raw arg } ->
         (match spine src func [arg] with
          | (head, args) ->
-             (match known src cx head (V.len args) with
-              | Just (symbol, tys, n) -> direct src out cx here node symbol tys n args
+             (match known src out cx here head (V.len args) with
+              | Just (symbol, lead, n) -> direct src out cx here node symbol lead n args
               | None ->
                   (let f = "f${show node}" in
                    let a = "a${show node}" in
@@ -480,18 +487,25 @@ fun spine src func (args : [CoreTerm]) =
   | CoreTermView.App r -> spine src r.func (V.pushFront args r.arg)
   | _ -> (func, args)
 
--- The definition of all its parameters `head` names, the types it is asked
--- for at, and how many parameters that is -- if it names one, and is given
--- at least that many arguments.
-fun known src cx head (given : Int) : Maybe (String, [Type], Int) =
+-- The definition of all its parameters `head` names, what it is given
+-- before them -- a descriptor for each type it is asked for at, and for a
+-- local one what it mentions from around it -- and how many parameters
+-- that is: if it names one, and is given at least that many arguments.
+fun known src out cx (m : Meta) head (given : Int) =
   let named =
     \id tys generic ->
       (match H.lookup id cx.arity with
        | Just (symbol, n, types) ->
-           if n > 0 and given >= n and (types > 0) == generic then Just (symbol, tys, n) else None
+           if n > 0 and given >= n and (types > 0) == generic then
+             Just (symbol, descsOf out cx m tys, n)
+           else None
        | None -> None)
   in match viewCoreTerm src head with
-     | CoreTermView.Var r -> named r.id [] False
+     | CoreTermView.Var r ->
+         (match (H.lookup r.id cx.recs, H.lookup r.id cx.locals) with
+          | (Just n, Just (symbol, outer, around)) ->
+              if given >= n then Just (symbol, leading out cx m outer around, n) else None
+          | _ -> named r.id [] False)
      | CoreTermView.TyApp r ->
          (match viewCoreTerm src r.func with
           | CoreTermView.Var v -> named v.id r.tys True
@@ -505,7 +519,7 @@ fun directly (symbol : String) : String = "${symbol}f"
 -- A call of the definition `symbol` of `n` parameters with the first `n` of
 -- `args`, each named in turn, and what it answers applied to the rest one
 -- at a time.
-fun direct src out cx (m : Meta) node (symbol : String) (tys : [Type]) (n : Int) args =
+fun direct src out cx (m : Meta) node (symbol : String) lead (n : Int) args =
   let names = V.map (\i -> "a${show node}_${show i}") (V.range 0 (V.len args)) in
   let rest = V.drop names n in
   let after =
@@ -526,22 +540,20 @@ fun direct src out cx (m : Meta) node (symbol : String) (tys : [Type]) (n : Int)
       out
       m
       (directly symbol)
-      (V.append (descsOf out cx m tys) (V.map (\x -> C.var out m x) (V.take names n)))
+      (V.append lead (V.map (\x -> C.var out m x) (V.take names n)))
       [after]
   in V.foldr (\pair acc -> named src out cx m (fst pair) (snd pair) acc) call (V.zip names args)
 
 -- A function of `params` as a value, given to `k`: one that takes them one
 -- at a time from the `i`th on, and then calls the definition of them all,
--- `symbol`'s, generic in `vars`.
-fun curried out cx (symbol : String) (vars : [Int]) (params : [(Int, Type)]) (i : Int) k =
+-- `symbol`'s, which is given `lead` before them.
+fun curried out cx (symbol : String) lead (params : [(Int, Type)]) (i : Int) k =
   if i >= V.len params then
     C.invoke
       out
       C.nowhere
       (directly symbol)
-      (V.append
-         (descsOf out cx C.nowhere (V.map (\v -> Var v) vars))
-         (V.map (\p -> C.var out C.nowhere "v${show (fst p)}") params))
+      (V.append lead (V.map (\p -> C.var out C.nowhere "v${show (fst p)}") params))
       [k]
   else
     (let p = V.getOr (0, Error) params i in
@@ -555,7 +567,7 @@ fun curried out cx (symbol : String) (vars : [Int]) (params : [(Int, Type)]) (i 
           "v${show (fst p)}"
           (repIn cx (snd p))
           w
-          (curried out cx symbol vars params (i + 1) (C.cont out C.nowhere w)))
+          (curried out cx symbol lead params (i + 1) (C.cont out C.nowhere w)))
        k)
 
 -- A function's parameters as it is written with them, each with its type,
@@ -576,9 +588,16 @@ fun named src out cx (m : Meta) (name : String) term rest =
 -- function. Called, the function asks that definition for itself again --
 -- the name its body knows it by -- and goes on.
 
+-- What a local definition is given before anything else: a descriptor for
+-- each type variable in scope where it was written, and what it mentions
+-- from around it.
+fun leading out cx (m : Meta) (outer : [Int]) (around : [(Int, Type)]) =
+  V.append
+    (descsOf out cx m (V.map (\v -> Var v) outer))
+    (V.map (\fv -> C.var out m "v${show (fst fv)}") around)
+
 -- `let rec f = \x -> … and g = \y -> … in body`: a definition to each, of
--- what any of them mentions from around them, and every one of them asked
--- for again where any is in scope -- in each one's body, and in `body`.
+-- what any of them mentions from around them.
 fun lifted src out cx (m : Meta) binds body =
   if V.isEmpty binds then lowerTerm src out cx body
   else if V.any
@@ -590,74 +609,95 @@ fun lifted src out cx (m : Meta) binds body =
        captured cx (V.foldl (\seen b -> free src (coreBindValue src b) ids seen) [] binds)
      in
      let symbol = \id -> "meadow:${cx.pkg}/l${show id}" in
-     -- What each is given: the descriptors in scope, and what any of them
-     -- mentions from around them.
-     let given =
-       \u ->
-         V.append
-           (descsOf out cx m (V.map (\v -> Var v) cx.tvars))
-           (V.map (\fv -> C.var out m "v${show (fst fv)}") around)
-     in
-     -- One generic in its type is asked for at each mention, with the types
-     -- it is at; the others once where they are in scope.
-     let plain =
-       V.concatMap
-         (\b -> if V.isEmpty (fst (peel src (coreBindValue src b))) then [coreBindId src b] else [])
-         binds
-     in
+     -- One generic in its type takes its first parameter, and is asked for
+     -- at each mention with the types it is at. Another has a definition of
+     -- all its parameters, which a call with that many is a call of, and
+     -- is asked for as a value only where it is mentioned as one.
+     let plain = \b -> V.isEmpty (fst (peel src (coreBindValue src b))) in
      let within =
        {
          cx
            | locals =
              V.foldl
-               (\h b ->
-                 if V.isEmpty (fst (peel src (coreBindValue src b))) then h
-                 else H.insert (coreBindId src b) (symbol (coreBindId src b), cx.tvars, around) h)
+               (\h b -> H.insert (coreBindId src b) (symbol (coreBindId src b), cx.tvars, around) h)
                cx.locals
-               binds
+               binds,
+         recs =
+           V.foldl
+             (\h b ->
+               if plain b then
+                 H.insert (coreBindId src b) (V.len (fst (lams src (coreBindValue src b) []))) h
+               else h)
+             cx.recs
+             binds
        }
      in
-     let each =
-       \rest ->
-         V.foldr
-           (\id acc ->
-             C.invoke out m (symbol id) (given ()) [C.binding out m "v${show id}" "ptr" acc])
-           rest
-           plain
-     in
+     let taken = V.map (\fv -> C.param out m "v${show (fst fv)}" (repIn cx (snd fv))) around in
      let made =
-       V.map
+       V.concatMap
          (\b ->
            (let (vars, value) = peel src (coreBindValue src b) in
-            let k = "k${show value}" in
-            let inner = { within | tvars = V.append cx.tvars vars } in
-            C.genericDecl
-              out
-              m
-              (symbol (coreBindId src b))
-              (V.map tname inner.tvars)
-              (V.map (\fv -> C.param out m "v${show (fst fv)}" (repIn cx (snd fv))) around)
-              [C.param out m "k" "ptr"]
-              (C.give
-                 out
-                 m
-                 (C.function
-                    out
-                    m
-                    "v${show (coreTermLamParam src value)}"
-                    (repIn inner (coreTermLamParamTy src value))
-                    k
-                    (each
-                       (lowerTerm
-                          src
-                          out
-                          { inner | k = C.cont out m k }
-                          (coreTermLamBody src value))))
-                 (C.cont out m "k"))))
+            let name = symbol (coreBindId src b) in
+            if plain b then
+              (let (params, inner) = lams src value [] in
+               [
+                 C.genericDecl
+                   out
+                   m
+                   (directly name)
+                   (V.map tname within.tvars)
+                   (V.append
+                      taken
+                      (V.map
+                         (\p -> C.param out m "v${show (fst p)}" (repIn within (snd p)))
+                         params))
+                   [C.param out m "k" "ptr"]
+                   (lowerTerm src out { within | k = C.cont out m "k" } inner),
+                 C.genericDecl
+                   out
+                   m
+                   name
+                   (V.map tname within.tvars)
+                   taken
+                   [C.param out m "k" "ptr"]
+                   (curried
+                      out
+                      within
+                      name
+                      (leading out within m cx.tvars around)
+                      params
+                      0
+                      (C.cont out m "k"))
+               ])
+            else
+              (let k = "k${show value}" in
+               let inner = { within | tvars = V.append cx.tvars vars } in
+               [C.genericDecl
+                  out
+                  m
+                  name
+                  (V.map tname inner.tvars)
+                  taken
+                  [C.param out m "k" "ptr"]
+                  (C.give
+                     out
+                     m
+                     (C.function
+                        out
+                        m
+                        "v${show (coreTermLamParam src value)}"
+                        (repIn inner (coreTermLamParamTy src value))
+                        k
+                        (lowerTerm
+                           src
+                           out
+                           { inner | k = C.cont out m k }
+                           (coreTermLamBody src value)))
+                     (C.cont out m "k"))])))
          binds
      in
      let u = stSetRef cx.lifted (V.append (stGetRef cx.lifted) made) in
-     each (lowerTerm src out within body))
+     lowerTerm src out within body)
 
 -- `let x = v in body`, `v` generic in its type: a definition at the top, of
 -- a descriptor for each variable in scope and each of its own, and of what
@@ -801,36 +841,90 @@ fun bindersOf (a : CoreArena) (p : CorePat) : [Int] =
 -- continuation the arm is built with the name of -- and the arms after it
 -- are what that continuation does.
 
--- Arms `i` and after, of a match on the value named `s`.
+-- Arms `i` and after, of a match on the value named `s`. Arms that follow
+-- one another and each take a different constructor apart are one `case`
+-- of Cut, an arm of it each: a value is of one of them at most, so one that
+-- gives up has only the arms after them all left to try.
 fun armsFrom src out cx (m : Meta) (s : String) arms (i : Int) =
   match V.get arms i with
   | None -> C.fail out m "non-exhaustive pattern match"
   | Just arm ->
-      C.orElse
-        out
-        m
-        "n${show arm}"
-        (\fail ->
-          matched src out cx m s (coreArmPat src arm) fail (\() ->
-            (match coreArmGuard src arm with
-             | None -> lowerTerm src out cx (coreArmBody src arm)
-             | Just g ->
-                 (let name = "g${show arm}" in
-                  named
-                    src
-                    out
-                    cx
-                    m
-                    name
-                    g
-                    (C.branch
-                       out
-                       m
-                       "u${show arm}"
-                       (C.var out m name)
-                       (C.gaveUp out m fail)
-                       (lowerTerm src out cx (coreArmBody src arm)))))))
-        (armsFrom src out cx m s arms (i + 1))
+      let stop = distinct src arms i [] in
+      if stop - i >= 2 then
+        C.orElse
+          out
+          m
+          "n${show arm}"
+          (\fail ->
+            C.give
+              out
+              m
+              (C.var out m s)
+              (C.caseOf
+                 out
+                 m
+                 (V.pushBack
+                    (V.map
+                       (\j ->
+                         (let a = V.getOr arm arms j in
+                          taken src out cx m (coreArmPat src a) fail (\() ->
+                            armBody src out cx m a fail)))
+                       (V.range i stop))
+                    (C.arm out m "_" [] (C.gaveUp out m fail)))))
+          (armsFrom src out cx m s arms stop)
+      else
+        C.orElse
+          out
+          m
+          "n${show arm}"
+          (\fail ->
+            matched src out cx m s (coreArmPat src arm) fail (\() -> armBody src out cx m arm fail))
+          (armsFrom src out cx m s arms (i + 1))
+
+-- Where the arms from `i` on stop each taking apart a constructor none
+-- before it in `seen` did.
+fun distinct src arms (i : Int) (seen : [String]) : Int =
+  match V.get arms i with
+  | None -> i
+  | Just arm ->
+      (match viewCorePat src (coreArmPat src arm) with
+       | CorePatView.PCtor r ->
+           if V.elem r.name seen then i else distinct src arms (i + 1) (V.pushBack seen r.name)
+       | _ -> i)
+
+-- What an arm that matched does: its body, if its guard holds or it has
+-- none, and giving up to `fail` otherwise.
+fun armBody src out cx (m : Meta) arm (fail : String) =
+  match coreArmGuard src arm with
+  | None -> lowerTerm src out cx (coreArmBody src arm)
+  | Just g ->
+      (let name = "g${show arm}" in
+       named
+         src
+         out
+         cx
+         m
+         name
+         g
+         (C.branch
+            out
+            m
+            "u${show arm}"
+            (C.var out m name)
+            (C.gaveUp out m fail)
+            (lowerTerm src out cx (coreArmBody src arm))))
+
+-- The arm of a `case` that takes apart the constructor `p` is a pattern
+-- of: its fields named, and matched in turn.
+fun taken src out cx (m : Meta) p (fail : String) success =
+  let args = corePatPCtorArgs src p in
+  let pairs = V.zip (V.map (\i -> "m${show p}_${show i}") (V.range 0 (V.len args))) args in
+  C.arm
+    out
+    m
+    (symbolOf cx.pkgs (corePatPCtorName src p))
+    (V.map (\q -> C.param out m (fst q) (repIn cx (tyCorePat src (snd q)))) pairs)
+    (matchedAll src out cx m pairs fail success)
 
 -- The value named `x` matched against `p`: what `success` builds where it
 -- matches, with what `p` binds bound, and giving up to `fail` where it does
@@ -878,18 +972,12 @@ fun matched src out cx (m : Meta) (x : String) p (fail : String) success =
               m
               [C.arm out m "#tuple" (fields pairs) (matchedAll src out cx m pairs fail success)])
      | CorePatView.PCtor r ->
-         let pairs = parts r.args in
          C.give
            out
            m
            var
            (C.caseOf out m [
-              C.arm
-                out
-                m
-                (symbolOf cx.pkgs r.name)
-                (fields pairs)
-                (matchedAll src out cx m pairs fail success),
+              taken src out cx m p fail success,
               C.arm out m "_" [] (C.gaveUp out m fail)
             ])
      | CorePatView.PArray r ->
@@ -1156,6 +1244,7 @@ fun lowered
         tvars = [],
         gtops = generics,
         locals = H.empty,
+        recs = H.empty,
         pkg,
         pkgs = packages,
         ext,
@@ -1191,7 +1280,15 @@ fun lowered
            let value =
              \k ->
                if V.isEmpty params then lowerTerm a out { within | k = k } inner
-               else curried out within symbol vars params 0 k
+               else
+                 curried
+                   out
+                   within
+                   symbol
+                   (descsOf out within C.nowhere (V.map (\v -> Var v) vars))
+                   params
+                   0
+                   k
            in
            let made =
              if V.isEmpty vars then

@@ -15,6 +15,10 @@ beyond the last release is under _Unreleased_.
 
 ### Breaking
 
+- The lockfile is `Meadow.lock`, spelt as `Meadow.toml` is. One named
+  `meadow.lock` is still read, and is renamed the first time the lock is
+  written; commit the rename.
+
 - `[a..b]` stops before `b`, as Rust's `a..b` does, and `[a..=b]` includes it.
   Both included `b` before: the parser read the two alike. Write `..=` where
   a range is to reach its end -- `[1..=10]` for one to ten.

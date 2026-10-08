@@ -336,7 +336,7 @@ fn sources_under(dir: &Path, out: &mut Vec<PathBuf>) {
             }
         } else if p.extension().is_some_and(|e| e == "mw" || e == "json")
             || p.file_name()
-                .is_some_and(|n| n == "Meadow.toml" || n == "meadow.lock")
+                .is_some_and(|n| n == "Meadow.toml" || n == "Meadow.lock" || n == "meadow.lock")
         {
             out.push(p);
         }

@@ -292,7 +292,7 @@ fn a_file_changing_on_disk_analyses_the_open_documents_again() {
     assert_eq!(broken.len(), 1);
     c.notify(
         "workspace/didChangeWatchedFiles",
-        json!({"changes": [{"uri": "file:///meadow.lock", "type": 2}]}),
+        json!({"changes": [{"uri": "file:///Meadow.lock", "type": 2}]}),
     );
     loop {
         if let Message::Notification(n) = c.conn.receiver.recv().unwrap()

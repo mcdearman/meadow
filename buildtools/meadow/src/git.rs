@@ -30,7 +30,7 @@
 //!
 //! `branch = "main"` moves, and a tag *can* be moved -- `git push --force`
 //! rewrites what `v1.2.0` means. So what a build resolved is recorded in
-//! `meadow.lock` and checked on the way back: if a tag now names a different
+//! `Meadow.lock` and checked on the way back: if a tag now names a different
 //! commit, that is an error rather than a silently different program. This is
 //! the integrity check for a git dependency, and git computes it for us, since
 //! a commit name *is* a hash of everything reachable from it.
@@ -175,7 +175,7 @@ pub fn ensure(
         && !is_commit_id(rev)
     {
         return Err(format!(
-            "meadow.lock gives `{rev}` as the commit of `{url}`, which is not a \
+            "Meadow.lock gives `{rev}` as the commit of `{url}`, which is not a \
              commit id; refusing it"
         ));
     }
@@ -217,7 +217,7 @@ pub fn ensure(
         Some(rev) => {
             let found = rev_parse(&db, rev).map_err(|_| {
                 format!(
-                    "`{url}` has no commit {rev}, which meadow.lock says to use.\n\
+                    "`{url}` has no commit {rev}, which Meadow.lock says to use.\n\
                      The history it was on may have been rewritten."
                 )
             })?;
@@ -227,7 +227,7 @@ pub fn ensure(
                 && !matches!(reference, GitRef::Default | GitRef::Branch(_))
             {
                 return Err(format!(
-                    "`{}` of `{url}` now names commit {}, but meadow.lock says {}.\n\
+                    "`{}` of `{url}` now names commit {}, but Meadow.lock says {}.\n\
                      A tag that moves is a different program under the same name. \
                      Run `meadow update` to take the new one deliberately.",
                     reference.written().unwrap_or_else(|| "HEAD".to_string()),

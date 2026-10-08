@@ -2481,7 +2481,7 @@ Below `1.0` the minor is the breaking digit, as Cargo reads it: a package still
 finding its shape changes it there. A pre-release (`1.0.0-rc1`) is only ever
 chosen by a requirement that asks for one.
 
-Which release a build actually used is in `meadow.lock`, with the commit:
+Which release a build actually used is in `Meadow.lock`, with the commit:
 
 ```toml
 [[package]]

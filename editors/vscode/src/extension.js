@@ -59,7 +59,7 @@ function start() {
     // fetched the dependencies: the server analyses the open documents again
     // when any of them changes on disk.
     synchronize: {
-      fileEvents: workspace.createFileSystemWatcher("**/{*.mw,Meadow.toml,meadow.lock}"),
+      fileEvents: workspace.createFileSystemWatcher("**/{*.mw,Meadow.toml,Meadow.lock,meadow.lock}"),
     },
     outputChannelName: "Meadow Language Server",
     middleware: {

@@ -2,7 +2,7 @@
 //!
 //! A `target` directory holds images, executables, native code and the
 //! incremental cache -- everything that can be made again from the sources
-//! beside it. Nothing else is touched: not the manifest, not `meadow.lock`,
+//! beside it. Nothing else is touched: not the manifest, not `Meadow.lock`,
 //! and not the dependency cache, which other packages share and which this has
 //! no business emptying.
 //!

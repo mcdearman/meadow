@@ -4,7 +4,7 @@
 -- under its `src/`. What it depends on is what its manifest's
 -- `[dependencies]` name -- a `path`, from the unit, or a `git` repository,
 -- which `meadow` has fetched into its cache at the commit the root unit's
--- `meadow.lock` pins -- and the standard library, which every unit but the
+-- `Meadow.lock` pins -- and the standard library, which every unit but the
 -- standard library itself depends on, and whose sources are where
 -- `MEADOWBOOT_STD` says.
 --
@@ -134,14 +134,17 @@ fun locate (root : String) (dir : String) (e : Entry) : Result String String ! {
   | (_, Just url) ->
       (match pinned root dir e.key with
        | Just rev -> checkout url rev
-       | None -> Err "`${e.key}` is not in `meadow.lock`: run `meadow build` once to fetch it")
+       | None -> Err "`${e.key}` is not in `Meadow.lock`: run `meadow build` once to fetch it")
   | _ -> Err "`${e.key}` is neither a `path` nor a `git` dependency"
 
--- The commit `meadow.lock` pins package `name` at: the root's, or the unit's.
+-- The commit `Meadow.lock` pins package `name` at: the root's, or the unit's.
 fun pinned (root : String) (dir : String) (name : String) : Maybe String ! { Fs | e } =
   let inLock =
     \d ->
-      match readToString (Path.join d "meadow.lock") with
+      -- Under the name it had before, where one is still spelt so.
+      match (match readToString (Path.join d "Meadow.lock") with
+       | Ok text -> Ok text
+       | Err _ -> readToString (Path.join d "meadow.lock")) with
       | Ok text ->
           M.andThen
             (\(p : Entry) -> field "rev" p.value)
@@ -355,5 +358,6 @@ use Std.Test (assertEq)
        "one table each"
 
 @test fun aCheckoutIsNamedForItsRepository () =
-  let a = assertEq (repoName "https://github.com/meadow-lang/Scythe.git") "Scythe" "without `.git`" in
-  assertEq (repoName "https://github.com/someone/meadow-json/") "meadow-json" "without the slash"
+  let a =
+    assertEq (repoName "https://github.com/meadow-lang/Scythe.git") "Scythe" "without `.git`"
+  in assertEq (repoName "https://github.com/someone/meadow-json/") "meadow-json" "without the slash"

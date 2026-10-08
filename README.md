@@ -158,9 +158,9 @@ meadow test --workspace         # ...or every member (`--exclude NAME` leaves on
 meadow add owner/repo           # add a dependency from GitHub
 meadow add owner/repo --tag v1  # ...at a tag (or `--branch`, `--rev`)
 meadow add ../util              # ...or a directory
-meadow update                   # bring dependencies forward, rewriting meadow.lock
+meadow update                   # bring dependencies forward, rewriting Meadow.lock
 meadow update json --dry-run    # ...one of them, and only say what would change
-meadow build --locked           # fail rather than change meadow.lock (what CI wants)
+meadow build --locked           # fail rather than change Meadow.lock (what CI wants)
 meadow build --offline          # never fetch; use what is already cached
 ```
 
@@ -178,7 +178,7 @@ util = { path = "../util" }
 you, and finds the package's name by reading its own manifest rather than
 guessing it from the URL.
 
-What was actually used goes in **`meadow.lock`** — the commit, and a hash of its
+What was actually used goes in **`Meadow.lock`** — the commit, and a hash of its
 source tree. Commit that file: it is what makes a build on another machine the
 build you tested. A branch moves, and a tag _can_ be moved, so a build follows
 the lockfile and never the reference; `meadow update` is how the lockfile

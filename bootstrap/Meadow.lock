@@ -5,7 +5,7 @@ version = 1
 
 [[package]]
 name = "Anstyle"
-source = "git+https://github.com/mcdearman/MeadowAnstyle?version=0.2.0"
+source = "git+https://github.com/meadow-lang/Bloom?version=0.2.0"
 version = "0.2.1"
 rev = "66c067ee073ae777336c5bb8f8bc2eac71e14a59"
 tree = "344ca224a72f8d22632104c46f238d134138b8d9"
@@ -13,9 +13,9 @@ tree = "344ca224a72f8d22632104c46f238d134138b8d9"
 [[package]]
 name = "Doodle"
 source = "git+https://github.com/meadow-lang/Doodle?version=0.1.1"
-version = "0.1.1"
-rev = "7ceb460617dea217d00b1e6d2c94ca81a203da0d"
-tree = "2655c848bec2e2251841f9813d6a47e11d976d56"
+version = "0.1.2"
+rev = "35e4db741549d6233835d9d228a93dd42ded0adf"
+tree = "be2d69f5e1b318ff0f541e00c187c340aab09f23"
 
 [[package]]
 name = "Fuzzy"
@@ -27,48 +27,34 @@ tree = "809c6aa34620f8b8270c7811bb4b54e56719cbfe"
 [[package]]
 name = "LineEditor"
 source = "git+https://github.com/meadow-lang/LineEditor?version=0.2.0"
-version = "0.2.0"
-rev = "ec0a3c8ea0bac7635d30e45ceac7dc78a65eac86"
-tree = "93d1e369435df7a4ee908de2cf610a59ac76bdc1"
+version = "0.2.1"
+rev = "89225cde596daadc4138905fa17d0efccebc43ab"
+tree = "8f685240f4d853d8a0db9e04a30ca408d925d62c"
 
 [[package]]
 name = "Lingua"
 source = "git+https://github.com/meadow-lang/Lingua.git?branch=master"
-rev = "2044850881bc72342340353ecb794310123c5008"
-tree = "39dfd5a1f318a7768214a8dfb472dc9128761f36"
+rev = "c5859a058bc22b165be548c8c53a452306d1141e"
+tree = "8701c8939d7fb29b4eac49502668a7ee94c86311"
 
 [[package]]
 name = "Nettle"
 source = "git+https://github.com/meadow-lang/Nettle.git?branch=master"
-rev = "d615b5551d42d1ff66f00c509656bfe6c1ddaa75"
-tree = "af2387ef7622f372ac5c0998f7b108fbbcb25bb3"
+rev = "dc1757850d72971e3ab077e1eb977645e18b15d8"
+tree = "90350e8de9be9b476a1d2c4734aed3dfb85deb60"
 
 [[package]]
 name = "Pretty"
 source = "git+https://github.com/meadow-lang/Pretty.git?version=0.2.0"
-version = "0.2.1"
-rev = "0b60a413b84354c3734238f9cbd9f1ae89720ec0"
-tree = "b2b3b30b04a9fd3e5068770ce4546c03fb5b0667"
+version = "0.2.2"
+rev = "cf3d7de14a6008b2795544677cdd8e1ca03c6cd0"
+tree = "8649540453782376b76abaaf227e7ee931daa2f8"
 
 [[package]]
 name = "Scythe"
 source = "git+https://github.com/meadow-lang/Scythe.git?branch=master"
 rev = "ba1b2d2815d837a9749789e6c6145a565efd0729"
 tree = "bf8c0f80d3d41083a68e875ad77bd249ea0c77a5"
-
-[[package]]
-name = "UnicodeWidth"
-source = "git+https://github.com/mcdearman/MeadowUnicodeWidth?version=0.2.0"
-version = "0.2.0"
-rev = "a4580b8010ecfba736c0f7d105a308db6972e60e"
-tree = "018d5c43b7b4c92e41fdcb4b91907ae7654bd335"
-
-[[package]]
-name = "UnicodeWidth"
-source = "git+https://github.com/mcdearman/UnicodeWidth?version=0.2.0"
-version = "0.2.0"
-rev = "a4580b8010ecfba736c0f7d105a308db6972e60e"
-tree = "018d5c43b7b4c92e41fdcb4b91907ae7654bd335"
 
 [[package]]
 name = "UnicodeWidth"

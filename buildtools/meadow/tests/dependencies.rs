@@ -168,7 +168,7 @@ fn a_locked_build_refuses_a_dependency_that_is_not_pinned() {
     resolver.locked = true;
     let err = PackageGraph::build_all_with(&[&app], &mut resolver)
         .expect_err("`--locked` with nothing pinned");
-    assert!(err.msg.contains("meadow.lock"), "{}", err.msg);
+    assert!(err.msg.contains("Meadow.lock"), "{}", err.msg);
 }
 
 #[test]
@@ -247,7 +247,7 @@ fn a_path_dependency_is_not_pinned() {
     let out = build_in(&app, "paths", |_| {});
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     assert!(
-        !app.join("meadow.lock").exists(),
+        !app.join("Meadow.lock").exists(),
         "a path dependency should not write a lockfile"
     );
 }

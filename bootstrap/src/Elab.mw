@@ -28,6 +28,7 @@ use MeadowBoot.Solve (
 use MeadowBoot.Traits (methodKey)
 use MeadowBoot.Core
 use MeadowBoot.Core (Core!)
+use MeadowBoot.Dictionaries (Summary)
 use MeadowBoot.Types
 use MeadowBoot.Types.Type.*
 use MeadowBoot.Scopes (Renamed, Item, Declared, Export)
@@ -860,7 +861,9 @@ def nowhere : Meta = spanMeta 0 0
   aliases : [Entry String],
   -- Each function it writes with its parameters, and each it exports of
   -- another unit's: its symbol, and how many they are.
-  arities : [Entry Int]
+  arities : [Entry Int],
+  -- What `Dictionaries` needs to know of its definitions.
+  summary : Summary
 }
 
 -- A declared type: its name in core, how many types it takes, and each

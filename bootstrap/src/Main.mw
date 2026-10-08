@@ -9,6 +9,7 @@ mod Core
 mod Cut
 mod Seq
 mod Lint
+mod Dictionaries
 mod Cek
 mod Syntax
 mod Parse

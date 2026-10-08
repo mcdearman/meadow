@@ -33,6 +33,8 @@ use MeadowBoot.Infer (inferUnit, Inferred)
 use MeadowBoot.Elab (unitCore, defSymbol, Linked, DataSig, DefaultSig, Imported)
 use MeadowBoot.Seq as Seq
 use MeadowBoot.Lint (lint)
+use MeadowBoot.Dictionaries as Dictionaries
+use MeadowBoot.Dictionaries (emptySummary)
 use MeadowBoot.Types
 use MeadowBoot.Core (CoreProgram)
 use MeadowBoot.Solve (TypeEnv, noTypes, Entry)
@@ -110,6 +112,7 @@ database! {
                 (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None))
                 (queryFiles unit))
              (Just "result")
+             True
              (\x -> ()))
 }
 
@@ -204,13 +207,16 @@ fun inferredOf
 -- exports, each with its scheme; whether it says; what it knows about
 -- types; and, entered at its `entry` if it is to have one -- or `None`, for
 -- one with nothing of that name -- its core, what the units after it are
--- lowered with, and its declarations of Cut as text.
+-- lowered with, and its declarations of Cut as text. Unless it is to `keep`
+-- them, a method asked of a dictionary in plain sight is the method
+-- (`Dictionaries`).
 fun checkedOf
     (dir : String)
     (imported : [Interface])
     (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
     (entry : Maybe String)
+    (keep : Bool)
     (mark : String -> () ! e)
     : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, Object)) ! e =
   let m0 = mark "start" in
@@ -290,8 +296,16 @@ fun checkedOf
         M.map
           (\made ->
             match made with
-            | (core, dicts, defaults, aliases) ->
-                (let ownDatas =
+            | (plain, dicts, defaults, aliases) ->
+                (let core =
+                   if keep then plain
+                   else
+                     Dictionaries.program
+                       plain
+                       (V.map (\(l : Linked) -> l.summary) linked)
+                       (V.concatMap (\(l : Linked) -> l.arities) linked)
+                 in
+                 let ownDatas =
                    V.concatMap
                      (\d ->
                        match d with
@@ -328,7 +342,8 @@ fun checkedOf
                                    (\(l : Linked) ->
                                      V.filter (\(x : Entry Int) -> x.key == al.value) l.arities)
                                    linked)
-                               aliases)
+                               aliases),
+                        summary = Dictionaries.summary plain
                       },
                       Seq.declarations
                         core
@@ -357,7 +372,8 @@ fun emptyLinked () : Linked =
     dicts = [],
     defaults = [],
     aliases = [],
-    arities = []
+    arities = [],
+    summary = emptySummary ()
   }
 
 -- A unit's declarations of Cut, where its compiler writes them: its object.
@@ -739,6 +755,7 @@ fun compiling (u : Given Interface) =
                    ))
                  (unitSources u))
               None
+              (M.isSome (getEnv "MEADOWBOOT_KEEP_DICTIONARIES"))
               mark with
             | (exports, anyVis, types, made) ->
                 let m9 = mark "cut" in

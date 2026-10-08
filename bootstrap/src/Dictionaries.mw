@@ -1,0 +1,311 @@
+-- Dictionaries, where they are known -- `meadow_core::dictionaries`, for a
+-- method asked of an `impl` in plain sight.
+--
+-- A trait is a dictionary and a method the function that reads itself out
+-- of one, so `x + 1` at `Int` is a call to a function that takes `impl Add
+-- Int`'s dictionary apart to find another function to call. Nothing in that
+-- is decided at run time. Where a method is asked of a dictionary that is
+-- **known** -- a definition that is a dictionary's constructor, an `impl`'s
+-- with no `where` and no types of its own -- the asking is the field it
+-- would find: the `impl`'s method, by name.
+--
+-- And `Std.Ops` defines the operators as methods, `impl Add Int { fun (+) a
+-- b = _primAdd a b }`, so that method is a function whose whole body is a
+-- primitive of its parameters. A call of one with all of them is that
+-- primitive of its arguments: `x + 1` at `Int` is the `AddI` it was before
+-- `+` was a method.
+--
+-- A unit is lowered apart from the ones it imports, so each says what the
+-- next need to know of it for this, its `Summary`: which of its definitions
+-- read a field out of a dictionary, which are known dictionaries and what
+-- each field of one is, and which are a primitive of their parameters.
+--
+-- Not here yet: the copy of a function that takes dictionaries, made for the
+-- ones a call is known to pass.
+
+use Lingua (pass!)
+use Lingua.Lang (Meta, spanMeta)
+use Std.Macro (Reflect)
+use MeadowBoot.Core
+use MeadowBoot.Core (Core!)
+use MeadowBoot.Solve (Entry)
+use MeadowBoot.Types
+use MeadowBoot.Types.Type.*
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- A definition that is a primitive of its parameters, in their order: the
+-- operation, and how many they are.
+@derive(Reflect, Debug, PartialEq)
+@pub record Wrapper = {
+  op : String,
+  arity : Int
+}
+
+-- What a unit says of its definitions, each by its symbol: the label each
+-- selector reads, each known dictionary's fields -- a label and the symbol
+-- of the definition it holds -- and each wrapper of a primitive.
+@derive(Reflect, Debug, PartialEq)
+@pub record Summary = {
+  selectors : [Entry String],
+  dicts : [Entry [Entry String]],
+  wrappers : [Entry Wrapper]
+}
+
+@pub fun emptySummary () : Summary = Summary { selectors = [], dicts = [], wrappers = [] }
+
+def nowhere : Meta = spanMeta 0 0
+
+-- Where the binders this pass makes start, as `meadow_core`'s do: clear of
+-- every unit's.
+def base : Int = 1946157056
+
+fun symbolIn (pkg : String) (id : Int) : String =
+  if id < 0 then "meadow:${pkg}/impl${show (0 - id)}" else "meadow:${pkg}/d${show id}"
+
+-- A term under the types it is generic in, or at.
+fun peeled a t =
+  match viewCoreTerm a t with
+  | CoreTermView.TyLam r -> peeled a r.body
+  | CoreTermView.TyApp r -> peeled a r.func
+  | _ -> t
+
+-- The binder `t` names, if it is a name.
+fun named a t =
+  match viewCoreTerm a t with
+  | CoreTermView.Var r -> Just r.id
+  | _ -> None
+
+-- The label `body` reads out of its parameter, if that is all it does.
+fun selector a body : Maybe String =
+  match viewCoreTerm a body with
+  | CoreTermView.Lam r ->
+      (match viewCoreTerm a r.body with
+       | CoreTermView.Sel s -> if named a s.target == Just r.param then Just s.label else None
+       | _ -> None)
+  | _ -> None
+
+-- The primitive `body` is of its parameters, `params` so far, if that is
+-- all it is.
+fun wrapper a body (params : [Int]) : Maybe Wrapper =
+  match viewCoreTerm a body with
+  | CoreTermView.Lam r -> wrapper a r.body (V.pushBack params r.param)
+  | CoreTermView.Prim r ->
+      if not (V.isEmpty params)
+        and V.map (\x -> named a x) r.args == V.map (\p -> Just p) params then
+        Just (Wrapper { op = r.op, arity = V.len params })
+      else None
+  | _ -> None
+
+-- What `p` says of itself, for the units that import it.
+@pub fun summary (p : CoreProgram) : Summary =
+  let a = coreArena p in
+  let file = coreRoot p in
+  let pkg = coreFilePackage a file in
+  let defs = coreFileDefs a file in
+  let symbols =
+    V.foldl
+      (\h x -> H.insert (coreExternId a x) (coreExternSymbol a x) h)
+      (V.foldl (\h d -> H.insert (coreDefId a d) (symbolIn pkg (coreDefId a d)) h) H.empty defs)
+      (coreFileExterns a file)
+  in
+  let labels =
+    V.foldl
+      (\h n -> H.insert (coreNamedName a n) (coreNamedLabels a n) h)
+      H.empty
+      (coreFileNamed a file)
+  in
+  let at = \d -> Entry { key = symbolIn pkg (coreDefId a d), value = d } in
+  Summary {
+    selectors =
+      V.concatMap
+        (\d ->
+          match selector a (coreDefBody a d) with
+          | Just label -> [Entry { key = symbolIn pkg (coreDefId a d), value = label }]
+          | None -> [])
+        defs,
+    dicts =
+      V.concatMap
+        (\d ->
+          match viewCoreTerm a (coreDefBody a d) with
+          | CoreTermView.Ctor r ->
+              if not (S.endsWith ".Dict" r.name) then []
+              else
+                (let ls = M.unwrapOr [] (H.lookup r.name labels) in
+                 [Entry {
+                    key = symbolIn pkg (coreDefId a d),
+                    value =
+                      V.concatMap
+                        (\k ->
+                          match M.andThen
+                            (\x -> M.andThen (\id -> H.lookup id symbols) (named a x))
+                            (V.get r.args k) with
+                          | Just s -> [Entry { key = V.getOr "" ls k, value = s }]
+                          | None -> [])
+                        (V.range 0 (V.len ls))
+                  }])
+          | _ -> [])
+        defs,
+    wrappers =
+      V.concatMap
+        (\d ->
+          match wrapper a (coreDefBody a d) [] with
+          | Just w -> [Entry { key = symbolIn pkg (coreDefId a d), value = w }]
+          | None -> [])
+        defs
+  }
+
+-- What the pass carries: every summary in sight by symbol, the symbol each
+-- binder of the unit's is, the binder each symbol has here, how many
+-- parameters each symbol is written with, and what it names of another unit
+-- that the unit did not: the next binder, and each made.
+record Cx s = {
+  selectors : HashMap String String,
+  dicts : HashMap String [Entry String],
+  wrappers : HashMap String Wrapper,
+  symbols : HashMap Int String,
+  binders : HashMap String Int,
+  arities : HashMap String Int,
+  made : StRef s [(Int, String)]
+}
+
+-- The symbol binder `id` is.
+fun symbolOf (cx : Cx s) (id : Int) : Maybe String ! { St s | e } =
+  if id >= base then M.map snd (V.get (stGetRef cx.made) (id - base)) else H.lookup id cx.symbols
+
+-- The binder `symbol` has here: a new one, where the unit never named it.
+fun binderOf (cx : Cx s) (symbol : String) : Int ! { St s | e } =
+  match H.lookup symbol cx.binders with
+  | Just id -> id
+  | None ->
+      (let made = stGetRef cx.made in
+       match V.find (\x -> snd x == symbol) made with
+       | Just (id, _) -> id
+       | None ->
+           (let id = base + V.len made in
+            let u = stSetRef cx.made (V.pushBack made (id, symbol)) in
+            id))
+
+-- The symbol of what `func` given `arg` is, where `func` reads a field and
+-- `arg` is a dictionary whose fields are known.
+fun selected out (cx : Cx s) func arg =
+  match (named out (peeled out func), named out arg) with
+  | (Just f, Just d) ->
+      (match (symbolOf cx f, symbolOf cx d) with
+       | (Just fs, Just ds) ->
+           (match (H.lookup fs cx.selectors, H.lookup ds cx.dicts) with
+            | (Just label, Just fields) ->
+                M.map
+                  (\(e : Entry String) -> e.value)
+                  (V.find (\(e : Entry String) -> e.key == label) fields)
+            | _ -> None)
+       | _ -> None)
+  | _ -> None
+
+-- What `func` is applied to already, and the name at its head.
+fun spine out func args =
+  match viewCoreTerm out func with
+  | CoreTermView.App r -> spine out r.func (V.pushFront args r.arg)
+  | _ -> (named out func, args)
+
+-- The primitive `func` given `arg` is, and what it is of, where `func` is a
+-- wrapper of one given all but its last argument.
+fun primitive out (cx : Cx s) func arg =
+  match spine out func [arg] with
+  | (Just f, args) ->
+      (match M.andThen (\s -> H.lookup s cx.wrappers) (symbolOf cx f) with
+       | Just (w : Wrapper) -> if w.arity == V.len args then Just (w.op, args) else None
+       | None -> None)
+  | _ -> None
+
+fun call out (cx : Cx s) (m : Meta) func arg (t : Type) =
+  match selected out cx func arg with
+  | Just symbol -> newCoreTermVar out m (binderOf cx symbol) t
+  | None ->
+      (match primitive out cx func arg with
+       | Just (op, args) -> newCoreTermPrim out m op args t
+       | None -> newCoreTermApp out m func arg t)
+
+pass! {
+  known : Core -> Core with cx from Def, Named, Data, Effect, Extern
+    | App { func, arg, ty } -> call out cx here func arg ty
+}
+
+-- `p` with each method asked of a known dictionary the method, and each
+-- call of a wrapper its primitive: `theirs` is what the units it imports
+-- say of themselves, and `arities` how many parameters each of their
+-- functions is written with.
+@pub fun program (p : CoreProgram) (theirs : [Summary]) (arities : [Entry Int]) : CoreProgram =
+  let a = coreArena p in
+  let file = coreRoot p in
+  let pkg = coreFilePackage a file in
+  let all = V.pushBack theirs (summary p) in
+  let symbols =
+    V.foldl
+      (\h x -> H.insert (coreExternId a x) (coreExternSymbol a x) h)
+      (V.foldl
+         (\h d -> H.insert (coreDefId a d) (symbolIn pkg (coreDefId a d)) h)
+         H.empty
+         (coreFileDefs a file))
+      (coreFileExterns a file)
+  in runSt (\() ->
+       let out = newCoreBuilder () in
+       let cx =
+         Cx {
+           selectors =
+             V.foldl
+               (\h (s : Summary) ->
+                 V.foldl (\g (e : Entry String) -> H.insert e.key e.value g) h s.selectors)
+               H.empty
+               all,
+           dicts =
+             V.foldl
+               (\h (s : Summary) ->
+                 V.foldl (\g (e : Entry [Entry String]) -> H.insert e.key e.value g) h s.dicts)
+               H.empty
+               all,
+           wrappers =
+             V.foldl
+               (\h (s : Summary) ->
+                 V.foldl (\g (e : Entry Wrapper) -> H.insert e.key e.value g) h s.wrappers)
+               H.empty
+               all,
+           symbols,
+           binders = V.foldl (\h kv -> H.insert (snd kv) (fst kv) h) H.empty (H.toVec symbols),
+           arities = V.foldl (\h (e : Entry Int) -> H.insert e.key e.value h) H.empty arities,
+           made = stNewRef []
+         }
+       in
+       let defs = V.map (\d -> knownDef a out cx d) (coreFileDefs a file) in
+       let named = V.map (\n -> knownNamed a out cx n) (coreFileNamed a file) in
+       let datas = V.map (\d -> knownData a out cx d) (coreFileDatas a file) in
+       let effects = V.map (\e -> knownEffect a out cx e) (coreFileEffects a file) in
+       let externs = V.map (\x -> knownExtern a out cx x) (coreFileExterns a file) in
+       let more =
+         V.map
+           (\x ->
+             newCoreExtern
+               out
+               nowhere
+               (fst x)
+               (snd x)
+               0
+               (M.unwrapOr 0 (H.lookup (snd x) cx.arities)))
+           (stGetRef cx.made)
+       in
+       let root =
+         newCoreFile
+           out
+           nowhere
+           pkg
+           (coreFileEntry a file)
+           defs
+           named
+           datas
+           effects
+           (V.append externs more)
+       in CoreProgram (freezeCore out) root)

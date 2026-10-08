@@ -276,6 +276,15 @@ use Std.Char as C
         let u = between w "\n" (\d -> decl w a d) (cutFileDecls a root) in
         concatStrings (B.freeze w))
 
+-- Some of its declarations as text: each followed by a blank line.
+@pub(pkg) fun textOf (p : CutProgram) (decls : [CutDecl]) : String =
+  match p with
+  | CutProgram a _ ->
+      runSt (\() ->
+        let w = B.buffer () in
+        let u = V.foldl (\x d -> (let y = decl w a d in put w "\n")) () decls in
+        concatStrings (B.freeze w))
+
 fun put w (text : String) = (let u = B.push w text in ())
 
 -- Each of `xs` written by `each`, `sep` between them.

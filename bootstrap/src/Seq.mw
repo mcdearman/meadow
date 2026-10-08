@@ -897,6 +897,18 @@ fun bare (canon : String) : String =
     (labelled : [(String, [String])])
     (packages : [String])
     : CutProgram =
+  match lowered p known labelled packages with
+  | (cut, _, _) -> cut
+
+-- The same, and its declarations in parts: what it declares of types and
+-- effects, and then each definition's own -- with the definitions made of
+-- its local functions -- under its symbol, with the symbols it mentions.
+-- What a link keeps is the parts its entry reaches.
+fun lowered
+    (p : CoreProgram)
+    (known : [(String, Int, [(String, [Type])])])
+    (labelled : [(String, [String])])
+    (packages : [String]) =
   let a = coreArena p in
   let file = coreRoot p in
   let defs = coreFileDefs a file in
@@ -991,42 +1003,55 @@ fun bare (canon : String) : String =
     let cx =
       {
         k = halt,
-        tops = tops,
-        lifted = lifted,
-        datas = datas,
-        fields = fields,
+        tops,
+        lifted,
+        datas,
+        fields,
         tvars = [],
         gtops = generics,
         locals = H.empty,
-        pkg = pkg,
+        pkg,
         pkgs = packages,
-        ext = ext
+        ext
       }
     in
     -- A definition generic in its type is a `def` of the descriptors,
     -- answering the value at them; any other a `val`.
-    let vals =
+    let parts =
       V.map
         (\d ->
           (let (vars, inner) = peel a (coreDefBody a d) in
-           if V.isEmpty vars then
-             C.valDecl
-               out
-               C.nowhere
-               (topSymbol pkg (coreDefId a d))
-               (repOf (tyCoreTerm a inner))
-               (lowerTerm a out cx inner)
-           else
-             C.genericDecl
-               out
-               C.nowhere
-               (topSymbol pkg (coreDefId a d))
-               (V.map tname vars)
-               []
-               [C.param out C.nowhere "k" "ptr"]
-               (lowerTerm a out { cx | tvars = vars, k = C.cont out C.nowhere "k" } inner)))
+           let before = V.len (stGetRef lifted) in
+           let made =
+             if V.isEmpty vars then
+               C.valDecl
+                 out
+                 C.nowhere
+                 (topSymbol pkg (coreDefId a d))
+                 (repOf (tyCoreTerm a inner))
+                 (lowerTerm a out cx inner)
+             else
+               C.genericDecl
+                 out
+                 C.nowhere
+                 (topSymbol pkg (coreDefId a d))
+                 (V.map tname vars)
+                 []
+                 [C.param out C.nowhere "k" "ptr"]
+                 (lowerTerm a out { cx | tvars = vars, k = C.cont out C.nowhere "k" } inner)
+           in (
+                topSymbol pkg (coreDefId a d),
+                V.pushBack (V.drop (stGetRef lifted) before) made,
+                V.map
+                  (\id ->
+                    match H.lookup id ext with
+                    | Just (symbol, _) -> symbol
+                    | None -> topSymbol pkg id)
+                  (M.unwrapOr [] (H.lookup (coreDefId a d) mentions))
+              )))
         ordered
     in
+    let vals = V.concatMap (\x -> match x with | (_, ds, _) -> ds) parts in
     let entry = coreFileEntry a file in
     let answerTy =
       M.unwrapOr
@@ -1034,30 +1059,22 @@ fun bare (canon : String) : String =
         (M.map (\d -> tyCoreTerm a (coreDefBody a d)) (V.find (\d -> coreDefId a d == entry) defs))
     in
     let sh =
-      {
-        out = out,
-        datas = datas,
-        pkgs = packages,
-        wanted = stNewRef [],
-        seen = stNewRef [],
-        next = stNewRef 0
-      }
+      { out, datas, pkgs = packages, wanted = stNewRef [], seen = stNewRef [], next = stNewRef 0 }
     in
     let shown =
       entered out sh pkg entry answerTy (M.unwrapOr 0 (M.map V.len (H.lookup entry generics)))
     in
     let showers = showersOf sh [] in
     let root =
-      if entry < 0 then
-        C.file out C.nowhere "" "none" (V.concat [declared, effects, stGetRef lifted, vals])
+      if entry < 0 then C.file out C.nowhere "" "none" (V.concat [declared, effects, vals])
       else
         C.file
           out
           C.nowhere
           "${package}\"#entry\""
           "str"
-          (V.concat [declared, effects, stGetRef lifted, vals, [shown], showers])
-    in C.finished out root)
+          (V.concat [declared, effects, vals, [shown], showers])
+    in (C.finished out root, V.append declared effects, parts))
 
 -- The definition a program is entered at: the value of definition `entry`
 -- of package `pkg`, of type `answerTy` and generic in `types` types, turned
@@ -1120,7 +1137,7 @@ fun entered out sh (pkg : String) (entry : Int) (answerTy : Type) (types : Int) 
       let out = C.builder () in
       let sh =
         {
-          out = out,
+          out,
           datas = known,
           pkgs = packages,
           wanted = stNewRef [],
@@ -1691,11 +1708,45 @@ fun roles (datas : [(String, Int, [(String, [Type])])]) : String =
          ++ "}\n\n"
 
 -- A unit's declarations as text, to go before those of a unit that depends
--- on it.
+-- on it: what is always part of a program it is in -- the operations a
+-- runtime answers, its types, its effects -- and then each definition's
+-- text under its symbol, with the symbols it mentions.
 @pub fun declarations
     (p : CoreProgram)
     (known : [(String, Int, [(String, [Type])])])
     (labelled : [(String, [String])])
     (packages : [String])
-    : String =
-  C.body (program p known labelled packages) ++ "\n"
+    : (String, [(String, String, [String])]) =
+  match lowered p known labelled packages with
+  | (cut, always, parts) ->
+      (
+        natives p ++ C.textOf cut always,
+        V.map
+          (\x ->
+            match x with
+            | (symbol, ds, refs) -> (symbol, C.textOf cut ds, refs))
+          parts
+      )
+
+-- The effects of the standard library's a runtime answers where no handler
+-- does (`meadow_rt`'s native operations): each operation is the runtime's
+-- of the same effect and name.
+def answered : [String] =
+  ["Std/Console", "Std/Fs", "Std/Process", "Std/Random", "Std/Time", "Std/Test"]
+
+-- `native { ... }` for those of them a unit declares: every operation bound
+-- to the runtime's.
+fun natives (p : CoreProgram) : String =
+  let a = coreArena p in
+  let bound =
+    V.concatMap
+      (\e ->
+        (let name = coreEffectName a e in
+         if not (V.elem name answered) then []
+         else
+           V.map
+             (\o ->
+               "  ${opSymbol name (coreOpName a o)} = ${S.drop name (stringByteLength "Std/")}.${coreOpName a o}\n")
+             (coreEffectOps a e)))
+      (coreFileEffects a (coreRoot p))
+  in if V.isEmpty bound then "" else "native {\n${S.join "" bound}}\n\n"

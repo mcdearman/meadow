@@ -30,7 +30,7 @@ use MeadowBoot.Lower (lowered)
 use MeadowBoot.Rename (mentionsOf)
 use MeadowBoot.Scopes (Source, Export, Renamed, DepExports, renameUnit)
 use MeadowBoot.Infer (inferUnit, Inferred)
-use MeadowBoot.Elab (unitCore, Linked, DataSig, DefaultSig, Imported)
+use MeadowBoot.Elab (unitCore, defSymbol, Linked, DataSig, DefaultSig, Imported)
 use MeadowBoot.Seq as Seq
 use MeadowBoot.Types
 use MeadowBoot.Core (CoreProgram)
@@ -174,7 +174,7 @@ fun inferredOf
           (\x ->
             match x with
             | (name, (i : Interface)) ->
-                DepExports { name = name, exports = i.exports, anyVis = i.anyVis })
+                DepExports { name, exports = i.exports, anyVis = i.anyVis })
           (namedDeps files imported)
       in
       let texts =
@@ -211,7 +211,7 @@ fun checkedOf
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
     (entry : Maybe String)
     (mark : String -> () ! e)
-    : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, String)) ! e =
+    : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, Object)) ! e =
   let m0 = mark "start" in
   match unitOf dir imported fx files with
   | (sources, r) ->
@@ -221,7 +221,7 @@ fun checkedOf
           (\x ->
             match x with
             | (name, (i : Interface)) ->
-                DepExports { name = name, exports = i.exports, anyVis = i.anyVis })
+                DepExports { name, exports = i.exports, anyVis = i.anyVis })
           (namedDeps files imported)
       in
       let texts =
@@ -298,8 +298,8 @@ fun checkedOf
                            if V.any (\(x : DataSig) -> x.name == name) known then []
                            else
                              [DataSig {
-                                name = name,
-                                arity = arity,
+                                name,
+                                arity,
                                 ctors = V.map (\c -> Entry { key = fst c, value = snd c }) ctors
                               }])
                      (Seq.datasOf core)
@@ -313,9 +313,9 @@ fun checkedOf
                           V.append
                             labelled
                             (V.map (\n -> Entry { key = fst n, value = snd n }) (Seq.namedOf core)),
-                        dicts = dicts,
-                        defaults = defaults,
-                        aliases = aliases
+                        dicts,
+                        defaults,
+                        aliases
                       },
                       Seq.declarations
                         core
@@ -399,25 +399,129 @@ fun linkProgram (l : Linking Interface) : Result String () ! { Fs | e } =
                    (\acc u ->
                      match (acc, u) with
                      | (Err why, _) -> Err why
-                     | (Ok texts, (_, (i : Interface), out)) ->
-                         (match readToString (objectIn out i.package) with
-                          | Ok text -> Ok (V.pushBack texts text)
-                          | Err why -> Err "${i.package} wrote no object: ${why}\n"))
+                     | (Ok read, (_, (i : Interface), out)) ->
+                         (match (
+                            readToString (objectIn out i.package),
+                            readToString (indexIn out i.package)
+                          ) with
+                          | (Ok text, Ok index) -> Ok (V.pushBack read (text, indexed index))
+                          | _ -> Err "${i.package} wrote no object\n"))
                    (Ok [])
                    once
                in match objects with
                   | Err why -> Err why
-                  | Ok texts ->
-                      (match writeString (
-                         Path.join (linkOut l) "program.cut",
-                         S.join "" (V.concat [[before], texts, [after]])
-                       ) with
-                       | Ok _ -> Ok ()
-                       | Err why -> Err "the program could not be written: ${why}\n")))
+                  | Ok read ->
+                      -- Only what the entry reaches is part of the program
+                      -- (`meadow_core::prune`): every definition it mentions,
+                      -- and those they do.
+                      (let mentions =
+                         V.foldl
+                           (\h o ->
+                             V.foldl
+                               (\g x ->
+                                 match x with
+                                 | (symbol, _, _, refs) -> H.insert symbol refs g)
+                               h
+                               (snd o))
+                           H.empty
+                           read
+                       in
+                       let kept = reach mentions [defSymbol root.package e.binder] H.empty in
+                       let texts =
+                         V.concatMap
+                           (\o ->
+                             match o with
+                             | (text, parts) ->
+                                 -- Taken apart once, at the line between
+                                 -- its parts: what is always there, then
+                                 -- each definition's, as the index has them.
+                                 (let pieces = S.split parted text in
+                                  V.pushFront
+                                    (V.concatMap
+                                       (\k ->
+                                         match V.get parts k with
+                                         | Just (symbol, _, _, _) ->
+                                             if M.isSome (H.lookup symbol kept) then
+                                               [V.getOr "" pieces (k + 1)]
+                                             else []
+                                         | None -> [])
+                                       (V.range 0 (V.len parts)))
+                                    (V.getOr "" pieces 0)))
+                           read
+                       in match writeString (
+                            Path.join (linkOut l) "program.cut",
+                            concatStrings (V.toArray (V.concat [[before], texts, [after]]))
+                          ) with
+                          | Ok _ -> Ok ()
+                          | Err why -> Err "the program could not be written: ${why}\n")))
+
+-- The symbols reached from `todo`, through what each mentions.
+fun reach (mentions : HashMap String [String]) (todo : [String]) (seen : HashMap String Bool)
+    : HashMap String Bool =
+  if V.isEmpty todo then seen
+  else
+    (let x = V.getOr "" todo (V.len todo - 1) in
+     let rest = V.take todo (V.len todo - 1) in
+     if M.isSome (H.lookup x seen) then reach mentions rest seen
+     else
+       reach mentions (V.append rest (M.unwrapOr [] (H.lookup x mentions))) (H.insert x True seen))
+
+-- A unit's object: what is always part of a program it is in, and each
+-- definition's text under its symbol with the symbols it mentions.
+type Object = (String, [(String, String, [String])])
+
+-- An object as it is written: its text, and where each definition is in it
+-- -- a line each, the symbol, where its text starts, how long it is, and
+-- the symbols it mentions.
+fun written (o : Object) : (String, String) =
+  match o with
+  | (always, parts) ->
+      (let lines =
+         fst
+           (V.foldl
+              (\acc x ->
+                match (acc, x) with
+                | ((ls, at), (symbol, text, refs)) ->
+                    (let n = stringByteLength text in
+                     (
+                       V.pushBack ls "${symbol}\t${show at}\t${show n}\t${S.join " " refs}",
+                       at + n
+                     )))
+              ([], stringByteLength always)
+              parts)
+       in (
+            S.join
+              parted
+              (V.pushFront (V.map (\x -> match x with | (_, text, _) -> text) parts) always),
+            S.join "\n" lines
+          ))
+
+-- The line between an object's parts: one no declaration's text has, a
+-- string's line ends being written as `\n`.
+def parted : String = "\n;; part\n"
+
+-- An object's index, read back.
+fun indexed (text : String) : [(String, Int, Int, [String])] =
+  V.concatMap
+    (\line ->
+      match S.split "\t" line with
+      | cols ->
+          if V.len cols < 3 then []
+          else
+            [(
+              V.getOr "" cols 0,
+              M.unwrapOr 0 (S.toInt (V.getOr "0" cols 1)),
+              M.unwrapOr 0 (S.toInt (V.getOr "0" cols 2)),
+              V.filter (\r -> not (S.isEmpty r)) (S.split " " (V.getOr "" cols 3))
+            )])
+    (S.lines text)
+
+-- Where a unit's index is written, beside its object.
+fun indexIn (out : String) (pkg : String) : String = Path.join out "${pkg}.idx"
 
 fun fst3 (t : (a, b, c)) : a = match t with | (x, _, _) -> x
 
-fun coreIn (c : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, String)))
+fun coreIn (c : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, Object)))
     : Maybe CoreProgram =
   match c with | (_, _, _, made) -> M.map fst3 made
 
@@ -455,7 +559,7 @@ fun unitOf
               path,
               Source {
                 path = modulePath isStd src path,
-                file = file,
+                file,
                 ast = lowered pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx
               }
             )]
@@ -466,8 +570,7 @@ fun unitOf
     V.map
       (\x ->
         match x with
-        | (name, (i : Interface)) ->
-            DepExports { name = name, exports = i.exports, anyVis = i.anyVis })
+        | (name, (i : Interface)) -> DepExports { name, exports = i.exports, anyVis = i.anyVis })
       (namedDeps files imported)
   in (sources, renameUnit pkg isStd (V.map snd sources) deps)
 
@@ -633,17 +736,20 @@ fun compiling (u : Given Interface) =
                 let pkg = packageName manifest in
                 let linked =
                   (match made with
-                   | Just (_, l, text) ->
-                       (let w = writeString (objectIn (unitOut u) pkg, text) in l)
+                   | Just (_, l, object) ->
+                       (let (text, index) = written object in
+                        let w = writeString (objectIn (unitOut u) pkg, text) in
+                        let x = writeString (indexIn (unitOut u) pkg, index) in
+                        l)
                    | None -> emptyLinked ())
                 in Ok
                      (Interface {
                         fixities = compilerFixities db 0,
                         package = pkg,
-                        exports = exports,
-                        anyVis = anyVis,
-                        types = types,
-                        linked = linked
+                        exports,
+                        anyVis,
+                        types,
+                        linked
                       })
 
 fun indexOf (xs : [String]) (x : String) : Int =

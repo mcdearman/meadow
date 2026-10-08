@@ -309,7 +309,7 @@ fun checkedOf
                        (V.map (\(l : Linked) -> l.summary) linked)
                        (V.concatMap (\(l : Linked) -> l.arities) linked)
                  in
-                 let core = if inlines then Inline.program direct else direct in
+                 let core = if inlines then Inline.program direct [] else direct in
                  let ownDatas =
                    V.concatMap
                      (\d ->

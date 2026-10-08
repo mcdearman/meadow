@@ -15,9 +15,11 @@
 --
 -- A function generic in its types is copied at the types the call is at.
 --
--- Not here yet: a function from another unit, whose body that unit has to
--- keep for this one; and the function the program calls once, however
--- large.
+-- A unit keeps the functions it would copy for the units that import it
+-- (`exports`), as GHC keeps unfoldings in an interface, and a call of one
+-- of those is its body too: a unit is still compiled by itself.
+--
+-- Not here yet: the function the program calls once, however large.
 
 use Lingua (pass!)
 use Lingua.Lang (Meta, spanMeta)
@@ -40,12 +42,26 @@ def nowhere : Meta = spanMeta 0 0
 -- Where the names this pass makes start, as `meadow_core`'s do.
 def base : Int = 2097152000
 
+-- And where its binders for what it names of other units start.
+def externs : Int = 2040000000
+
 -- A function to copy: the type variables it is generic in, its parameters
--- in order, and its body.
+-- in order, its body, the program that is in, and -- for one from another
+-- unit -- what each name of a definition in it is, there.
 record Body = {
   vars : [Int],
   params : [Int],
-  body : CoreTerm
+  body : CoreTerm,
+  from : CoreArena,
+  tops : Maybe (HashMap Int Top)
+}
+
+-- What a body from another unit calls a definition, there: its symbol, how
+-- many types it is generic in, and how many parameters it is written with.
+record Top = {
+  symbol : String,
+  types : Int,
+  arity : Int
 }
 
 -- --- what a term holds ---------------------------------------------------------
@@ -143,7 +159,7 @@ fun candidates (p : CoreProgram) : HashMap Int Body =
         (let (vars, inner) = peel a (coreDefBody a d) in
          let (params, body) = lams a inner [] in
          if V.isEmpty params or size a body budget 0 > budget then h
-         else H.insert (coreDefId a d) (Body { vars, params, body }) h))
+         else H.insert (coreDefId a d) (Body { vars, params, body, from = a, tops = None }) h))
       H.empty
       (coreFileDefs a (coreRoot p))
   in settled a small (H.toVec small) H.empty
@@ -151,19 +167,41 @@ fun candidates (p : CoreProgram) : HashMap Int Body =
 -- --- a copy, every name it binds a new one ---------------------------------------
 
 -- What a copy carries: the type each type variable of the function is at
--- the call; the names that stay as they are -- the program's
--- definitions and what it names of other units -- the new name of each
--- other met so far, and the next new name.
+-- the call; the names that stay as they are in a copy of one of the unit's
+-- own -- its definitions and what it names of other units; for a copy of
+-- another unit's, what each name of a definition is there, the binder each
+-- symbol has here, and those made for symbols the unit never named; the new
+-- name of each other name met so far, and the next new name.
 record Fresh s = {
   types : HashMap Int Type,
   kept : HashMap Int Bool,
+  tops : Maybe (HashMap Int Top),
+  binders : HashMap String Int,
+  made : StRef s [(Int, Top)],
   names : StRef s (HashMap Int Int),
   next : StRef s Int
 }
 
+-- The binder `top` has in the unit being written: a new one, where the unit
+-- never named it.
+fun binderOf (cx : Fresh s) (top : Top) =
+  match H.lookup top.symbol cx.binders with
+  | Just id -> id
+  | None ->
+      (let made = stGetRef cx.made in
+       match V.find (\x -> match x with | (_, (t : Top)) -> t.symbol == top.symbol) made with
+       | Just (id, _) -> id
+       | None ->
+           (let id = externs + V.len made in
+            let u = stSetRef cx.made (V.pushBack made (id, top)) in
+            id))
+
 -- The name `id` has in the copy.
 fun renamed (cx : Fresh s) (id : Int) =
-  if M.isSome (H.lookup id cx.kept) then id
+  let foreign = M.andThen (\tops -> H.lookup id tops) cx.tops in
+  if M.isSome foreign then
+    binderOf cx (M.unwrapOr (Top { symbol = "", types = 0, arity = 0 }) foreign)
+  else if M.isNone cx.tops and M.isSome (H.lookup id cx.kept) then id
   else
     (let names = stGetRef cx.names in
      match H.lookup id names with
@@ -246,12 +284,14 @@ pass! {
 
 -- --- the pass --------------------------------------------------------------------
 
--- What the pass carries: the program as it was, what to copy, the names
--- that stay as they are in a copy, and the next new name.
+-- What the pass carries: what to copy, by the binder it has here; the
+-- names that stay as they are in a copy of one of the unit's own; the
+-- binder each symbol has, and those made; and the next new name.
 record Cx s = {
-  src : CoreArena,
   bodies : HashMap Int Body,
   kept : HashMap Int Bool,
+  binders : HashMap String Int,
+  made : StRef s [(Int, Top)],
   next : StRef s Int
 }
 
@@ -280,11 +320,14 @@ fun call out (cx : Cx s) (m : Meta) func arg (t : Type) =
                   types =
                     V.foldl (\h vt -> H.insert (fst vt) (snd vt) h) H.empty (V.zip b.vars tys),
                   kept = cx.kept,
+                  tops = b.tops,
+                  binders = cx.binders,
+                  made = cx.made,
                   names = stNewRef H.empty,
                   next = cx.next
                 }
               in
-              let body = copyTerm cx.src out fresh b.body in
+              let body = copyTerm b.from out fresh b.body in
               V.foldr
                 (\k rest ->
                   newCoreTermLet
@@ -304,11 +347,118 @@ pass! {
     | App { func, arg, ty } -> call out cx here func arg ty
 }
 
--- `p` with each call of a small function of its own the function's body.
-@pub fun program (p : CoreProgram) : CoreProgram =
+fun symbolIn (pkg : String) (id : Int) : String =
+  if id < 0 then "meadow:${pkg}/impl${show (0 - id)}" else "meadow:${pkg}/d${show id}"
+
+pass! {
+  same : Core -> Core from Def
+    | Ill { ty } -> Ill { ty }
+}
+
+-- What `p` keeps of itself for the units that import it: each function of
+-- its own they may copy to their calls, and -- as what it names of another
+-- unit is written -- each definition one of those mentions, its own
+-- included: its binder here, its symbol, and how it is written.
+@pub fun exports (p : CoreProgram) : CoreProgram =
   let a = coreArena p in
   let file = coreRoot p in
+  let pkg = coreFilePackage a file in
   let bodies = candidates p in
+  let own =
+    V.foldl
+      (\h d ->
+        (let (vars, inner) = peel a (coreDefBody a d) in
+         H.insert
+           (coreDefId a d)
+           (Top {
+              symbol = symbolIn pkg (coreDefId a d),
+              types = V.len vars,
+              arity = V.len (fst (lams a inner []))
+            })
+           h))
+      H.empty
+      (coreFileDefs a file)
+  in
+  let tops =
+    V.foldl
+      (\h x ->
+        H.insert
+          (coreExternId a x)
+          (Top {
+             symbol = coreExternSymbol a x,
+             types = coreExternTypes a x,
+             arity = coreExternArity a x
+           })
+          h)
+      own
+      (coreFileExterns a file)
+  in
+  let mentioned =
+    V.foldl
+      (\seen kv -> mentions a (match snd kv with | (b : Body) -> b.body) seen)
+      []
+      (H.toVec bodies)
+  in runSt (\() ->
+       let out = newCoreBuilder () in
+       let defs =
+         V.concatMap
+           (\d -> if M.isSome (H.lookup (coreDefId a d) bodies) then [sameDef a out d] else [])
+           (coreFileDefs a file)
+       in
+       let named =
+         V.concatMap
+           (\id ->
+             match H.lookup id tops with
+             | Just (t : Top) -> [newCoreExtern out nowhere id t.symbol t.types t.arity]
+             | None -> [])
+           mentioned
+       in
+       let root = newCoreFile out nowhere pkg 0 defs [] [] [] named in
+       CoreProgram (freezeCore out) root)
+
+-- The functions `their` unit keeps for this one to copy, each by the binder
+-- its symbol has here: only one the unit names is ever called by it.
+fun imported (binders : HashMap String Int) (their : CoreProgram) (h : HashMap Int Body)
+    : HashMap Int Body =
+  let a = coreArena their in
+  let file = coreRoot their in
+  let pkg = coreFilePackage a file in
+  let tops =
+    V.foldl
+      (\t x ->
+        H.insert
+          (coreExternId a x)
+          (Top {
+             symbol = coreExternSymbol a x,
+             types = coreExternTypes a x,
+             arity = coreExternArity a x
+           })
+          t)
+      H.empty
+      (coreFileExterns a file)
+  in V.foldl
+       (\acc d ->
+         match H.lookup (symbolIn pkg (coreDefId a d)) binders with
+         | None -> acc
+         | Just here ->
+             (let (vars, inner) = peel a (coreDefBody a d) in
+              let (params, body) = lams a inner [] in
+              H.insert here (Body { vars, params, body, from = a, tops = Just tops }) acc))
+       h
+       (coreFileDefs a file)
+
+-- `p` with each call of a small function the function's body: one of its
+-- own, or one a unit it imports keeps for it, `theirs`.
+@pub fun program (p : CoreProgram) (theirs : [CoreProgram]) : CoreProgram =
+  let a = coreArena p in
+  let file = coreRoot p in
+  let binders =
+    V.foldl
+      (\h x -> H.insert (coreExternSymbol a x) (coreExternId a x) h)
+      H.empty
+      (coreFileExterns a file)
+  in
+  let bodies = V.foldl (\h their -> imported binders their h) (candidates p) theirs in
   if H.isEmpty bodies then p
   else
     runSt (\() ->
@@ -319,12 +469,19 @@ pass! {
           (V.foldl (\h d -> H.insert (coreDefId a d) True h) H.empty (coreFileDefs a file))
           (coreFileExterns a file)
       in
-      let cx = Cx { src = a, bodies, kept, next = stNewRef base } in
+      let cx = Cx { bodies, kept, binders, made = stNewRef [], next = stNewRef base } in
       let defs = V.map (\d -> inlinedDef a out cx d) (coreFileDefs a file) in
       let named = V.map (\n -> inlinedNamed a out cx n) (coreFileNamed a file) in
       let datas = V.map (\d -> inlinedData a out cx d) (coreFileDatas a file) in
       let effects = V.map (\e -> inlinedEffect a out cx e) (coreFileEffects a file) in
       let externs = V.map (\x -> inlinedExtern a out cx x) (coreFileExterns a file) in
+      let more =
+        V.map
+          (\x ->
+            match x with
+            | (id, (t : Top)) -> newCoreExtern out nowhere id t.symbol t.types t.arity)
+          (stGetRef cx.made)
+      in
       let root =
         newCoreFile
           out
@@ -335,5 +492,5 @@ pass! {
           named
           datas
           effects
-          externs
+          (V.append externs more)
       in CoreProgram (freezeCore out) root)

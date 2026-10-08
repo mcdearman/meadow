@@ -442,6 +442,28 @@ fun withType (items : [Item]) (t : Item) : [Item] =
      else [])
   ]
 
+-- A module's items by kind and owner -- `c:Shape` the constructors of
+-- `Shape` -- each kept in the order it is among them: what `withTypeIn`
+-- finds a type's own by, where `withType` reads every item for each.
+fun owned (items : [Item]) : HashMap String [Item] =
+  V.foldl
+    (\h (i : Item) ->
+      (let key = "${i.kind}:${i.owner}" in
+       H.insert key (V.pushBack (M.unwrapOr [] (H.lookup key h)) i) h))
+    H.empty
+    items
+
+-- `withType`, of a module whose items are `by` kind and owner.
+fun withTypeIn (by : HashMap String [Item]) (t : Item) : [Item] =
+  let of = \key -> M.unwrapOr [] (H.lookup key by) in
+  V.concat [
+    [t],
+    V.filter (\(i : Item) -> i.name == t.name) (of "c:${t.name}"),
+    (if t.owner == "trait" then of "v:${t.name}" else []),
+    (if t.owner == "effect" then of "v:op:${t.name}" else []),
+    (if t.owner == "trait" then of "t:assoc:${t.name}" else [])
+  ]
+
 -- `use Ty`, `use Ty (C, D)`, `use Ty.*` for a type among `items`: the type
 -- alone, the constructors named, or all of them. A dependency's type comes
 -- with its constructors named (`dep`) as naming it would.
@@ -501,9 +523,10 @@ fun valuesMap (items : [Item]) : HashMap String Int =
 -- with what each brings, and -- at a package's root -- the constructors it
 -- re-exports.
 fun bareUse (items : [Item]) (root : Bool) : [Item] =
+  let by = owned items in
   V.concat [
     V.filter (\(i : Item) -> i.kind == "v") items,
-    V.concatMap (withType items) (V.filter (\(i : Item) -> i.kind == "t") items),
+    V.concatMap (withTypeIn by) (V.filter (\(i : Item) -> i.kind == "t") items),
     (if root then V.filter (\(i : Item) -> i.kind == "c" and i.flat) items else [])
   ]
 

@@ -51,21 +51,29 @@ use Std.Maybe.Maybe.*
 -- How a value of type `t` is represented.
 @pub fun repOf (t : Type) : String =
   match t with
-  | Con "Int" [] -> "i64"
-  | Con "Float" [] -> "f64"
-  | Con "Float32" [] -> "f32"
-  | Con "Bool" [] -> "bool"
-  | Con "Char" [] -> "char"
-  | Con "String" [] -> "str"
-  | Con "Unit" [] -> "unit"
-  | Con "Int8" [] -> "i8"
-  | Con "Int16" [] -> "i16"
-  | Con "Int32" [] -> "i32"
-  | Con "UInt8" [] -> "u8"
-  | Con "UInt16" [] -> "u16"
-  | Con "UInt32" [] -> "u32"
-  | Con "UInt64" [] -> "u64"
+  | Con name args ->
+      if V.isEmpty args and stringByteLength name <= 7 then M.unwrapOr "ptr" (H.lookup name scalars)
+      else "ptr"
   | _ -> "ptr"
+
+-- The types that are not a pointer, each with what it is.
+def scalars : HashMap String String =
+  H.fromVec [
+    ("Int", "i64"),
+    ("Float", "f64"),
+    ("Float32", "f32"),
+    ("Bool", "bool"),
+    ("Char", "char"),
+    ("String", "str"),
+    ("Unit", "unit"),
+    ("Int8", "i8"),
+    ("Int16", "i16"),
+    ("Int32", "i32"),
+    ("UInt8", "u8"),
+    ("UInt16", "u16"),
+    ("UInt32", "u32"),
+    ("UInt64", "u64")
+  ]
 
 -- A type variable's name as a representation's: the variable an `impl`'s
 -- dictionary is generic in is below every other, and spelt for what it is.
@@ -1071,7 +1079,7 @@ fun symbolOf (pkgs : [String]) (canon : String) : String =
 fun placeOf cx (t : Type) (label : String) =
   match t with
   | Con name args ->
-      (match dataNamed cx.datas name with
+      (match dataNamed cx.dataIx name with
        | Just (_, _, ctors) ->
            V.get
              (V.concatMap
@@ -1243,6 +1251,7 @@ fun lowered
         tops,
         lifted,
         datas,
+        dataIx = dataIndex datas,
         fields,
         tvars = [],
         gtops = generics,
@@ -1325,7 +1334,15 @@ fun lowered
         (M.map (\d -> tyCoreTerm a (coreDefBody a d)) (V.find (\d -> coreDefId a d == entry) defs))
     in
     let sh =
-      { out, datas, pkgs = packages, wanted = stNewRef [], seen = stNewRef [], next = stNewRef 0 }
+      {
+        out,
+        datas,
+        dataIx = dataIndex datas,
+        pkgs = packages,
+        wanted = stNewRef [],
+        seen = stNewRef [],
+        next = stNewRef 0
+      }
     in
     let shown =
       entered out sh pkg entry answerTy (M.unwrapOr 0 (M.map V.len (H.lookup entry generics)))
@@ -1402,6 +1419,7 @@ fun entered out sh (pkg : String) (entry : Int) (answerTy : Type) (types : Int) 
         {
           out,
           datas = known,
+          dataIx = dataIndex known,
           pkgs = packages,
           wanted = stNewRef [],
           seen = stNewRef [],
@@ -1621,12 +1639,26 @@ fun keyOf (t : Type) : String =
 fun showSymbol (key : String) : String = "${package}\"#show:${key}\""
 
 -- The declaration of the type core names `name`, if the program has one.
-fun dataNamed datas (name : String) =
-  V.find
-    (\d ->
+fun dataNamed (ix : HashMap String (String, Int, [(String, [Type])])) (name : String) =
+  H.lookup name ix
+
+-- Every declared type by each name core may have for it: the whole of its
+-- name, and each end of that from a dot on -- the first so named, as the
+-- types are listed.
+fun dataIndex (datas : [(String, Int, [(String, [Type])])])
+    : HashMap String (String, Int, [(String, [Type])]) =
+  V.foldl
+    (\h d ->
       match d with
-      | (n, _, _) -> n == name or S.endsWith ".${name}" n)
+      | (n, _, _) ->
+          V.foldl (\g key -> if M.isSome (H.lookup key g) then g else H.insert key d g) h (ends n))
+    H.empty
     datas
+
+-- A dotted name and each end of it from a dot on: `A.B.C`, `B.C`, `C`.
+fun ends (n : String) : [String] =
+  let segs = S.split "." n in
+  V.map (\k -> S.join "." (V.drop segs k)) (V.range 0 (V.len segs))
 
 -- `t`, a field's type, with the types its declaration was given.
 fun given (args : [Type]) (t : Type) : Type =
@@ -1730,7 +1762,7 @@ fun shownTo sh value (t : Type) k =
   -- shows them.
   | Con "Vector" _ -> C.prim out C.nowhere "show" [value] [k]
   | Con name args ->
-      (match dataNamed sh.datas name with
+      (match dataNamed sh.dataIx name with
        | Just _ ->
            (let key = keyOf t in
             let u =
@@ -1981,7 +2013,7 @@ fun shower sh (key : String) (t : Type) =
                  (joinedTo out [text "[", C.var out C.nowhere whole, text "]"] k)])
        ])
   | Con name args ->
-      (match dataNamed sh.datas name with
+      (match dataNamed sh.dataIx name with
        | Just (_, _, ctors) ->
            [C.defDecl
               out

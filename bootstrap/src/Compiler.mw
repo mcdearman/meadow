@@ -319,6 +319,7 @@ fun checkedOf
                        (not keep)
                        inlines
                  in
+                 let m4 = mark "optimised" in
                  let ownDatas =
                    V.concatMap
                      (\d ->
@@ -731,10 +732,12 @@ fun compiling (u : Given Interface) =
   let mark =
     \what -> if timed then writeError "${show (monotonic ())} ${unitDir u} ${what}\n" else ()
   in
+  let m0 = mark "given" in
   let db = unitDatabase u in
   let sources = V.filter (\s -> S.endsWith ".mw" (fst s)) (unitSources u) in
   let files = V.map fst sources in
   let parsed = compilerParsedEach db files in
+  let m1 = mark "parsed" in
   let failed =
     V.concatMap
       (\i ->
@@ -746,6 +749,7 @@ fun compiling (u : Given Interface) =
   in if not (V.isEmpty failed) then Err (S.join "" failed)
      else
        let groups = compilerGroupedEach db files in
+       let m2 = mark "grouped" in
        let wrong =
          V.concatMap
            (\i ->
@@ -821,6 +825,7 @@ fun compiling (u : Given Interface) =
                        (let (text, index) = written object in
                         let w = writeString (objectIn (unitOut u) pkg, text) in
                         let x = writeString (indexIn (unitOut u) pkg, index) in
+                        let m8 = mark "written" in
                         l)
                    | None -> emptyLinked ())
                 in Ok

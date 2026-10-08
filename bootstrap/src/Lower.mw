@@ -53,8 +53,8 @@ use MeadowBoot.Hygiene as Hy
       let bare =
         Lc {
           tokens = H.fromVec (V.map (\(l : Lexed) -> (l.from, l.token)) (lex input).tokens),
-          exps = exps,
-          fx = fx,
+          exps,
+          fx,
           macros = H.empty
         }
       in
@@ -142,7 +142,7 @@ record Nm = {
 
 fun nameOf (t : GTree) : Nm = Nm { text = R.text t, at = spanOf t }
 
-fun named (text : String) (at : Meta) : Nm = Nm { text = text, at = at }
+fun named (text : String) (at : Meta) : Nm = Nm { text, at }
 
 fun firstName (s : GTree) : Nm =
   match s with
@@ -902,7 +902,7 @@ fun row (c : Lc) b (s : GTree) = lowerTyEffRow () b s
 -- What a pattern carries where nothing tells it to span anywhere else.
 fun px (c : Lc) =
   let nowhere : Maybe Meta = None in
-  { c = c, over = nowhere, spans = True }
+  { c, over = nowhere, spans = True }
 
 fun pat (c : Lc) b (s : GTree) = lowerPatPat () b (px c) s
 
@@ -1486,7 +1486,7 @@ fun lit (c : Lc) b (t : GTree) =
 -- was written: `(e)` spans `e`.
 
 -- What an expression carries, of a section's holes `hs`, told to span `over`.
-fun ex (c : Lc) (hs : [Int]) (over : Maybe Meta) = { c = c, hs = hs, over = over }
+fun ex (c : Lc) (hs : [Int]) (over : Maybe Meta) = { c, hs, over }
 
 fun expr (c : Lc) b (s : GTree) = exprIn c b [] s None
 
@@ -1874,8 +1874,8 @@ fun interp (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
 fun braceE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
   let items = childrenOf NodeBraceItem s in
   let e = \x -> exprIn c b hs x None in
-  match M.andThen (childOf NodeUpdFields) (childOf NodeBraceTail s) with
-  | Just u ->
+  match M.andThen updated (childOf NodeBraceTail s) with
+  | Just fields ->
       let target =
         (match V.get items 0 with
          | Just i -> e (must NodeExpr (must NodeAsExpr i))
@@ -1886,12 +1886,16 @@ fun braceE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
            target
            (V.map
               (\f ->
-                newAstExprField
-                  b
-                  (spanOf f)
-                  (nm b (nameOf (must TokenLowerIdent f)))
-                  (e (must NodeExpr f)))
-              (childrenOf NodeUpdField u))
+                (let n = nameOf (must TokenLowerIdent f) in
+                 newAstExprField
+                   b
+                   (spanOf f)
+                   (nm b n)
+                   (match (childOf NodeExpr f, childOf NodeUpdValue f) with
+                    | (Just x, _) -> e x
+                    | (_, Just v) -> e (must NodeExpr v)
+                    | _ -> newAstExprVar b n.at (nm b n))))
+              fields)
   | None ->
       let fs =
         V.map
@@ -1911,6 +1915,15 @@ fun braceE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
           (\t -> M.map (\te -> e (must NodeExpr te)) (childOf NodeTailExpr t))
           (childOf NodeBraceTail s)
       in newAstExprRecord b m fs base
+
+-- The fields of an update, in order, if what follows a record's `|` is
+-- one: the first -- given a value, or a name alone with more after it --
+-- and the rest.
+fun updated (t : GTree) : Maybe [GTree] =
+  match (childOf NodeUpdFields t, childOf NodeUpdBares t) with
+  | (Just u, _) -> Just (V.pushFront (childrenOf NodeUpdField u) (must NodeUpdSet u))
+  | (_, Just u) -> Just (V.pushFront (childrenOf NodeUpdField u) (must NodeUpdBare u))
+  | _ -> None
 
 -- `[lo .. hi]`, `[a; b]`, `[;]`, `[a, b]`, `[]`.
 fun brackE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
@@ -2136,11 +2149,7 @@ fun macrosOf (c : Lc) (pkg : String) (top : GTree) : HashMap String Macro =
 fun macroOf (c : Lc) (pkg : String) (rules : [GTree]) : Maybe Macro =
   let read = V.map (ruleOf c) rules in
   if V.all M.isSome read then
-    Just
-      (Macro {
-         rules = V.concatMap (\x -> match x with | Just y -> [y] | None -> []) read,
-         pkg = pkg
-       })
+    Just (Macro { rules = V.concatMap (\x -> match x with | Just y -> [y] | None -> []) read, pkg })
   else None
 
 -- A rule: its matcher, read, and its template.

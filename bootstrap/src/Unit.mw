@@ -273,8 +273,8 @@ fun tables (es : [Entry]) : [Entry] =
                    V.pushBack
                      es
                      (Entry {
-                        section = section,
-                        index = index,
+                        section,
+                        index,
                         key = unquoted (S.trim (stringSlice l 0 at)),
                         value = valueOf (S.trim (stringSlice l (at + 1) (stringByteLength l)))
                       })

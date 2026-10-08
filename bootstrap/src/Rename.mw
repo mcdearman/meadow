@@ -90,12 +90,12 @@ use Std.Sort (sortOn)
 
 @pub fun declareBinder (name : String) (kind : String) (site : String)
     : Int ! { Table Binder | e } =
-  enter (Binder { name = name, kind = kind, site = site, uses = [], until = 0 - 1 })
+  enter (Binder { name, kind, site, uses = [], until = 0 - 1 })
 
 -- The same, for a name written from `site` to byte `until`.
 @pub fun declareBinderTo (name : String) (kind : String) (site : String) (until : Int)
     : Int ! { Table Binder | e } =
-  enter (Binder { name = name, kind = kind, site = site, uses = [], until = until })
+  enter (Binder { name, kind, site, uses = [], until })
 
 -- A use of binder `id` in `file`, spanning `m`.
 @pub fun useOf (file : String) (id : Int) (m : Meta) : () ! { Table Binder | e } =
@@ -313,7 +313,7 @@ pass! {
                    (ctorApplied out env n args)
                    (ctorAlts out env n args)
                    (nameMeta out name),
-               args = args
+               args
              })
     | Neg { op, operand } ->
         App {
@@ -352,7 +352,7 @@ pass! {
          -- The operation, which says which effect is handled: known to
          -- inference, and to nobody reading the program.
          HArm {
-           op = op,
+           op,
            opRef = hidden out (nameMeta out op) (valueOf env (textOf out op)),
            param = p,
            resume = k,
@@ -369,9 +369,9 @@ pass! {
          let inner = if env.method then nested env else bindLocal (nested env) n id in
          let ps = V.map (\p -> p inner) params in
          let within = bindAll inner (V.concatMap (patBinders out) ps) in
-         Bind.Fun { id = id, params = ps, ret = M.map (\r -> r within) ret, body = body within })
+         Bind.Fun { id, params = ps, ret = M.map (\r -> r within) ret, body = body within })
     | Pat.Var { name } -> Pat.Var { id = patVar out env name }
-    | Pat.As { name, pat } -> Pat.As { id = patVar out env name, pat = pat }
+    | Pat.As { name, pat } -> Pat.As { id = patVar out env name, pat }
     -- A view's function sees the names the pattern bound to its left:
     -- `(k, lookup k -> Just v)`.
     | Pat.Tuple { later items } -> Pat.Tuple { items = inTurn out env items }
@@ -386,31 +386,26 @@ pass! {
          | _ ->
              Pat.Cons {
                ref = refAlts out env (ctorOf env n) (ctorPatAlts env n) (nameMeta out name),
-               args = args
+               args
              })
     | Pat.Vector { items } ->
         -- `[]` is the empty `Vector`: its constructor `Vector.Empty`.
         (if V.isEmpty items then
            newHirPatCons out here (refTo out env env.scope.vectorEmpty here) []
-         else Pat.Vector { items = items })
-    | Pat.QualCons { qual, name, args } ->
-        Pat.Cons { ref = qualifiedCtor out env qual name, args = args }
+         else Pat.Vector { items })
+    | Pat.QualCons { qual, name, args } -> Pat.Cons { ref = qualifiedCtor out env qual name, args }
     | Type.Con { name, args } ->
         Type.Con {
-          name = name,
+          name,
           ref = refTo out env (typeOf env (textOf out name)) (nameMeta out name),
-          args = args
+          args
         }
     -- An effect a type names: which, for inference; nobody's use of it.
     | Label { name, args } ->
-        Label {
-          name = name,
-          ref = hidden out (nameMeta out name) (typeOf env (textOf out name)),
-          args = args
-        }
+        Label { name, ref = hidden out (nameMeta out name) (typeOf env (textOf out name)), args }
     | Decl.Sig { name, ty, bounds } ->
         (let u = mention env (valueOf env (textOf out name)) (nameMeta out name) in
-         Decl.Sig { name = name, ty = ty, bounds = bounds })
+         Decl.Sig { name, ty, bounds })
     | Decl.Data { name, params, variants } ->
         (let t = typeOf env (textOf out name) in
          let u = mention env t (nameMeta out name) in
@@ -425,26 +420,22 @@ pass! {
                   (nameMeta out n)))
              ()
              variants
-         in Decl.Data { name = name, params = params, variants = variants })
+         in Decl.Data { name, params, variants })
     | Decl.Record { name, params, fields } ->
         (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in
-         Decl.Record { name = name, params = params, fields = fields })
+         Decl.Record { name, params, fields })
     | Decl.Effect { name, params, ops } ->
         (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in
-         Decl.Effect { name = name, params = params, ops = ops })
+         Decl.Effect { name, params, ops })
     | Decl.Alias { name, params, ty } ->
         (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in
-         Decl.Alias { name = name, params = params, ty = ty })
+         Decl.Alias { name, params, ty })
     | Decl.EffectAlias { name, params, row } ->
         (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in
-         Decl.EffectAlias { name = name, params = params, row = row })
+         Decl.EffectAlias { name, params, row })
     | Bound { tr, tys } ->
         (let u = mention env (typeOf env (textOf out tr)) (nameMeta out tr) in
-         Bound {
-           tr = tr,
-           ref = hidden out (nameMeta out tr) (typeOf env (textOf out tr)),
-           tys = tys
-         })
+         Bound { tr, ref = hidden out (nameMeta out tr) (typeOf env (textOf out tr)), tys })
     | Decl.Trait { name, params, supers, assocs, effects, sigs, later defaults } ->
         (let u = mention env (typeOf env (textOf out name)) (nameMeta out name) in
          let w =
@@ -454,12 +445,12 @@ pass! {
              ()
              assocs
          in Decl.Trait {
-              name = name,
-              params = params,
-              supers = supers,
-              assocs = assocs,
-              effects = effects,
-              sigs = sigs,
+              name,
+              params,
+              supers,
+              assocs,
+              effects,
+              sigs,
               defaults = V.map (\d -> d (asMethods env)) defaults
             })
     | Decl.Impl { tr, tys, context, later assocs, effects, later methods } ->
@@ -467,22 +458,22 @@ pass! {
          let u = mention env t (nameMeta out tr) in
          let inImpl = { env | assocs = M.unwrapOr H.empty (H.lookup t env.scope.traitAssocs) } in
          Decl.Impl {
-           tr = tr,
+           tr,
            trRef = hidden out (nameMeta out tr) t,
-           tys = tys,
-           context = context,
+           tys,
+           context,
            assocs = V.map (\a -> a inImpl) assocs,
-           effects = effects,
+           effects,
            methods = V.map (\m -> m (asMethods env)) methods
          })
     | AssocDef { name, later args, ty } ->
         (let n = textOf out name in
          let u =
            mention env (M.unwrapOr (typeOf env n) (H.lookup n env.assocs)) (nameMeta out name)
-         in AssocDef { name = name, args = [], ty = ty })
+         in AssocDef { name, args = [], ty })
     -- What an associated effect is: its row; nobody's use of its name, nor of
     -- the types it is written at again.
-    | AssocEffDef { name, later args, row } -> AssocEffDef { name = name, args = [], row = row }
+    | AssocEffDef { name, later args, row } -> AssocEffDef { name, args = [], row }
 }
 
 fun textOf out (n : HirName) = hirNameText out n

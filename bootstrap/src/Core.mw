@@ -247,75 +247,72 @@ type Ty = Type
 -- The types taken off: what the CEK machine runs.
 pass! {
   pub erase : Core -> Erased
-    | File { entry, defs, named } -> File { entry = entry, defs = defs, named = named }
-    | Var { id } -> Var { id = id }
-    | Lam { param, body } -> Lam { param = param, body = body }
+    | File { entry, defs, named } -> File { entry, defs, named }
+    | Var { id } -> Var { id }
+    | Lam { param, body } -> Lam { param, body }
     | TyLam { body } -> body
     | TyApp { func } -> func
-    | App { func, arg } -> App { func = func, arg = arg }
-    | Let { id, value, body } -> Let { id = id, value = value, body = body }
-    | LetRec { binds, body } -> LetRec { binds = binds, body = body }
-    | If { cond, yes, no } -> If { cond = cond, yes = yes, no = no }
-    | Tuple { items } -> Tuple { items = items }
-    | Array { items } -> Array { items = items }
-    | Proj { tuple, index } -> Proj { tuple = tuple, index = index }
-    | Record { fields } -> Record { fields = fields }
-    | Sel { target, label } -> Sel { target = target, label = label }
-    | Extend { target, label, value } -> Extend { target = target, label = label, value = value }
-    | Ctor { name, args } -> Ctor { name = name, args = args }
-    | Prim { op, args } -> Prim { op = op, args = args }
-    | Case { scrutinee, arms } -> Case { scrutinee = scrutinee, arms = arms }
-    | Perform { eff, op, arg } -> Perform { eff = eff, op = op, arg = arg }
-    | Handle { body, clauses, retId, ret } ->
-        Handle { body = body, clauses = clauses, retId = retId, ret = ret }
-    | Clause { eff, op, param, resume, body } ->
-        Clause { eff = eff, op = op, param = param, resume = resume, body = body }
-    | Join { id, params, rhs, body } -> Join { id = id, params = params, rhs = rhs, body = body }
-    | Jump { id, args } -> Jump { id = id, args = args }
+    | App { func, arg } -> App { func, arg }
+    | Let { id, value, body } -> Let { id, value, body }
+    | LetRec { binds, body } -> LetRec { binds, body }
+    | If { cond, yes, no } -> If { cond, yes, no }
+    | Tuple { items } -> Tuple { items }
+    | Array { items } -> Array { items }
+    | Proj { tuple, index } -> Proj { tuple, index }
+    | Record { fields } -> Record { fields }
+    | Sel { target, label } -> Sel { target, label }
+    | Extend { target, label, value } -> Extend { target, label, value }
+    | Ctor { name, args } -> Ctor { name, args }
+    | Prim { op, args } -> Prim { op, args }
+    | Case { scrutinee, arms } -> Case { scrutinee, arms }
+    | Perform { eff, op, arg } -> Perform { eff, op, arg }
+    | Handle { body, clauses, retId, ret } -> Handle { body, clauses, retId, ret }
+    | Clause { eff, op, param, resume, body } -> Clause { eff, op, param, resume, body }
+    | Join { id, params, rhs, body } -> Join { id, params, rhs, body }
+    | Jump { id, args } -> Jump { id, args }
     | Ill {} -> Ill {}
-    | Const { lit } -> Const { lit = lit }
+    | Const { lit } -> Const { lit }
     | PWild {} -> PWild {}
-    | PVar { id } -> PVar { id = id }
-    | PAs { id, pat } -> PAs { id = id, pat = pat }
-    | PLit { lit } -> PLit { lit = lit }
-    | PTuple { items } -> PTuple { items = items }
-    | PArray { items } -> PArray { items = items }
-    | PCtor { name, args } -> PCtor { name = name, args = args }
-    | PRecord { fields } -> PRecord { fields = fields }
+    | PVar { id } -> PVar { id }
+    | PAs { id, pat } -> PAs { id, pat }
+    | PLit { lit } -> PLit { lit }
+    | PTuple { items } -> PTuple { items }
+    | PArray { items } -> PArray { items }
+    | PCtor { name, args } -> PCtor { name, args }
+    | PRecord { fields } -> PRecord { fields }
 }
 
 -- Each numeral a number, each quoted string its text, each float's bits the
 -- float; everything else is as it was.
 pass! {
   read : Printed -> Erased
-    | File { entry, defs, named } -> File { entry = number entry, defs = defs, named = named }
-    | Def { id, body } -> Def { id = number id, body = body }
+    | File { entry, defs, named } -> File { entry = number entry, defs, named }
+    | Def { id, body } -> Def { id = number id, body }
     | Named { name, labels } -> Named { name = unquoted name, labels = V.map unquoted labels }
     | Var { id } -> Var { id = number id }
-    | Lam { param, body } -> Lam { param = number param, body = body }
-    | Let { id, value, body } -> Let { id = number id, value = value, body = body }
-    | Bind { id, value } -> Bind { id = number id, value = value }
-    | Proj { tuple, index } -> Proj { tuple = tuple, index = number index }
-    | Field { label, value } -> Field { label = unquoted label, value = value }
-    | Sel { target, label } -> Sel { target = target, label = unquoted label }
-    | Extend { target, label, value } ->
-        Extend { target = target, label = unquoted label, value = value }
-    | Ctor { name, args } -> Ctor { name = unquoted name, args = args }
-    | Prim { op, args } -> Prim { op = unquoted op, args = args }
-    | Perform { eff, op, arg } -> Perform { eff = unquoted eff, op = unquoted op, arg = arg }
+    | Lam { param, body } -> Lam { param = number param, body }
+    | Let { id, value, body } -> Let { id = number id, value, body }
+    | Bind { id, value } -> Bind { id = number id, value }
+    | Proj { tuple, index } -> Proj { tuple, index = number index }
+    | Field { label, value } -> Field { label = unquoted label, value }
+    | Sel { target, label } -> Sel { target, label = unquoted label }
+    | Extend { target, label, value } -> Extend { target, label = unquoted label, value }
+    | Ctor { name, args } -> Ctor { name = unquoted name, args }
+    | Prim { op, args } -> Prim { op = unquoted op, args }
+    | Perform { eff, op, arg } -> Perform { eff = unquoted eff, op = unquoted op, arg }
     | Handle { body, clauses, retId, ret } ->
-        Handle { body = body, clauses = clauses, retId = M.map number retId, ret = ret }
+        Handle { body, clauses, retId = M.map number retId, ret }
     | Clause { eff, op, param, resume, body } ->
         Clause {
           eff = unquoted eff,
           op = unquoted op,
           param = number param,
           resume = number resume,
-          body = body
+          body
         }
     | Join { id, params, rhs, body } ->
-        Join { id = number id, params = V.map number params, rhs = rhs, body = body }
-    | Jump { id, args } -> Jump { id = number id, args = args }
+        Join { id = number id, params = V.map number params, rhs, body }
+    | Jump { id, args } -> Jump { id = number id, args }
     | LInt { value } -> LInt { value = number value }
     | LBig { value } -> LBig { value = number value }
     | LF64 { bits } -> LF64 { value = f64Of (number bits) }
@@ -325,11 +322,10 @@ pass! {
     | LChar { code } -> LChar { code = number code }
     | LBool { value } -> LBool { value = value == "true" }
     | PVar { id } -> PVar { id = number id }
-    | PAs { id, pat } -> PAs { id = number id, pat = pat }
-    | PCtor { name, args } -> PCtor { name = unquoted name, args = args }
-    | PField { label, pat } -> PField { label = unquoted label, pat = pat }
-    | Arm { pat, guard, body } ->
-        Arm { pat = pat, guard = M.map (\g -> erasedGuardCond g) guard, body = body }
+    | PAs { id, pat } -> PAs { id = number id, pat }
+    | PCtor { name, args } -> PCtor { name = unquoted name, args }
+    | PField { label, pat } -> PField { label = unquoted label, pat }
+    | Arm { pat, guard, body } -> Arm { pat, guard = M.map (\g -> erasedGuardCond g) guard, body }
 }
 
 -- The program `input` writes, or what is wrong with it.

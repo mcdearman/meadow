@@ -198,13 +198,10 @@ fun frameOf (pkg : String) (src : Source) : (ModFrame, Bool) ! { Table Binder | 
               [(snd x, M.unwrapOr Private (visOf a (fst x)))]
             else [])
           decls
-      in (ModFrame { src = src, items = items, uses = uses }, said)
+      in (ModFrame { src, items, uses }, said)
 
 fun item (name : String) (kind : String) (id : Int) (vis : Vis) (owner : String) : Item =
-  Item {
-    name = name, kind = kind, id = id, vis = vis, owner = owner, flat = False, fields = None,
-    canon = ""
-  }
+  Item { name, kind, id, vis, owner, flat = False, fields = None, canon = "" }
 
 -- `i`, declared in module `path` of package `pkg`, with its canonical name:
 -- a type's its qualified path, a constructor's its type's and its own.
@@ -759,13 +756,13 @@ fun scopeOf (cx : UnitCx) (sh : Shared) (m : ModFrame) : (Scope, [Item], [(Meta,
   match tabled (\() -> renaming pkg isStd sources deps) with
   | ((programs, exports, anyVis, modules, depItems, prims), binders) ->
       Renamed {
-        programs = programs,
-        binders = binders,
+        programs,
+        binders,
         exports = V.map (\(e : Export) -> { e | site = siteOfId binders e.site }) exports,
-        anyVis = anyVis,
-        modules = modules,
-        depItems = depItems,
-        prims = prims
+        anyVis,
+        modules,
+        depItems,
+        prims
       }
 
 -- An export's site, while renaming: its binder's id, which is read back as
@@ -788,7 +785,7 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExpo
       (\(d : DepExports) -> Dep { name = d.name, items = depItemsOf d.exports, anyVis = d.anyVis })
       deps
   in
-  let cx = UnitCx { pkg = pkg, isStd = isStd, anyVis = anyVis, frames = frames, deps = depCx } in
+  let cx = UnitCx { pkg, isStd, anyVis, frames, deps = depCx } in
   -- Every constructor of every type the unit knows, by its type: its own
   -- modules', each type with the constructors declared beside it, and its
   -- dependencies'.
@@ -910,18 +907,18 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExpo
   in
   let sh =
     Shared {
-      prims = prims,
-      unknown = unknown,
-      builtinType = builtinType,
-      builtinCtor = builtinCtor,
-      typeCtors = typeCtors,
-      stdTypes = stdTypes,
-      bools = bools,
-      builtinTypes = builtinTypes,
-      builtinCtors = builtinCtors,
-      traitAssocs = traitAssocs,
+      prims,
+      unknown,
+      builtinType,
+      builtinCtor,
+      typeCtors,
+      stdTypes,
+      bools,
+      builtinTypes,
+      builtinCtors,
+      traitAssocs,
       vectorEmpty = ctorNamed "Vector" "Empty",
-      ctorFields = ctorFields
+      ctorFields
     }
   in
   let done =

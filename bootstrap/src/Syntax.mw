@@ -16,7 +16,9 @@
 --   context and a type (`C a => …`): one form each, told apart afterwards by
 --   what came after.
 -- * `{ r | x = e }` and `{ x | r }`: one form, the part after `|` a field
---   list or an expression by its second token.
+--   list or an expression by its second token. A field of an update may be
+--   its name alone, `{ r | x, y = e }` -- but one such alone is the
+--   extension it always was, so the first of them has a `,` after it.
 -- * `[a .. b]`, `[a; b]`, `[a, b]`: one form, by what follows the first.
 -- * A handler's arms: `op p k -> e`, and `return p -> e` is the one with no
 --   resumption and that name.
@@ -444,9 +446,13 @@ use Std.Result.Result.*
     BraceItem = expr:AsExpr value:FieldValue?
     FieldValue = "=" expr:AsExpr
     BraceTail = "|" body:BraceTailBody
-    BraceTailBody = UpdFields | TailExpr
-    UpdFields = fields:(UpdField ("," UpdField)* ","?)
-    UpdField = name:"lower" "=" value:Expr
+    BraceTailBody = UpdFields | UpdBares | TailExpr
+    UpdFields = fields:(UpdSet ("," UpdField)* ","?)
+    UpdBares = first:UpdBare "," fields:(UpdField ("," UpdField)* ","?)
+    UpdSet = name:"lower" "=" value:Expr
+    UpdBare = name:"lower"
+    UpdField = name:"lower" value:UpdValue?
+    UpdValue = "=" value:Expr
     TailExpr = expr:Expr
     HandleE = "handle" expr:Expr "with" "{" arms:(HArm ("," HArm)* ","?)? "}"
     HArm = op:"lower" param:Pat resume:"lower"? "->" body:Expr

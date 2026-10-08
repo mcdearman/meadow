@@ -92,7 +92,7 @@ fun setSol (i : Inf s) (k : Int) (sol : Maybe Sol) : () ! { St s | e } =
 
 -- Ask for `p`.
 fun want (i : Inf s) (p : Pred) (owner : Maybe Int) : Int ! { St s | e } =
-  wanting i (Wanted { pred = p, owner = owner, sol = None })
+  wanting i (Wanted { pred = p, owner, sol = None })
 
 -- Whether variable `id` is, for now, an associated type or effect of a
 -- wanted trait nothing has answered: what an `impl` will say it is. Looked
@@ -675,8 +675,8 @@ fun liftEach (i : Inf s) (ts : [Type]) (st : AssocVars) : ([Type], AssocVars) ! 
            ([], st)
            (V.range 0 (V.len sh.assocs))
        in match scrutinee with
-          | (assocs, st2) -> (Pred { tr = tr, tys = tys, assocs = assocs }, st2))
-  | None -> (Pred { tr = tr, tys = tys, assocs = [] }, st)
+          | (assocs, st2) -> (Pred { tr, tys, assocs }, st2))
+  | None -> (Pred { tr, tys, assocs = [] }, st)
 
 -- Every predicate `table` still needs, after `preds`: the trait of each
 -- associated type at its types, unless one of `preds` is it.
@@ -707,7 +707,7 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int)
   let vars = indexed names in
   let raw = tyOf i a t vars in
   let quant = markEffectVars raw (V.replicate (V.len names) Plain) in
-  match liftAssocs i raw (AssocVars { table = [], quant = quant }) with
+  match liftAssocs i raw (AssocVars { table = [], quant }) with
   | (ty, st1) ->
       let scrutinee =
         V.foldl
@@ -727,7 +727,7 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int)
       in match scrutinee with
          | (preds, st2) ->
              match impliedPreds i preds st2 0 with
-             | (all, st3) -> Scheme { quant = st3.quant, preds = all, ty = ty, lacks = [] }
+             | (all, st3) -> Scheme { quant = st3.quant, preds = all, ty, lacks = [] }
 
 -- An annotation's type, its variables made fresh already: every `Elem τ` a
 -- fresh variable, wanted of `τ`'s `impl`.
@@ -856,12 +856,12 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int)
     TraitShape {
       params = np,
       effectParams = V.replicate np False,
-      supers = supers,
+      supers,
       assocs = allAssocs,
-      assocParams = assocParams,
+      assocParams,
       ownAssocs = V.len assocs,
       methods = V.map (\m -> match m with | (mn, _, _, _) -> mn) methods,
-      dict = dict,
+      dict,
       labels =
         V.append
           (V.map (\(sup : Super) -> superLabel sup.tr) supers)
@@ -953,7 +953,7 @@ fun registerMethod
         V.map
           (\k -> (V.getOr "" assocs k, V.map (\p -> Bound p) (V.getOr [] assocParams k), np + k))
           (V.range 0 n)
-      in match liftAssocs i raw (AssocVars { table = table, quant = quant }) with
+      in match liftAssocs i raw (AssocVars { table, quant }) with
          | (ty, st) ->
              let field =
                substBound
@@ -965,8 +965,8 @@ fun registerMethod
              let sc =
                Scheme {
                  quant = st.quant,
-                 preds = [Pred { tr = tr, tys = V.take headArgs np, assocs = V.drop headArgs np }],
-                 ty = ty,
+                 preds = [Pred { tr, tys = V.take headArgs np, assocs = V.drop headArgs np }],
+                 ty,
                  lacks = []
                }
              in
@@ -996,17 +996,14 @@ fun registerMethod
   let u =
     stSetRef
       i.ctors
-      (H.insert
-         ctor
-         (Scheme { quant = quant, preds = [], ty = cty, lacks = [] })
-         (stGetRef i.ctors))
+      (H.insert ctor (Scheme { quant, preds = [], ty = cty, lacks = [] }) (stGetRef i.ctors))
   in
   let labels =
     (if V.all (\f -> M.isSome (fst f)) fields and not (V.isEmpty fields) then
        Just (V.map (\f -> M.unwrapOr "" (fst f)) fields)
      else None)
   in
-  let sig = VariantSig { name = ctor, fields = fieldTys, labels = labels } in
+  let sig = VariantSig { name = ctor, fields = fieldTys, labels } in
   let group = M.unwrapOr [] (H.lookup tyname (stGetRef i.variants)) in
   let replaced =
     (if V.any (\(v : VariantSig) -> v.name == ctor) group then
@@ -1022,7 +1019,7 @@ fun registerMethod
         | Just nm ->
             H.insert
               nm
-              (Scheme { quant = quant, preds = [], ty = Fun [head] (snd f) RowEmpty, lacks = [] })
+              (Scheme { quant, preds = [], ty = Fun [head] (snd f) RowEmpty, lacks = [] })
               h
         | None -> h)
       accessors
@@ -1145,12 +1142,7 @@ fun registerMethod
                                (V.range sh.ownAssocs (V.len sh.assocs)) with
                              | (args, st3, preds) ->
                                  let sc =
-                                   Scheme {
-                                     quant = st3.quant,
-                                     preds = preds,
-                                     ty = Con tr args,
-                                     lacks = []
-                                   }
+                                   Scheme { quant = st3.quant, preds, ty = Con tr args, lacks = [] }
                                  in match findImpl i tr k with
                                     | Just prev ->
                                         (if prev.dict != dict then
@@ -1162,9 +1154,7 @@ fun registerMethod
 
 fun addImpl (i : Inf s) (tr : String) (k : String) (dict : Int) (sc : Scheme) : () ! { St s | e } =
   let u = setScheme i dict sc in
-  stSetRef
-    i.impls
-    (H.insert (implKey tr k) (ImplDef { dict = dict, scheme = sc }) (stGetRef i.impls))
+  stSetRef i.impls (H.insert (implKey tr k) (ImplDef { dict, scheme = sc }) (stGetRef i.impls))
 
 fun inheritedAssoc
     (i : Inf s)
@@ -1223,6 +1213,4 @@ fun distinctParams (head : Type) : Bool =
 -- an arena variable for each quantifier.
 @pub fun recordPoly (i : Inf s) (vid : Int) (sc : Scheme) : () ! { St s | e } =
   let vars = V.map (\k -> match freshIn i.ar k with | Var id -> id | _ -> 0) sc.quant in
-  stSetRef
-    i.generalized
-    (H.insert vid (Generalized { scheme = sc, vars = vars }) (stGetRef i.generalized))
+  stSetRef i.generalized (H.insert vid (Generalized { scheme = sc, vars }) (stGetRef i.generalized))

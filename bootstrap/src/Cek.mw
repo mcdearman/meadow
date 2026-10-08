@@ -127,7 +127,7 @@ record Machine = {
   let m =
     Machine {
       arena = a,
-      root = root,
+      root,
       fields = V.map (\n -> (erasedNamedName a n, erasedNamedLabels a n)) (erasedFileNamed a file)
     }
   in

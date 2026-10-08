@@ -58,7 +58,7 @@ type Evs = [Evidence]
 pass! {
   bare : Typed -> Bare
     | Pat.Ann { pat } -> pat
-    | Bind.Fun { id, params, body } -> Bind.Fun { id = id, params = params, body = body }
+    | Bind.Fun { id, params, body } -> Bind.Fun { id, params, body }
 }
 
 -- --- what lowering knows -----------------------------------------------------
@@ -1089,7 +1089,7 @@ def nowhere : Meta = spanMeta 0 0
                       H.empty
                       (V.range 0 (V.len bares)))
                    theirs,
-               next = next,
+               next,
                wheres =
                  V.foldl
                    (\h x ->
@@ -1098,7 +1098,7 @@ def nowhere : Meta = spanMeta 0 0
                    done.wheres
                    theirDefaults,
                evidence = done.evidence,
-               impls = impls,
+               impls,
                generics =
                  V.foldl
                    (\h x ->
@@ -1129,7 +1129,7 @@ def nowhere : Meta = spanMeta 0 0
                      | (id, _, (s : DefaultSig)) -> H.insert s.key id h)
                    ownDefaults
                    theirDefaults,
-               names = names,
+               names,
                dicts = stNewRef [],
                nextDict = stNewRef first,
                views = stNewRef []

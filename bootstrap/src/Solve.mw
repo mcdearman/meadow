@@ -373,8 +373,7 @@ fun describe (i : Inf s) (err : UnifyError) : String ! { St s | e } =
                 (match quantifyEach i p.tys q1 level classes with
                  | (tys, q2) ->
                      (match quantifyEach i p.assocs q2 level classes with
-                      | (assocs, q3) ->
-                          (V.pushBack ps (Pred { tr = p.tr, tys = tys, assocs = assocs }), q3))))
+                      | (assocs, q3) -> (V.pushBack ps (Pred { tr = p.tr, tys, assocs }), q3))))
           ([], q)
           preds
       in match scrutinee with

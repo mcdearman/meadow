@@ -148,6 +148,10 @@ pub fn ensure(
     // is for whoever asks for one directly -- `meadow add`; a build decides
     // between the requirements it has first and asks for the release it chose.
     let resolved;
+    // A version names whichever release is newest when it is resolved, so a
+    // release tagged since is not a tag that moved: what is pinned is still
+    // the release it was, and `meadow update` is how the newer one is taken.
+    let by_version = matches!(reference, GitRef::Version(_));
     let reference = match reference {
         GitRef::Version(req) => {
             let have = releases(cache, url, net)?;
@@ -224,6 +228,7 @@ pub fn ensure(
             // A branch or tag that has moved is reported rather than followed.
             if let Ok(now) = rev_parse(&db, reference.refspec())
                 && now != found
+                && !by_version
                 && !matches!(reference, GitRef::Default | GitRef::Branch(_))
             {
                 return Err(format!(

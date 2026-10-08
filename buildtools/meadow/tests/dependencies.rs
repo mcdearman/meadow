@@ -458,6 +458,59 @@ fn a_version_takes_the_newest_release_that_does_not_break_it() {
     assert_eq!(ran(out), "\"0.1.1\"");
 }
 
+/// A release tagged after a lock was written is not a tag that moved: on a
+/// machine that has fetched nothing, the lock's release is still what is
+/// built against, until `meadow update` takes the newer one.
+#[test]
+fn a_release_tagged_since_the_lock_was_written_leaves_the_lock_standing() {
+    let Some(repo) = released_repo("rel-since", &["0.1.0"]) else {
+        return;
+    };
+    let app = app_wanting("rel-since-app", &repo, "0.1.0");
+    let first = build_in(&app, "rel-since-first", |_| {});
+    assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+    assert_eq!(ran(first), "\"0.1.0\"");
+
+    // The library releases again.
+    let d = repo.display().to_string();
+    std::fs::write(
+        repo.join("src/Lib.mw"),
+        "@pub def label = \"0.1.1\"\n\n@pub data Tag = Tag Int\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("Meadow.toml"),
+        "[package]\nname = \"Widget\"\nversion = \"0.1.1\"\n",
+    )
+    .unwrap();
+    assert!(
+        git(&["-C", &d, "add", "-A"])
+            && git(&[
+                "-C",
+                &d,
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "--quiet",
+                "-m",
+                "0.1.1",
+            ])
+            && git(&["-C", &d, "tag", "v0.1.1"]),
+        "a second release"
+    );
+
+    // Another machine: the same lock, and a cache with nothing in it.
+    let again = build_in(&app, "rel-since-second", |_| {});
+    assert!(again.diagnostics.is_empty(), "{:?}", again.diagnostics);
+    assert_eq!(
+        ran(again),
+        "\"0.1.0\"",
+        "what the lock pins, not the newest"
+    );
+}
+
 #[test]
 fn the_release_a_version_resolved_to_is_written_to_the_lockfile() {
     let Some(repo) = released_repo("rel-lock", &["1.0.0", "1.1.0"]) else {

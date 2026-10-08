@@ -100,6 +100,13 @@ St s }`), and `! Reading r` where a method's type says what it performs. A
 
 ### Fixed
 
+- A build keeps the release its lock names when a newer one has been tagged
+  since. On a machine that had not fetched the dependency yet, a dependency
+  taken by `version` was resolved to the newest release before the lock was
+  looked at, and the lock's commit was then refused as "a tag that moves" --
+  so tagging a release broke every lock written before it, until
+  `meadow update`.
+
 - Two builds fetching the same dependency at once no longer fail with
   "could not put … in place": each unpacks into a directory of its own, and
   the one that finishes second finds the checkout there. On Windows the two

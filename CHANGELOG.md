@@ -41,6 +41,9 @@ beyond the last release is under _Unreleased_.
 
 - `meadow cut FILE -- ARGS` gives the program what follows `--` as its
   arguments.
+- `meadow cut` on Glade compiles what runs often to machine code as it goes,
+  as `meadow run` does, where it only interpreted; `--aot` compiles the
+  whole program ahead of time into an executable.
 - A program of Cut may spawn threads: `prim threadSpawn(desc(rep), f; k)`
   says how what the thread answers is represented. And a top-level `val` is
   made the first time a thread reads it, not when the program starts, so a

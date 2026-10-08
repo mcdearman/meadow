@@ -290,6 +290,10 @@ enum Cmd {
         /// `glade`, on its bytecode, or `silo`, as native code.
         #[arg(long, default_value = "glade", value_name = "NAME")]
         runtime: String,
+        /// On Glade, compile the bytecode to machine code ahead of time and
+        /// run that executable, rather than interpreting it.
+        #[arg(long)]
+        aot: bool,
         /// What the program is given, after `--`: what its `argv` answers.
         #[arg(last = true, value_name = "ARGS")]
         args: Vec<String>,
@@ -994,9 +998,21 @@ fn command() {
         Some(Cmd::Cut {
             file,
             runtime,
+            aot: ahead,
             args,
         }) => {
             let ran = match aot::Runtime::named(&runtime) {
+                Some(aot::Runtime::Glade) if ahead => {
+                    meadow::cut::build_for_glade(&file, meadow_compiler::OptLevel::O2).and_then(
+                        |exe| {
+                            std::process::Command::new(&exe)
+                                .args(&args)
+                                .status()
+                                .map(|s| s.code().unwrap_or(1))
+                                .map_err(|e| format!("{}: {e}", exe.display()))
+                        },
+                    )
+                }
                 Some(aot::Runtime::Glade) => {
                     // The process is `meadow`, not the program: what the
                     // program was given is what followed `--`.

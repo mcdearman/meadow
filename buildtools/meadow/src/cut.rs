@@ -13,7 +13,16 @@ use crate::profile::Profile;
 pub fn lowered(path: &Path) -> Result<meadow_seq::Program, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let program = meadow_cut::parse(&text).map_err(|e| format!("{}:{e}", path.display()))?;
-    meadow_cut::lower::executable(&program).map_err(|e| format!("{}: {e}", path.display()))
+    let lowered =
+        meadow_cut::lower::executable(&program).map_err(|e| format!("{}: {e}", path.display()))?;
+    // `MEADOW_DUMP_AXCUT=1`: every definition's AxCut on stderr, as a build
+    // of Meadow source prints it, to set the two beside each other.
+    if std::env::var_os("MEADOW_DUMP_AXCUT").is_some() {
+        for d in &lowered.defs {
+            eprintln!("-- {} (L{})\n{}", d.name, d.label.0, d.block);
+        }
+    }
+    Ok(lowered)
 }
 
 /// Run it on Glade: compiled to bytecode, which is interpreted, and what

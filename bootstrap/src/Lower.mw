@@ -121,11 +121,24 @@ fun tokenIs (k : Grouped) (s : GTree) : Bool = V.any (\t -> R.kindOf t == k) (to
 fun spanOf (s : GTree) : Meta =
   match s with
   | Syntax g i ->
-      let toks =
-        V.filter (\j -> G.isTokenAt g j and G.kindAt g j != Unknown) (V.range i (G.after g i))
-      in (match (V.get toks 0, V.get toks (V.len toks - 1)) with
-          | (Just f, Just l) -> spanMeta (G.fromAt g f) (G.toAt g l)
-          | _ -> spanMeta (G.fromAt g i) (G.fromAt g i))
+      -- Looked for from each end: a tree is as many entries as everything
+      -- under it, and a span is asked of every one.
+      let last = G.after g i in
+      (match (tokenFrom g i last, tokenBefore g (last - 1) i) with
+       | (Just f, Just l) -> spanMeta (G.fromAt g f) (G.toAt g l)
+       | _ -> spanMeta (G.fromAt g i) (G.fromAt g i))
+
+-- The first token at `j` or after it, before `limit`.
+fun tokenFrom g (j : Int) (limit : Int) : Maybe Int =
+  if j >= limit then None
+  else if G.isTokenAt g j and G.kindAt g j != Unknown then Just j
+  else tokenFrom g (j + 1) limit
+
+-- The last token at `j` or before it, not before `least`.
+fun tokenBefore g (j : Int) (least : Int) : Maybe Int =
+  if j < least then None
+  else if G.isTokenAt g j and G.kindAt g j != Unknown then Just j
+  else tokenBefore g (j - 1) least
 
 fun join (a : Meta) (z : Meta) : Meta =
   spanMeta (min (metaStart a) (metaStart z)) (max (metaEnd a) (metaEnd z))

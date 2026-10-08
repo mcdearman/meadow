@@ -371,7 +371,7 @@ fun undo (ar : Arena s) (to : Int) : () ! { St s | e } =
 
 -- `b` with only its first `n` slots.
 fun truncate (b : Buf s a) (n : Int) : () ! { St s | e } =
-  match b with | Buf _ count -> stSetRef count n
+  match b with | Buf _ count _ -> stSetRef count n
 
 -- Require that `row` has none of `labels`: an error for one it has, and for
 -- its unknown rest a promise, kept by the variable it ends in.

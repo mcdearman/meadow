@@ -301,17 +301,23 @@ fun checkedOf
           (\made ->
             match made with
             | (plain, dicts, defaults, aliases) ->
-                (let direct =
-                   if keep then plain
-                   else
-                     Dictionaries.program
-                       plain
-                       (V.map (\(l : Linked) -> l.summary) linked)
-                       (V.concatMap (\(l : Linked) -> l.arities) linked)
+                (let traits =
+                   Inline.traitsOf
+                     (V.append
+                        (V.map (\(e : Entry [String]) -> e.key) labelled)
+                        (V.map fst (Seq.namedOf plain)))
                  in
                  let core =
-                   if inlines then Inline.program direct (V.map (\(l : Linked) -> l.bodies) linked)
-                   else direct
+                   if keep and not inlines then plain
+                   else
+                     Inline.program
+                       plain
+                       (V.map (\(l : Linked) -> l.bodies) linked)
+                       (V.map (\(l : Linked) -> l.summary) linked)
+                       (V.concatMap (\(l : Linked) -> l.arities) linked)
+                       traits
+                       (not keep)
+                       inlines
                  in
                  let ownDatas =
                    V.concatMap
@@ -352,7 +358,9 @@ fun checkedOf
                                    linked)
                                aliases),
                         summary = Dictionaries.summary plain,
-                        bodies = if inlines then Inline.exports core else Inline.nothing ()
+                        bodies =
+                          if keep and not inlines then Inline.nothing ()
+                          else Inline.exports core traits
                       },
                       Seq.declarations
                         core

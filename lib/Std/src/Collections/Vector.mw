@@ -486,25 +486,14 @@ fun vPopChunkFront shift node =
   let xs = toArray v in fromArray (arraySlice xs from to)
 
 -- All but the last is the common `take`, and all but the first the common
--- `drop` -- a stack popped, a list walked -- and each is one small part
--- written again where that part has more than the one element.
+-- `drop` -- a stack popped, a list walked -- and each is what `popBack` and
+-- `popFront` do without reading the rest.
 @pub fun take (v : [a]) (n : Int) : [a] =
-  match v with
-  | Full len sh oF iF mid iB oB ->
-      if n == len - 1 and arrayLen oB > 1 then
-        Full n sh oF iF mid iB (arraySlice oB 0 (arrayLen oB - 1))
-      else if n >= len then v
-      else fst (splitAt v n)
-  | _ -> fst (splitAt v n)
+  let have = len v in
+  if n >= have then v else if n == have - 1 and n >= 0 then popBack v else fst (splitAt v n)
 
 @pub fun drop (v : [a]) (n : Int) : [a] =
-  match v with
-  | Full len sh oF iF mid iB oB ->
-      if n == 1 and arrayLen oF > 1 then
-        Full (len - 1) sh (arraySlice oF 1 (arrayLen oF)) iF mid iB oB
-      else if n <= 0 then v
-      else snd (splitAt v n)
-  | _ -> snd (splitAt v n)
+  if n <= 0 then v else if n == 1 then popFront v else snd (splitAt v n)
 
 @pub fun map (f : a -> b ! e) (v : [a]) : [b] ! e =
   match v with

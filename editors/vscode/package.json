@@ -6,7 +6,7 @@
 	"publisher": "ChrisMcDearman",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/mcdearman/meadow"
+		"url": "https://github.com/meadow-lang/meadow"
 	},
 	"categories": [
 		"Programming Languages",

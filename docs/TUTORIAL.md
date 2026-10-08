@@ -33,11 +33,11 @@ repository.
 On macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh | sh
+curl -fsSL https://raw.githubusercontent.com/meadow-lang/meadow/master/scripts/meadowup-init.sh | sh
 ```
 
 On Windows, download `meadowup-x86_64.exe` from the
-[releases page](https://github.com/mcdearman/meadow/releases/latest) and run it.
+[releases page](https://github.com/meadow-lang/meadow/releases/latest) and run it.
 
 Either way, `meadowup` installs itself and `meadow` into `~/.meadow/bin`, and
 `meadowup update` keeps them current. To build from a checkout instead, run
@@ -2459,12 +2459,12 @@ A package published as a git repository is depended on by URL, and `meadow add`
 writes the entry for you:
 
 ```sh
-meadow add mcdearman/meadow-unicode-width
+meadow add meadow-lang/UnicodeWidth
 ```
 
 ```toml
 [dependencies]
-UnicodeWidth = { git = "https://github.com/mcdearman/meadow-unicode-width", version = "0.1.0" }
+UnicodeWidth = { git = "https://github.com/meadow-lang/UnicodeWidth", version = "0.1.0" }
 ```
 
 A package's **releases** are the tags that read as versions: `v1.2.0`, or
@@ -2486,7 +2486,7 @@ Which release a build actually used is in `meadow.lock`, with the commit:
 ```toml
 [[package]]
 name = "UnicodeWidth"
-source = "git+https://github.com/mcdearman/meadow-unicode-width?version=0.1.0"
+source = "git+https://github.com/meadow-lang/UnicodeWidth?version=0.1.0"
 version = "0.1.4"
 rev = "fa95092300d547891f5e1ecbd100b7e2438e1058"
 ```

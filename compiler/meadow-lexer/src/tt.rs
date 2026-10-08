@@ -10,7 +10,7 @@
 //! come out are the tokens that went in, in order, with their spans. That is
 //! what lets expansion hand its result back to the ordinary parser.
 //!
-//! [`docs/MACROS.md`]: https://github.com/mcdearman/meadow/blob/master/docs/MACROS.md
+//! [`docs/MACROS.md`]: https://github.com/meadow-lang/meadow/blob/master/docs/MACROS.md
 
 use crate::{LToken, Token};
 use meadow_diagnostics::Diagnostic;

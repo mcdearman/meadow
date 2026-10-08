@@ -334,14 +334,14 @@ use Std.Test (assertEq)
 @test fun aManifestsDependenciesAreItsInlineTables () =
   let es =
     readToml
-      "[package]\nname = \"MeadowBoot\"\n\n[dependencies]\nLingua = { path = \"../../Lingua\" }\nScythe = { git = \"https://github.com/mcdearman/Scythe.git\", branch = \"master\" } # fetched\n"
+      "[package]\nname = \"MeadowBoot\"\n\n[dependencies]\nLingua = { path = \"../../Lingua\" }\nScythe = { git = \"https://github.com/meadow-lang/Scythe.git\", branch = \"master\" } # fetched\n"
   in assertEq
        (V.map
           (\(e : Entry) -> (e.key, field "path" e.value, field "git" e.value))
           (V.filter (\(e : Entry) -> e.section == "dependencies") es))
        [
          ("Lingua", Just "../../Lingua", None),
-         ("Scythe", None, Just "https://github.com/mcdearman/Scythe.git")
+         ("Scythe", None, Just "https://github.com/meadow-lang/Scythe.git")
        ]
        "a path and a git repository"
 
@@ -355,5 +355,5 @@ use Std.Test (assertEq)
        "one table each"
 
 @test fun aCheckoutIsNamedForItsRepository () =
-  let a = assertEq (repoName "https://github.com/mcdearman/Scythe.git") "Scythe" "without `.git`" in
+  let a = assertEq (repoName "https://github.com/meadow-lang/Scythe.git") "Scythe" "without `.git`" in
   assertEq (repoName "https://github.com/someone/meadow-json/") "meadow-json" "without the slash"

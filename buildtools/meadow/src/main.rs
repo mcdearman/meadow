@@ -1065,7 +1065,7 @@ fn command() {
             eprintln!("is not installed yet, re-run the installer:");
             eprintln!();
             eprintln!(
-                "  curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh | sh"
+                "  curl -fsSL https://raw.githubusercontent.com/meadow-lang/meadow/master/scripts/meadowup-init.sh | sh"
             );
             std::process::exit(1);
         }

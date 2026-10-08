@@ -1268,13 +1268,19 @@ impl Infer {
                     // in what else it might perform -- nothing runs it at
                     // another row -- and whatever `Eff` names may be
                     // performed where it is called from.
+                    let fixed = Scheme::mono(Type::Fun(
+                        vec![Type::unit()],
+                        Box::new(Type::unit()),
+                        Box::new(thread_body_row()),
+                    ));
                     if let Some(g) = self.generalized.get_mut(&main) {
-                        g.scheme = Scheme::mono(Type::Fun(
-                            vec![Type::unit()],
-                            Box::new(Type::unit()),
-                            Box::new(thread_body_row()),
-                        ));
+                        g.scheme = fixed.clone();
                         g.vars = Vec::new();
+                    }
+                    // And what the unit says of it to whoever asks: a package
+                    // that names it, `--types`.
+                    if self.env.contains_key(&main) {
+                        self.env.insert(main, fixed);
                     }
                     return;
                 }

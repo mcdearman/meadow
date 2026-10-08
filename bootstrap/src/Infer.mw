@@ -2682,28 +2682,28 @@ fun checkMain (i : Inf s) (r : Renamed) : () ! { St s | e } =
               -- One that fits is `() -> () ! Eff` from then on: nothing runs
               -- `main` at another row.
               if mainFits i g.scheme then
-                stSetRef
-                  i.generalized
-                  (H.insert
-                     it.id
-                     (Generalized {
-                        scheme =
-                          Scheme {
-                            quant = [],
-                            preds = [],
-                            ty =
-                              Fun
-                                [unitT ()]
-                                (unitT ())
-                                (V.foldr
-                                   (\l rest -> RowExtend l (Tuple []) rest)
-                                   RowEmpty
-                                   runtimeEffects),
-                            lacks = []
-                          },
-                        vars = []
-                      })
-                     (stGetRef i.generalized))
+                (let fixed =
+                   Scheme {
+                     quant = [],
+                     preds = [],
+                     ty =
+                       Fun
+                         [unitT ()]
+                         (unitT ())
+                         (V.foldr (\l rest -> RowExtend l (Tuple []) rest) RowEmpty runtimeEffects),
+                     lacks = []
+                   }
+                 in
+                 let u =
+                   stSetRef
+                     i.generalized
+                     (H.insert
+                        it.id
+                        (Generalized { scheme = fixed, vars = [] })
+                        (stGetRef i.generalized))
+                 in
+                 -- And what the unit says of it to whoever asks.
+                 if M.isSome (schemeOf i it.id) then setScheme i it.id fixed else ())
               else ()
           | None -> ())
 

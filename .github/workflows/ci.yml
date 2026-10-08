@@ -10,6 +10,9 @@ on:
   push:
     branches: [master]
   pull_request:
+  # What the merge queue asks for: the checks run on the merge of a pull
+  # request with `master` as it is then, before that merge is `master`.
+  merge_group:
   workflow_dispatch:
 
 # Reading a commit's statuses is how a run learns the suite has passed on

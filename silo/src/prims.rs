@@ -758,8 +758,11 @@ fn is_number(v: Val) -> bool {
 
 /// Structural equality, as `==` on values of any type means it.
 pub fn equal(a: Val, b: Val) -> bool {
-    let mut stack = vec![(a, b)];
-    while let Some((a, b)) = stack.pop() {
+    // Nothing is allocated to compare two numbers or two strings, which is
+    // what nearly every comparison is of: the stack is for what has parts.
+    let mut stack: Vec<(Val, Val)> = Vec::new();
+    let mut next = Some((a, b));
+    while let Some((a, b)) = next.take().or_else(|| stack.pop()) {
         match (a, b) {
             (Val::Int(x), Val::Int(y)) if x == y => {}
             (Val::Float(x), Val::Float(y)) if x == y => {}
@@ -773,6 +776,17 @@ pub fn equal(a: Val, b: Val) -> bool {
             (Val::Unit, Val::Unit) => {}
             (Val::Ref(x), Val::Ref(y)) => {
                 if x == y {
+                    continue;
+                }
+                // Two strings, where they are.
+                if heap::is_block(x)
+                    && heap::is_block(y)
+                    && heap::kind(x) == heap::STRING
+                    && heap::kind(y) == heap::STRING
+                {
+                    if heap::str_bytes(x) != heap::str_bytes(y) {
+                        return false;
+                    }
                     continue;
                 }
                 // A vector is equal to another of the same elements, whatever
@@ -804,7 +818,7 @@ pub fn equal(a: Val, b: Val) -> bool {
                 }
                 match kx {
                     heap::STRING => {
-                        if heap::bytes(x) != heap::bytes(y) {
+                        if heap::str_bytes(x) != heap::str_bytes(y) {
                             return false;
                         }
                     }
@@ -865,8 +879,10 @@ pub fn hash(v: Val) -> i64 {
         Label(String),
     }
     let mut h = Hasher::new();
-    let mut stack = vec![Work::Val(v)];
-    while let Some(w) = stack.pop() {
+    // A string, which is what is hashed most, is hashed where it is.
+    let mut stack: Vec<Work> = Vec::new();
+    let mut next = Some(Work::Val(v));
+    while let Some(w) = next.take().or_else(|| stack.pop()) {
         let v = match w {
             Work::Label(l) => {
                 h.str(&l);
@@ -883,6 +899,13 @@ pub fn hash(v: Val) -> i64 {
             Val::Sym(s) => h.str(show::names().syms.get(s).map_or("", |x| x.as_str())),
             Val::Unit => h.unit(),
             Val::Ref(x) => {
+                if x != 0 && x & 1 == 0 && heap::is_block(x) && heap::kind(x) == heap::STRING {
+                    h.str_packed(
+                        heap::str_bytes(x).len(),
+                        (0..heap::len(x)).map(|i| heap::field(x, i)),
+                    );
+                    continue;
+                }
                 if let Some(xs) = show::vector_elems(x) {
                     h.vector(xs.len());
                     stack.extend(xs.into_iter().rev().map(|(p, d)| Work::Val(val(p, d))));
@@ -900,8 +923,10 @@ pub fn hash(v: Val) -> i64 {
                 let field = |i: usize| val(heap::field(x, i), heap::field_desc(x, i));
                 match heap::kind(x) {
                     heap::STRING => {
-                        let bytes = heap::bytes(x);
-                        h.str_packed(bytes.len(), (0..heap::len(x)).map(|i| heap::field(x, i)));
+                        h.str_packed(
+                            heap::str_bytes(x).len(),
+                            (0..heap::len(x)).map(|i| heap::field(x, i)),
+                        );
                     }
                     heap::BIGINT => {
                         num::hash_into(&mut h, &number(v));

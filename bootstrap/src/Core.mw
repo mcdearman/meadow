@@ -212,7 +212,8 @@ type Ty = Type
 -- `TyApp`: how a value of a variable's type is represented is the type's to
 -- say, at run time. A unit names its package, and what its definitions
 -- mention of another's -- `Extern`: the binder it has here, the symbol it
--- is, and how many types it is generic in.
+-- is, how many types it is generic in, and how many arguments it is a
+-- function of where it is written as one.
 -- What `Elab` makes of a program, and what is lowered to Cut, which needs to
 -- know how each value is represented.
 @pub(pkg) lang! {
@@ -221,7 +222,7 @@ type Ty = Type
   Data + Data { name : String, arity : Int, ctors : [DataCtor] }
   Op + Op { name : String, arg : Ty, result : Ty }
   Effect + Effect { name : String, ops : [Op] }
-  Extern + Extern { id : Int, symbol : String, types : Int }
+  Extern + Extern { id : Int, symbol : String, types : Int, arity : Int }
   File - File
   File
     + File {

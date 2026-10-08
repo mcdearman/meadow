@@ -105,9 +105,9 @@ fn the_axcut_a_program_is_lowered_to_says_what_each_part_came_from() {
             .count(),
         1
     );
-    // A top-level value has no block of its own: what was made lowering it
-    // is in the block the program starts at, and says it is the value's.
-    assert!(l.decl(&two).is_none());
+    // A top-level value's block is the one that makes it the first time a
+    // thread wants it, and what was made lowering it says it is the value's.
+    assert!(l.decl(&two).is_some());
     assert!(
         lowered
             .map

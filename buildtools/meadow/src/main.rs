@@ -290,6 +290,9 @@ enum Cmd {
         /// `glade`, on its bytecode, or `silo`, as native code.
         #[arg(long, default_value = "glade", value_name = "NAME")]
         runtime: String,
+        /// What the program is given, after `--`: what its `argv` answers.
+        #[arg(last = true, value_name = "ARGS")]
+        args: Vec<String>,
     },
     /// Remove what a build wrote: the package's `target` directory, with the
     /// images, executables and incremental cache in it.
@@ -988,13 +991,23 @@ fn command() {
                 std::process::exit(1);
             }
         },
-        Some(Cmd::Cut { file, runtime }) => {
+        Some(Cmd::Cut {
+            file,
+            runtime,
+            args,
+        }) => {
             let ran = match aot::Runtime::named(&runtime) {
-                Some(aot::Runtime::Glade) => meadow::cut::run_on_glade(&file).map(|()| 0),
+                Some(aot::Runtime::Glade) => {
+                    // The process is `meadow`, not the program: what the
+                    // program was given is what followed `--`.
+                    meadow_compiler::core::args::set(args);
+                    meadow::cut::run_on_glade(&file).map(|()| 0)
+                }
                 Some(aot::Runtime::Silo) => {
                     meadow::cut::build_for_silo(&file, meadow_compiler::OptLevel::O2).and_then(
                         |exe| {
                             std::process::Command::new(&exe)
+                                .args(&args)
                                 .status()
                                 .map(|s| s.code().unwrap_or(1))
                                 .map_err(|e| format!("{}: {e}", exe.display()))

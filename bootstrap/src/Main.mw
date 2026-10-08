@@ -8,6 +8,7 @@ mod Lex
 mod Core
 mod Cut
 mod Seq
+mod Lint
 mod Cek
 mod Syntax
 mod Parse

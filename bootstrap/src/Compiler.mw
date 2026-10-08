@@ -32,6 +32,7 @@ use MeadowBoot.Scopes (Source, Export, Renamed, DepExports, renameUnit)
 use MeadowBoot.Infer (inferUnit, Inferred)
 use MeadowBoot.Elab (unitCore, defSymbol, Linked, DataSig, DefaultSig, Imported)
 use MeadowBoot.Seq as Seq
+use MeadowBoot.Lint (lint)
 use MeadowBoot.Types
 use MeadowBoot.Core (CoreProgram)
 use MeadowBoot.Solve (TypeEnv, noTypes, Entry)
@@ -315,7 +316,19 @@ fun checkedOf
                             (V.map (\n -> Entry { key = fst n, value = snd n }) (Seq.namedOf core)),
                         dicts,
                         defaults,
-                        aliases
+                        aliases,
+                        arities =
+                          V.append
+                            (V.map
+                               (\x -> Entry { key = fst x, value = snd x })
+                               (Seq.aritiesOf core))
+                            (V.concatMap
+                               (\(al : Entry String) ->
+                                 V.concatMap
+                                   (\(l : Linked) ->
+                                     V.filter (\(x : Entry Int) -> x.key == al.value) l.arities)
+                                   linked)
+                               aliases)
                       },
                       Seq.declarations
                         core
@@ -343,7 +356,8 @@ fun emptyLinked () : Linked =
     named = [],
     dicts = [],
     defaults = [],
-    aliases = []
+    aliases = [],
+    arities = []
   }
 
 -- A unit's declarations of Cut, where its compiler writes them: its object.
@@ -734,6 +748,37 @@ fun compiling (u : Given Interface) =
                     (M.map snd (V.find (\s -> S.endsWith "Meadow.toml" (fst s)) (unitSources u)))
                 in
                 let pkg = packageName manifest in
+                -- `MEADOWBOOT_REPS`: each definition with names of a type
+                -- nothing describes, or of an error's.
+                let reported =
+                  (match (getEnv "MEADOWBOOT_REPS", made) with
+                   | (Just _, Just (core, _, _)) ->
+                       V.foldl
+                         (\w x ->
+                           match x with
+                           | (symbol, vars, errors) ->
+                               writeError
+                                 "${symbol}: ${show vars} of no type described, ${show errors} of an error\n")
+                         ()
+                         (Seq.undescribed core)
+                   | _ -> ())
+                in
+                -- `MEADOWBOOT_LINT`: where the unit's core does not agree with
+                -- itself on how a value is represented.
+                let linted =
+                  (match (getEnv "MEADOWBOOT_LINT", made) with
+                   | (Just _, Just (core, _, _)) ->
+                       V.foldl
+                         (\w x -> writeError "meadow:${pkg}/d${show (fst x)}: ${snd x}\n")
+                         ()
+                         (lint
+                            core
+                            (sigsOf
+                               (V.concatMap
+                                  (\(i : Interface) -> i.linked.datas)
+                                  (V.map snd (unitImports u)))))
+                   | _ -> ())
+                in
                 let linked =
                   (match made with
                    | Just (_, l, object) ->

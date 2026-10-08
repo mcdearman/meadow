@@ -1,0 +1,303 @@
+-- Lint: core checked against itself -- `meadow_core::lint`, for what
+-- lowering most depends on.
+--
+-- Every term of `Core` holds its type, and lowering reads how a value is
+-- represented off it. Two terms that meet -- a function and its argument,
+-- a name and where it was bound, a constructor and its fields, a pattern and
+-- what it is matched against -- have to agree on that, or a value is handed
+-- across as what it is not: an `Int` where a pointer is expected is nothing
+-- a runtime can tell from one, until its collector follows it. `lint` says
+-- where they do not agree, a definition and a line each.
+--
+-- A type nothing says the representation of -- a variable no definition
+-- around is generic in, an error's -- agrees with anything here:
+-- `Seq.undescribed` is what counts those.
+
+use MeadowBoot.Core
+use MeadowBoot.Core (Core!)
+use MeadowBoot.Seq (repOf)
+use MeadowBoot.Types
+use MeadowBoot.Types.Type.*
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.String as S
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- What a check carries: the program's tables, the type variables the
+-- definition around is generic in, the type each name in scope was bound
+-- at, and every declared type's constructors with their fields' types.
+record Cx = {
+  a : CoreArena,
+  scope : [Int],
+  bound : HashMap Int Type,
+  ctors : HashMap String [Type]
+}
+
+-- How a value of type `t` is represented, as far as the type says: `?`
+-- where it does not.
+fun rep (cx : Cx) (t : Type) : String =
+  match t with
+  | Var v -> if V.elem v cx.scope then "'t${show v}" else "?"
+  | Bound _ -> "?"
+  | Error -> "?"
+  | _ -> repOf t
+
+-- `what`, if `have` and `want` are represented differently.
+fun unless (cx : Cx) (want : Type) (have : Type) (what : String) (said : [String]) : [String] =
+  let w = rep cx want in
+  let h = rep cx have in
+  if w == h or w == "?" or h == "?" then said
+  else V.pushBack said "${what}: ${h} where ${w} is wanted"
+
+-- A type with a declaration's parameters the types it was given.
+fun at (args : [Type]) (t : Type) : Type =
+  match t with
+  | Bound i -> V.getOr Error args i
+  | Con name inner -> Con name (V.map (at args) inner)
+  | other -> other
+
+-- What a function type takes first, and answers when given it.
+fun taking (t : Type) : Maybe (Type, Type) =
+  match t with
+  | Fun params result eff ->
+      if V.len params <= 1 then M.map (\p -> (p, result)) (V.get params 0)
+      else M.map (\p -> (p, Fun (V.drop params 1) result eff)) (V.get params 0)
+  | _ -> None
+
+-- Each constructor's fields at the types a value of type `t` gives its
+-- declaration, if `name` is declared.
+fun fieldsOf (cx : Cx) (name : String) (t : Type) : Maybe [Type] =
+  match (H.lookup name cx.ctors, t) with
+  | (Just fields, Con _ args) -> Just (V.map (at args) fields)
+  | _ -> None
+
+fun pattern (cx : Cx) (p : CorePat) (said : [String]) : [String] =
+  match viewCorePat cx.a p with
+  | CorePatView.PAs r ->
+      pattern cx r.pat (unless cx r.ty (tyCorePat cx.a r.pat) "a pattern and its name" said)
+  | CorePatView.PTuple r ->
+      (match r.ty with
+       | Tuple ts ->
+           V.foldl
+             (\x i ->
+               (let q = V.getOr p r.items i in
+                pattern
+                  cx
+                  q
+                  (unless cx (V.getOr Error ts i) (tyCorePat cx.a q) "a tuple pattern's item" x)))
+             said
+             (V.range 0 (V.len r.items))
+       | _ -> V.foldl (\x q -> pattern cx q x) said r.items)
+  | CorePatView.PArray r -> V.foldl (\x q -> pattern cx q x) said r.items
+  | CorePatView.PCtor r ->
+      (let fields = M.unwrapOr [] (fieldsOf cx r.name r.ty) in
+       V.foldl
+         (\x i ->
+           (let q = V.getOr p r.args i in
+            let checked =
+              (match V.get fields i with
+               | Just f -> unless cx f (tyCorePat cx.a q) "a field of `${r.name}` in a pattern" x
+               | None -> x)
+            in pattern cx q checked))
+         said
+         (V.range 0 (V.len r.args)))
+  | CorePatView.PRecord r -> V.foldl (\x f -> pattern cx (corePFieldPat cx.a f) x) said r.fields
+  | _ -> said
+
+-- The names a pattern binds, each at its type.
+fun binds (a : CoreArena) (p : CorePat) (h : HashMap Int Type) : HashMap Int Type =
+  match viewCorePat a p with
+  | CorePatView.PVar r -> H.insert r.id r.ty h
+  | CorePatView.PAs r -> binds a r.pat (H.insert r.id r.ty h)
+  | CorePatView.PTuple r -> V.foldl (\x q -> binds a q x) h r.items
+  | CorePatView.PArray r -> V.foldl (\x q -> binds a q x) h r.items
+  | CorePatView.PCtor r -> V.foldl (\x q -> binds a q x) h r.args
+  | CorePatView.PRecord r -> V.foldl (\x f -> binds a (corePFieldPat a f) x) h r.fields
+  | _ -> h
+
+fun term (cx : Cx) (t : CoreTerm) (said : [String]) : [String] =
+  let a = cx.a in
+  let each = \ts acc -> V.foldl (\x u -> term cx u x) acc ts in
+  match viewCoreTerm a t with
+  | CoreTermView.Var r ->
+      (match H.lookup r.id cx.bound with
+       | Just was -> unless cx was r.ty "v${show r.id}, as it was bound" said
+       | None -> said)
+  | CoreTermView.Lam r ->
+      (let inner = { cx | bound = H.insert r.param r.paramTy cx.bound } in
+       let checked =
+         (match taking r.ty with
+          | Just (p, result) ->
+              unless
+                cx
+                result
+                (tyCoreTerm a r.body)
+                "what a function answers"
+                (unless cx p r.paramTy "a function's parameter" said)
+          | None -> said)
+       in term inner r.body checked)
+  | CoreTermView.TyLam r -> term { cx | scope = V.append cx.scope r.vars } r.body said
+  | CoreTermView.TyApp r -> term cx r.func said
+  | CoreTermView.App r ->
+      (let checked =
+         (match taking (tyCoreTerm a r.func) with
+          | Just (p, result) ->
+              unless
+                cx
+                result
+                r.ty
+                "what a call answers"
+                (unless cx p (tyCoreTerm a r.arg) "an argument" said)
+          | None -> said)
+       in term cx r.arg (term cx r.func checked))
+  | CoreTermView.Let r ->
+      (let inner =
+         if kindCoreTerm a r.value == CoreTermKind.TyLam then cx
+         else { cx | bound = H.insert r.id (tyCoreTerm a r.value) cx.bound }
+       in term
+            inner
+            r.body
+            (term cx r.value (unless cx r.ty (tyCoreTerm a r.body) "what a `let` answers" said)))
+  | CoreTermView.LetRec r ->
+      (let inner =
+         {
+           cx
+             | bound =
+               V.foldl
+                 (\h b ->
+                   (let v = coreBindValue a b in
+                    if kindCoreTerm a v == CoreTermKind.TyLam then h
+                    else H.insert (coreBindId a b) (tyCoreTerm a v) h))
+                 cx.bound
+                 r.binds
+         }
+       in term inner r.body (V.foldl (\x b -> term inner (coreBindValue a b) x) said r.binds))
+  | CoreTermView.If r ->
+      each
+        [r.cond, r.yes, r.no]
+        (unless
+           cx
+           r.ty
+           (tyCoreTerm a r.no)
+           "the `else` of an `if`"
+           (unless cx r.ty (tyCoreTerm a r.yes) "the `then` of an `if`" said))
+  | CoreTermView.Tuple r ->
+      (let checked =
+         (match r.ty with
+          | Tuple ts ->
+              V.foldl
+                (\x i ->
+                  unless
+                    cx
+                    (V.getOr Error ts i)
+                    (tyCoreTerm a (V.getOr t r.items i))
+                    "a tuple's item"
+                    x)
+                said
+                (V.range 0 (V.len r.items))
+          | _ -> said)
+       in each r.items checked)
+  | CoreTermView.Array r -> each r.items said
+  | CoreTermView.Proj r -> term cx r.tuple said
+  | CoreTermView.Record r -> each (V.map (\f -> coreFieldValue a f) r.fields) said
+  | CoreTermView.Sel r -> term cx r.target said
+  | CoreTermView.Extend r -> each [r.target, r.value] said
+  | CoreTermView.Ctor r ->
+      (let fields = M.unwrapOr [] (fieldsOf cx r.name r.ty) in
+       let checked =
+         V.foldl
+           (\x i ->
+             match V.get fields i with
+             | Just f -> unless cx f (tyCoreTerm a (V.getOr t r.args i)) "a field of `${r.name}`" x
+             | None -> x)
+           said
+           (V.range 0 (V.len r.args))
+       in each r.args checked)
+  | CoreTermView.Prim r -> each r.args said
+  | CoreTermView.Perform r -> term cx r.arg said
+  | CoreTermView.Case r ->
+      V.foldl
+        (\acc arm ->
+          (let p = coreArmPat a arm in
+           let inner = { cx | bound = binds a p cx.bound } in
+           let matched =
+             pattern
+               cx
+               p
+               (unless
+                  cx
+                  (tyCoreTerm a r.scrutinee)
+                  (tyCorePat a p)
+                  "a pattern and what it matches"
+                  acc)
+           in
+           let guarded =
+             (match coreArmGuard a arm with
+              | Just g -> term inner g matched
+              | None -> matched)
+           in term
+                inner
+                (coreArmBody a arm)
+                (unless cx r.ty (tyCoreTerm a (coreArmBody a arm)) "what an arm answers" guarded)))
+        (term cx r.scrutinee said)
+        r.arms
+  | CoreTermView.Handle r ->
+      (let body = term cx r.body said in
+       let clauses =
+         V.foldl
+           (\acc c ->
+             term
+               { cx | bound = H.insert (coreClauseParam a c) (coreClauseParamTy a c) cx.bound }
+               (coreClauseBody a c)
+               acc)
+           body
+           r.clauses
+       in match r.ret with
+          | Just ret -> term cx ret clauses
+          | None -> clauses)
+  | CoreTermView.Join r -> term cx r.body (term cx r.rhs said)
+  | CoreTermView.Jump r -> each r.args said
+  | CoreTermView.Ill _ -> said
+  | CoreTermView.Const _ -> said
+
+-- Where a program of core does not agree with itself on how a value is
+-- represented: the definition's binder, and what does not agree. `known`
+-- are the types the units before it declare.
+@pub fun lint (p : CoreProgram) (known : [(String, Int, [(String, [Type])])]) : [(Int, String)] =
+  let a = coreArena p in
+  let file = coreRoot p in
+  let own =
+    V.map
+      (\d ->
+        (
+          coreDataName a d,
+          coreDataArity a d,
+          V.map (\c -> (coreDataCtorName a c, coreDataCtorFields a c)) (coreDataCtors a d)
+        ))
+      (coreFileDatas a file)
+  in
+  let ctors =
+    V.foldl
+      (\h d ->
+        match d with
+        | (_, _, cs) -> V.foldl (\g c -> H.insert (fst c) (snd c) g) h cs)
+      H.empty
+      (V.append known own)
+  in
+  -- A definition generic in no type is a name of one type everywhere.
+  let tops =
+    V.foldl
+      (\h d ->
+        (let body = coreDefBody a d in
+         if kindCoreTerm a body == CoreTermKind.TyLam then h
+         else H.insert (coreDefId a d) (tyCoreTerm a body) h))
+      H.empty
+      (coreFileDefs a file)
+  in V.concatMap
+       (\d ->
+         V.map
+           (\m -> (coreDefId a d, m))
+           (term (Cx { a, scope = [], bound = tops, ctors }) (coreDefBody a d) []))
+       (coreFileDefs a file)

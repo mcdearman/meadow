@@ -1,0 +1,260 @@
+-- Inlining a small function at the places that call it -- the first part
+-- of `meadow_core::inline`.
+--
+-- A call of a top-level function is a jump to its definition and a return
+-- from it, which is the right price for a function and a ruinous one for
+-- `fun isEmpty v = len v == 0`. So where a definition is a function, small,
+-- and reaches itself through no chain of such functions, a call of it with
+-- all its arguments is its body, with each parameter the name of its
+-- argument: a `let` each, so that an argument is still evaluated once and in
+-- its turn.
+--
+-- Core binds every name once and lowering relies on it, so a body copied to
+-- a call is copied with every name it binds a new one, which nothing else
+-- has.
+--
+-- Not here yet: a function generic in its types, whose copy has to be
+-- written at the types the call is at; one from another unit, whose body
+-- that unit has to keep for this one; and the function the program calls
+-- once, however large.
+
+use Lingua (pass!)
+use Lingua.Lang (Meta, spanMeta)
+use MeadowBoot.Core
+use MeadowBoot.Core (Core!)
+use MeadowBoot.Types
+use MeadowBoot.Types.Type.*
+use Std.Collections.Vector as V
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.Maybe as M
+use Std.Maybe.Maybe.*
+
+-- The most nodes a function's body may have and still be copied to its
+-- calls: `meadow_core::inline::BUDGET`.
+def budget : Int = 16
+
+def nowhere : Meta = spanMeta 0 0
+
+-- Where the names this pass makes start, as `meadow_core`'s do.
+def base : Int = 2097152000
+
+-- A function to copy: its parameters in order, and its body.
+record Body = {
+  params : [Int],
+  body : CoreTerm
+}
+
+-- --- what a term holds ---------------------------------------------------------
+
+-- The terms directly under `t`.
+fun kids (a : CoreArena) (t : CoreTerm) : [CoreTerm] =
+  match viewCoreTerm a t with
+  | CoreTermView.Lam r -> [r.body]
+  | CoreTermView.TyLam r -> [r.body]
+  | CoreTermView.TyApp r -> [r.func]
+  | CoreTermView.App r -> [r.func, r.arg]
+  | CoreTermView.Let r -> [r.value, r.body]
+  | CoreTermView.LetRec r -> V.pushBack (V.map (\b -> coreBindValue a b) r.binds) r.body
+  | CoreTermView.If r -> [r.cond, r.yes, r.no]
+  | CoreTermView.Tuple r -> r.items
+  | CoreTermView.Array r -> r.items
+  | CoreTermView.Proj r -> [r.tuple]
+  | CoreTermView.Record r -> V.map (\f -> coreFieldValue a f) r.fields
+  | CoreTermView.Sel r -> [r.target]
+  | CoreTermView.Extend r -> [r.target, r.value]
+  | CoreTermView.Ctor r -> r.args
+  | CoreTermView.Prim r -> r.args
+  | CoreTermView.Perform r -> [r.arg]
+  | CoreTermView.Case r ->
+      V.pushFront
+        (V.concatMap
+           (\arm ->
+             match coreArmGuard a arm with
+             | Just g -> [g, coreArmBody a arm]
+             | None -> [coreArmBody a arm])
+           r.arms)
+        r.scrutinee
+  | CoreTermView.Handle r ->
+      V.concat [
+        [r.body],
+        V.map (\c -> coreClauseBody a c) r.clauses,
+        (match r.ret with | Just x -> [x] | None -> [])
+      ]
+  | CoreTermView.Join r -> [r.rhs, r.body]
+  | CoreTermView.Jump r -> r.args
+  | _ -> []
+
+-- How many nodes `t` is, counted no further than `cap`.
+fun size (a : CoreArena) (t : CoreTerm) (cap : Int) (n : Int) : Int =
+  if n > cap then n else V.foldl (\acc k -> size a k cap acc) (n + 1) (kids a t)
+
+-- The names `t` mentions, after `seen`.
+fun mentions (a : CoreArena) (t : CoreTerm) (seen : [Int]) : [Int] =
+  match viewCoreTerm a t with
+  | CoreTermView.Var r -> if V.elem r.id seen then seen else V.pushBack seen r.id
+  | _ -> V.foldl (\acc k -> mentions a k acc) seen (kids a t)
+
+-- A function's parameters as it is written with them, and its body.
+fun lams (a : CoreArena) (t : CoreTerm) (params : [Int]) : ([Int], CoreTerm) =
+  match viewCoreTerm a t with
+  | CoreTermView.Lam r -> lams a r.body (V.pushBack params r.param)
+  | _ -> (params, t)
+
+-- Those of the small functions `left` that reach themselves through none:
+-- `safe` are the ones known not to, and a function every small function it
+-- mentions is safe is safe too, which is asked until a round finds none.
+-- What is left then is on a chain that comes back to itself, or calls one
+-- that is.
+fun settled
+    (a : CoreArena)
+    (small : HashMap Int Body)
+    (left : [(Int, Body)])
+    (safe : HashMap Int Body)
+    : HashMap Int Body =
+  let (more, rest) =
+    V.foldl
+      (\acc kv ->
+        match (acc, kv) with
+        | ((safeNow, waiting), (id, (b : Body))) ->
+            if V.all
+              (\m -> not (M.isSome (H.lookup m small)) or M.isSome (H.lookup m safe))
+              (mentions a b.body []) then (H.insert id b safeNow, waiting)
+            else (safeNow, V.pushBack waiting kv))
+      (safe, [])
+      left
+  in if V.len rest == V.len left then more else settled a small rest more
+
+-- The functions of `p` to copy to their calls, by binder.
+fun candidates (p : CoreProgram) : HashMap Int Body =
+  let a = coreArena p in
+  let small =
+    V.foldl
+      (\h d ->
+        (let (params, body) = lams a (coreDefBody a d) [] in
+         if V.isEmpty params or size a body budget 0 > budget then h
+         else H.insert (coreDefId a d) (Body { params, body }) h))
+      H.empty
+      (coreFileDefs a (coreRoot p))
+  in settled a small (H.toVec small) H.empty
+
+-- --- a copy, every name it binds a new one ---------------------------------------
+
+-- What a copy carries: the names that stay as they are -- the program's
+-- definitions and what it names of other units -- the new name of each
+-- other met so far, and the next new name.
+record Fresh s = {
+  kept : HashMap Int Bool,
+  names : StRef s (HashMap Int Int),
+  next : StRef s Int
+}
+
+-- The name `id` has in the copy.
+fun renamed (cx : Fresh s) (id : Int) =
+  if M.isSome (H.lookup id cx.kept) then id
+  else
+    (let names = stGetRef cx.names in
+     match H.lookup id names with
+     | Just n -> n
+     | None ->
+         (let n = stGetRef cx.next in
+          let u = stSetRef cx.next (n + 1) in
+          let w = stSetRef cx.names (H.insert id n names) in
+          n))
+
+pass! {
+  copy : Core -> Core with cx from Term
+    | Var { id, ty } -> Var { id = renamed cx id, ty }
+    | Lam { param, paramTy, body, ty } -> Lam { param = renamed cx param, paramTy, body, ty }
+    | Let { id, value, body, ty } -> Let { id = renamed cx id, value, body, ty }
+    | Bind { id, value } -> Bind { id = renamed cx id, value }
+    | PVar { id, ty } -> PVar { id = renamed cx id, ty }
+    | PAs { id, pat, ty } -> PAs { id = renamed cx id, pat, ty }
+    | Join { id, params, rhs, body, ty } ->
+        Join { id = renamed cx id, params = V.map (\x -> renamed cx x) params, rhs, body, ty }
+    | Jump { id, args, ty } -> Jump { id = renamed cx id, args, ty }
+    | Clause { eff, op, param, paramTy, resume, body } ->
+        Clause { eff, op, param = renamed cx param, paramTy, resume = renamed cx resume, body }
+    | Handle { body, clauses, retId, ret, ty } ->
+        Handle { body, clauses, retId = M.map (\x -> renamed cx x) retId, ret, ty }
+}
+
+-- --- the pass --------------------------------------------------------------------
+
+-- What the pass carries: the program as it was, what to copy, the names
+-- that stay as they are in a copy, and the next new name.
+record Cx s = {
+  src : CoreArena,
+  bodies : HashMap Int Body,
+  kept : HashMap Int Bool,
+  next : StRef s Int
+}
+
+-- What `func` is applied to already, and the name at its head.
+fun spine out func args =
+  match viewCoreTerm out func with
+  | CoreTermView.App r -> spine out r.func (V.pushFront args r.arg)
+  | CoreTermView.Var r -> (Just r.id, args)
+  | _ -> (None, args)
+
+fun call out (cx : Cx s) (m : Meta) func arg (t : Type) =
+  match spine out func [arg] with
+  | (Just f, args) ->
+      (match H.lookup f cx.bodies with
+       | Just (b : Body) ->
+           if V.len b.params != V.len args then newCoreTermApp out m func arg t
+           else
+             (let fresh = Fresh { kept = cx.kept, names = stNewRef H.empty, next = cx.next } in
+              let body = copyTerm cx.src out fresh b.body in
+              V.foldr
+                (\k rest ->
+                  newCoreTermLet
+                    out
+                    m
+                    (renamed fresh (V.getOr 0 b.params k))
+                    (V.getOr arg args k)
+                    rest
+                    t)
+                body
+                (V.range 0 (V.len args)))
+       | None -> newCoreTermApp out m func arg t)
+  | _ -> newCoreTermApp out m func arg t
+
+pass! {
+  inlined : Core -> Core with cx from Def, Named, Data, Effect, Extern
+    | App { func, arg, ty } -> call out cx here func arg ty
+}
+
+-- `p` with each call of a small function of its own the function's body.
+@pub fun program (p : CoreProgram) : CoreProgram =
+  let a = coreArena p in
+  let file = coreRoot p in
+  let bodies = candidates p in
+  if H.isEmpty bodies then p
+  else
+    runSt (\() ->
+      let out = newCoreBuilder () in
+      let kept =
+        V.foldl
+          (\h x -> H.insert (coreExternId a x) True h)
+          (V.foldl (\h d -> H.insert (coreDefId a d) True h) H.empty (coreFileDefs a file))
+          (coreFileExterns a file)
+      in
+      let cx = Cx { src = a, bodies, kept, next = stNewRef base } in
+      let defs = V.map (\d -> inlinedDef a out cx d) (coreFileDefs a file) in
+      let named = V.map (\n -> inlinedNamed a out cx n) (coreFileNamed a file) in
+      let datas = V.map (\d -> inlinedData a out cx d) (coreFileDatas a file) in
+      let effects = V.map (\e -> inlinedEffect a out cx e) (coreFileEffects a file) in
+      let externs = V.map (\x -> inlinedExtern a out cx x) (coreFileExterns a file) in
+      let root =
+        newCoreFile
+          out
+          nowhere
+          (coreFilePackage a file)
+          (coreFileEntry a file)
+          defs
+          named
+          datas
+          effects
+          externs
+      in CoreProgram (freezeCore out) root)

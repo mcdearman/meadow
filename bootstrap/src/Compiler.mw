@@ -34,6 +34,7 @@ use MeadowBoot.Elab (unitCore, defSymbol, Linked, DataSig, DefaultSig, Imported)
 use MeadowBoot.Seq as Seq
 use MeadowBoot.Lint (lint)
 use MeadowBoot.Dictionaries as Dictionaries
+use MeadowBoot.Inline as Inline
 use MeadowBoot.Dictionaries (emptySummary)
 use MeadowBoot.Types
 use MeadowBoot.Core (CoreProgram)
@@ -113,6 +114,7 @@ database! {
                 (queryFiles unit))
              (Just "result")
              True
+             False
              (\x -> ()))
 }
 
@@ -209,7 +211,8 @@ fun inferredOf
 -- one with nothing of that name -- its core, what the units after it are
 -- lowered with, and its declarations of Cut as text. Unless it is to `keep`
 -- them, a method asked of a dictionary in plain sight is the method
--- (`Dictionaries`).
+-- (`Dictionaries`); and if it `inlines`, a call of a small function is the
+-- function's body (`Inline`).
 fun checkedOf
     (dir : String)
     (imported : [Interface])
@@ -217,6 +220,7 @@ fun checkedOf
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
     (entry : Maybe String)
     (keep : Bool)
+    (inlines : Bool)
     (mark : String -> () ! e)
     : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, Object)) ! e =
   let m0 = mark "start" in
@@ -297,7 +301,7 @@ fun checkedOf
           (\made ->
             match made with
             | (plain, dicts, defaults, aliases) ->
-                (let core =
+                (let direct =
                    if keep then plain
                    else
                      Dictionaries.program
@@ -305,6 +309,7 @@ fun checkedOf
                        (V.map (\(l : Linked) -> l.summary) linked)
                        (V.concatMap (\(l : Linked) -> l.arities) linked)
                  in
+                 let core = if inlines then Inline.program direct else direct in
                  let ownDatas =
                    V.concatMap
                      (\d ->
@@ -756,6 +761,7 @@ fun compiling (u : Given Interface) =
                  (unitSources u))
               None
               (M.isSome (getEnv "MEADOWBOOT_KEEP_DICTIONARIES"))
+              (not (M.isSome (getEnv "MEADOWBOOT_KEEP_CALLS")))
               mark with
             | (exports, anyVis, types, made) ->
                 let m9 = mark "cut" in

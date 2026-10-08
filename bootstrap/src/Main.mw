@@ -10,6 +10,7 @@ mod Cut
 mod Seq
 mod Lint
 mod Dictionaries
+mod Inline
 mod Cek
 mod Syntax
 mod Parse

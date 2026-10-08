@@ -406,7 +406,14 @@ pass! {
         C.shared out cx.k here "j${show node}" (\k ->
           (let inner = { cx | k = k } in
            let s = "s${show node}" in
-           named src out inner here s scrutinee (armsFrom src out inner here s arms 0)))
+           named
+             src
+             out
+             inner
+             here
+             s
+             scrutinee
+             (armsFrom src out inner here s (repIn inner (tyCoreTerm src scrutinee)) arms 0)))
     | Perform { eff, op, raw arg } ->
         (let a = "a${show node}" in
          named
@@ -858,7 +865,7 @@ fun bindersOf (a : CoreArena) (p : CorePat) : [Int] =
 -- one another and each take a different constructor apart are one `case`
 -- of Cut, an arm of it each: a value is of one of them at most, so one that
 -- gives up has only the arms after them all left to try.
-fun armsFrom src out cx (m : Meta) (s : String) arms (i : Int) =
+fun armsFrom src out cx (m : Meta) (s : String) (sr : String) arms (i : Int) =
   match V.get arms i with
   | None -> C.fail out m "non-exhaustive pattern match"
   | Just arm ->
@@ -866,8 +873,9 @@ fun armsFrom src out cx (m : Meta) (s : String) arms (i : Int) =
       let group =
         V.map (\j -> V.getOr arm arms j) (V.range i (if stop - i >= 2 then stop else i + 1))
       in
+      let after = i + V.len group in
       let cased =
-        \(fail : String) rest ->
+        \within (fail : String) rest ->
           C.give
             out
             m
@@ -878,35 +886,78 @@ fun armsFrom src out cx (m : Meta) (s : String) arms (i : Int) =
                (V.pushBack
                   (V.map
                      (\a ->
-                       taken src out cx m (coreArmPat src a) fail (\() ->
-                         armBody src out cx m a fail))
+                       taken src out within m (coreArmPat src a) fail (\() ->
+                         armBody src out within m a fail))
                      group)
                   (C.arm out m "_" [] rest)))
       in
       -- Arms that cannot give up -- a constructor over names, and no guard --
       -- need nowhere to give up to: what comes after them is what the `case`
-      -- does with any other constructor, written there. A continuation for
-      -- it is one more thing made every time the match is run.
+      -- does with any other constructor, written there.
       if V.all (\a -> plain src a) group then
-        cased "#never" (armsFrom src out cx m s arms (i + V.len group))
+        cased cx "#never" (armsFrom src out cx m s sr arms after)
       else if sure src (coreArmPat src arm) and M.isNone (coreArmGuard src arm) then
         matched src out cx m s (coreArmPat src arm) "#never" (\() ->
           armBody src out cx m arm "#never")
-      else if stop - i >= 2 then
-        C.orElse
-          out
-          m
-          "n${show arm}"
-          (\fail -> cased fail (C.gaveUp out m fail))
-          (armsFrom src out cx m s arms stop)
       else
-        C.orElse
-          out
-          m
-          "n${show arm}"
-          (\fail ->
-            matched src out cx m s (coreArmPat src arm) fail (\() -> armBody src out cx m arm fail))
-          (armsFrom src out cx m s arms (i + 1))
+        -- Arms that may give up: the arms after them are a definition of
+        -- their own (`joinFor`), which giving up calls -- a jump with what it
+        -- needs, and nothing made to hold it.
+        (let fail = "n${show arm}" in
+         let within =
+           { cx | joins = H.insert fail (joinFor src out cx m s sr arms after) cx.joins }
+         in if stop - i >= 2 then cased within fail (gaveUp out within m fail)
+            else
+              matched src out within m s (coreArmPat src arm) fail (\() ->
+                armBody src out within m arm fail))
+
+-- The arms from `j` on as a definition: of what they mention from around
+-- them and of the value matched, `s`, represented as `sr`. Its symbol and
+-- what it is given before `s` -- or no symbol, where no arm is left and
+-- giving up is the match failing.
+fun joinFor src out cx (m : Meta) (s : String) (sr : String) arms (j : Int) =
+  if j >= V.len arms then ("", [], s)
+  else
+    (let around =
+       captured
+         cx
+         (V.foldl
+            (\seen k ->
+              (let arm = V.getOr 0 arms k in
+               let bound = bindersOf src (coreArmPat src arm) in
+               let guarded =
+                 (match coreArmGuard src arm with
+                  | Just g -> free src g bound seen
+                  | None -> seen)
+               in free src (coreArmBody src arm) bound guarded))
+            []
+            (V.range j (V.len arms)))
+     in
+     let symbol = "meadow:${cx.pkg}/j${show (V.getOr 0 arms j)}" in
+     let made =
+       C.genericDecl
+         out
+         m
+         symbol
+         (V.map tname cx.tvars)
+         (V.pushBack
+            (V.map (\fv -> C.param out m "v${show (fst fv)}" (repIn cx (snd fv))) around)
+            (C.param out m s sr))
+         [C.param out m "k" "ptr"]
+         (armsFrom src out { cx | k = C.cont out m "k" } m s sr arms j)
+     in
+     let u = stSetRef cx.lifted (V.pushBack (stGetRef cx.lifted) made) in
+     (symbol, around, s))
+
+-- Giving up on an arm: the arms after it called, with what they need and
+-- where the match's answer goes.
+fun gaveUp out cx (m : Meta) (fail : String) =
+  match H.lookup fail cx.joins with
+  | Just (symbol, around, s) ->
+      if S.isEmpty symbol then C.fail out m "non-exhaustive pattern match"
+      else
+        C.invoke out m symbol (V.pushBack (leading out cx m cx.tvars around) (C.var out m s)) [cx.k]
+  | None -> C.gaveUp out m fail
 
 -- Whether a pattern matches whatever it is given: a name, or names put
 -- together as a tuple or a record is.
@@ -914,6 +965,7 @@ fun sure src p : Bool =
   match viewCorePat src p with
   | CorePatView.PWild _ -> True
   | CorePatView.PVar _ -> True
+  | CorePatView.PLit r -> kindCoreLit src r.lit == CoreLitKind.LUnit
   | CorePatView.PAs r -> sure src r.pat
   | CorePatView.PTuple r -> V.all (\q -> sure src q) r.items
   | CorePatView.PRecord r -> V.all (\f -> sure src (corePFieldPat src f)) r.fields
@@ -957,7 +1009,7 @@ fun armBody src out cx (m : Meta) arm (fail : String) =
             m
             "u${show arm}"
             (C.var out m name)
-            (C.gaveUp out m fail)
+            (gaveUp out cx m fail)
             (lowerTerm src out cx (coreArmBody src arm))))
 
 -- The arm of a `case` that takes apart the constructor `p` is a pattern
@@ -1000,11 +1052,11 @@ fun matched src out cx (m : Meta) (x : String) p (fail : String) success =
          (match viewCoreLit src r.lit with
           | CoreLitView.LUnit _ -> success ()
           | CoreLitView.LBool b ->
-              if b.value then C.branch out m "u${show p}" var (C.gaveUp out m fail) (success ())
-              else C.branch out m "u${show p}" var (success ()) (C.gaveUp out m fail)
+              if b.value then C.branch out m "u${show p}" var (gaveUp out cx m fail) (success ())
+              else C.branch out m "u${show p}" var (success ()) (gaveUp out cx m fail)
           | _ ->
               C.prim out m "eq" [var, lowerLit src out cx r.lit] [
-                C.binding out m "u${show p}" "unit" (C.gaveUp out m fail),
+                C.binding out m "u${show p}" "unit" (gaveUp out cx m fail),
                 C.binding out m "u${show p}" "unit" (success ())
               ])
      | CorePatView.PTuple r ->
@@ -1024,7 +1076,7 @@ fun matched src out cx (m : Meta) (x : String) p (fail : String) success =
            var
            (C.caseOf out m [
               taken src out cx m p fail success,
-              C.arm out m "_" [] (C.gaveUp out m fail)
+              C.arm out m "_" [] (gaveUp out cx m fail)
             ])
      | CorePatView.PArray r ->
          let pairs = parts r.items in
@@ -1054,7 +1106,7 @@ fun matched src out cx (m : Meta) (x : String) p (fail : String) success =
                  len
                  "i64"
                  (C.prim out m "eq" [C.var out m len, C.int out m (V.len pairs)] [
-                    C.binding out m "u${show p}" "unit" (C.gaveUp out m fail),
+                    C.binding out m "u${show p}" "unit" (gaveUp out cx m fail),
                     C.binding out m "u${show p}" "unit" taken
                   ])]
      -- A record's pattern: each field it names read, and matched in turn.
@@ -1290,6 +1342,7 @@ fun lowered
         gtops = generics,
         locals = H.empty,
         recs = H.empty,
+        joins = H.empty,
         pkg,
         pkgs = packages,
         ext,

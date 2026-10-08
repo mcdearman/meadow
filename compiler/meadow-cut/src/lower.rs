@@ -729,7 +729,12 @@ impl Lower {
                 }
                 self.expected = None;
                 for c in conts {
-                    sel.push(self.reify(c, &mut sc, &mut steps)?);
+                    sel.push(self.reify_as(
+                        c,
+                        &mut sc,
+                        &mut steps,
+                        conts.len() == 1 && framing("call"),
+                    )?);
                 }
                 sel.push(sc.var(EV)?);
                 let params = self.distinct(&sel);
@@ -949,7 +954,7 @@ impl Lower {
         for a in args {
             xs.push(self.atom(a, sc, steps)?);
         }
-        let kc = self.reify(c, sc, steps)?;
+        let kc = self.reify_as(c, sc, steps, framing("perform"))?;
         // A program that handles nothing has nothing to search.
         if !self.handles {
             let Some((effect, name)) = native else {
@@ -1185,7 +1190,7 @@ impl Lower {
     /// `handle { clauses; return } in μ b. body ; c`.
     fn handle(&mut self, h: &crate::Handle, sc: &mut Scope, steps: &mut Vec<Step>) -> R<S> {
         let outer = sc.var(EV)?;
-        let kc = self.reify(&h.cont, sc, steps)?;
+        let kc = self.reify_as(&h.cont, sc, steps, framing("handle"))?;
         // Where the handler's value goes, which a resumption changes.
         let target = self.fresh(ax::Rep::Ref);
         sc.push(target);
@@ -1442,7 +1447,12 @@ impl Lower {
                     sel.push(self.atom(a, &mut sc, &mut steps)?);
                 }
                 for k in conts {
-                    sel.push(self.reify(k, &mut sc, &mut steps)?);
+                    sel.push(self.reify_as(
+                        k,
+                        &mut sc,
+                        &mut steps,
+                        conts.len() == 1 && framing("method"),
+                    )?);
                 }
                 sel.push(sc.var(EV)?);
                 let params = self.distinct(&sel);
@@ -1521,6 +1531,21 @@ impl Lower {
     /// `c` by a name: itself, or an object of one method made of it, which
     /// captures what it mentions.
     fn reify(&mut self, c: &Consumer, sc: &mut Scope, steps: &mut Vec<Step>) -> R<Name> {
+        self.reify_as(c, sc, steps, false)
+    }
+
+    /// `c` as a continuation by a name. One made for a call to return
+    /// through -- `frame` -- is entered once, by that call, and everything
+    /// pushed after it is dead by then: the back end keeps it on the thread's
+    /// frame stack and not the heap (`Program::frames`). One a `μ` names is
+    /// not: a branch may never reach it.
+    fn reify_as(
+        &mut self,
+        c: &Consumer,
+        sc: &mut Scope,
+        steps: &mut Vec<Step>,
+        frame: bool,
+    ) -> R<Name> {
         if matches!(c, Consumer::Var(_) | Consumer::Halt) {
             return self.named(c, sc);
         }
@@ -1542,6 +1567,11 @@ impl Lower {
         let body = self.give(x, c, &inner)?;
         let k = self.fresh(ax::Rep::Ref);
         self.out.continuations.insert(k);
+        // Off unless `MEADOW_CUT_FRAMES` is set: a program this lowers with
+        // frames runs on Glade and spins on Silo, for a reason not yet found.
+        if frame {
+            self.out.frames.insert(k);
+        }
         steps.push(Step::New(
             k,
             captures,
@@ -1968,6 +1998,15 @@ fn ctor_name(symbol: &str) -> String {
     } else {
         format!("{package}.{path}")
     }
+}
+
+/// Whether continuations of `kind` -- a `call`'s, a `method`'s -- are frames:
+/// `MEADOW_CUT_FRAMES` names the kinds, or `all`. Off unless it is set: a
+/// program lowered with frames does not yet run everywhere.
+fn framing(kind: &str) -> bool {
+    std::env::var("MEADOW_CUT_FRAMES")
+        .map(|v| v == "all" || v == "1" || v.split(',').any(|k| k == kind))
+        .unwrap_or(false)
 }
 
 /// The definition that answers a value: its symbol, by the value's.

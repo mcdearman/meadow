@@ -607,6 +607,12 @@ def #0 (v1: ptr)  (entry)
 A block's parameters are the whole environment at that point, not only what
 is new. Reading a dump is also reading the register assignment.
 
+A thread is started by `prim threadSpawn(desc(rep), f; k)`: the function to
+run, after the descriptor of what it answers. The task `k` is given is a
+pointer, so nothing else at the spawn says how the thread's answer is
+represented, and the machine that runs the thread has to be told. A spawn
+written without the descriptor is of a thread whose answer nobody reads.
+
 ## Evidence
 
 Effects lowered by evidence passing pass every function one hidden argument:

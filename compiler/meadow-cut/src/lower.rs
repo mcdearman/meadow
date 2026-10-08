@@ -68,7 +68,10 @@ use meadow_axcut::{Block, Extern, Label, Name, Statement as S, Tag, VarId};
 use meadow_intern::InternedString;
 use meadow_rt::{Lit, Prim, desc};
 
-use crate::{Answer, Arm, Consumer, Pattern, Producer, Program, Rep, Statement, Symbol};
+use crate::{
+    Answer, Arm, Binder, Clause, Consumer, Def, Handle, Method, Pattern, Producer, Program, Rep,
+    Statement, Symbol,
+};
 
 type R<T> = Result<T, String>;
 
@@ -168,6 +171,9 @@ impl Lowered {
 }
 
 fn lowered(p: &Program, prints: bool) -> R<Lowered> {
+    let lazy = lazily(p);
+    let whole = p;
+    let p = &lazy;
     let mut l = Lower {
         map: Map::default(),
         current: None,
@@ -188,9 +194,15 @@ fn lowered(p: &Program, prints: bool) -> R<Lowered> {
         methods: Vec::new(),
     };
     l.declare(p)?;
+    for (i, v) in whole.vals.iter().enumerate() {
+        l.vals.insert(v.symbol.clone(), (i as i64, l.rep(&v.rep)?));
+    }
     for (i, d) in p.defs.iter().enumerate() {
-        l.current = Some(d.symbol.clone());
-        l.map.blocks.insert(Label(i as u32), d.symbol.clone());
+        // What makes a value is the value's, to whoever asks what a block
+        // or a name came from.
+        let of = forced(&d.symbol);
+        l.current = Some(of.clone());
+        l.map.blocks.insert(Label(i as u32), of);
         let mut sc = Scope::default();
         // Each parameter's name first: one may be represented as a variable
         // whose descriptor is a parameter after it.
@@ -754,11 +766,27 @@ impl Lower {
                 }
             }
             Statement::Prim(op, args, conts) => {
+                // A spawn says first how what its thread answers is
+                // represented -- `prim threadSpawn(desc(i64), f; k)` -- which
+                // the machine that runs the thread has to be told, and
+                // nothing else here says: a task is a pointer.
+                let (answers, args) = match (op.as_str(), &args[..]) {
+                    ("threadSpawn", [Producer::Desc(rep), rest @ ..]) => {
+                        (Some(self.rep(rep)?), rest)
+                    }
+                    _ => (None, &args[..]),
+                };
                 let mut names = Vec::new();
                 for a in args {
                     names.push(self.atom(a, &mut sc, &mut steps)?);
                 }
-                self.prim(op, names, conts, &sc)?
+                let lowered = self.prim(op, names, conts, &sc)?;
+                if let (Some(rep), S::Extern { blocks, .. }) = (answers, &lowered)
+                    && let Some(task) = blocks.first().and_then(|b| b.params.first())
+                {
+                    self.out.threads.insert(*task, rep);
+                }
+                lowered
             }
             Statement::Error(msg) => S::Error(Box::leak(msg.clone().into_boxed_str())),
             Statement::Perform(op, args, c) => self.perform(op, args, c, &mut sc, &mut steps)?,
@@ -1530,19 +1558,27 @@ impl Lower {
                 Lit::Str(InternedString::from(s.as_str())),
                 ax::Rep::Ref,
             ),
+            // A value is asked of the definition that makes it the first
+            // time this thread wants it (`lazily`): what follows is what it
+            // is given to.
             Producer::Val(v) => {
-                let Some(&(place, rep)) = self.vals.get(v) else {
+                let Some(&(_, rep)) = self.vals.get(v) else {
                     return Err(format!("`{v}` is not a value of this program"));
                 };
-                let at = lit(self, sc, steps, Lit::Int(place), ax::Rep::Int);
-                let n = self.fresh(rep);
-                sc.push(n);
-                steps.push(Step::Extern(
-                    Extern::Prim(Prim::GlobalGet),
-                    vec![at],
-                    sc.env.clone(),
-                ));
-                n
+                let k = format!("#v{}", self.next);
+                self.expected = Some(rep);
+                self.atom(
+                    &Producer::Mu(
+                        k.clone(),
+                        Box::new(Statement::Call(
+                            forcing(v),
+                            Vec::new(),
+                            vec![Consumer::Var(k)],
+                        )),
+                    ),
+                    sc,
+                    steps,
+                )?
             }
             Producer::Con(k, args) => {
                 let name = k.to_string();
@@ -1910,5 +1946,179 @@ fn ctor_name(symbol: &str) -> String {
         path.to_string()
     } else {
         format!("{package}.{path}")
+    }
+}
+
+/// The definition that answers a value: its symbol, by the value's.
+fn forcing(value: &Symbol) -> Symbol {
+    value.child("#force")
+}
+
+/// The value a definition answers, if it is one `forcing` named; itself
+/// otherwise.
+fn forced(def: &Symbol) -> Symbol {
+    match def.path.split_last() {
+        Some((last, rest)) if last == "#force" => Symbol {
+            path: rest.to_vec(),
+            ..def.clone()
+        },
+        _ => def.clone(),
+    }
+}
+
+/// `p` with each of its values a definition that makes it when it is first
+/// wanted, and keeps it: a thread has globals of its own, so one that was
+/// made when the program started is made for the thread that started it and
+/// no other. What `meadow_core::globals` does to a program of core. The
+/// definition asks whether the value's place is filled, answers what is
+/// there if it is, and otherwise runs the value's statement -- `halt` in it
+/// the continuation that fills the place and answers.
+fn lazily(p: &Program) -> Program {
+    let mut out = p.clone();
+    out.vals.clear();
+    let unit = |name: &str| Binder {
+        name: name.to_string(),
+        rep: Rep::Unit,
+    };
+    for (i, v) in p.vals.iter().enumerate() {
+        let place = || Producer::Int(i as i64);
+        let k = || Consumer::Var("#k".to_string());
+        let made = Binder {
+            name: "#made".to_string(),
+            rep: v.rep.clone(),
+        };
+        let kept = Statement::Prim(
+            "globalSet".to_string(),
+            vec![place(), Producer::Var(made.name.clone())],
+            vec![Consumer::MuTilde(
+                unit("#set"),
+                Box::new(Statement::Cut(Producer::Var(made.name.clone()), k())),
+            )],
+        );
+        let make = Statement::Cut(
+            Producer::Mu("#halt".to_string(), Box::new(rehalted(&v.body))),
+            Consumer::MuTilde(made.clone(), Box::new(kept)),
+        );
+        let have = Statement::Prim(
+            "globalGet".to_string(),
+            vec![place()],
+            vec![Consumer::MuTilde(
+                Binder {
+                    name: "#had".to_string(),
+                    rep: v.rep.clone(),
+                },
+                Box::new(Statement::Cut(Producer::Var("#had".to_string()), k())),
+            )],
+        );
+        let body = Statement::Prim(
+            "globalReady".to_string(),
+            vec![place()],
+            vec![Consumer::MuTilde(
+                Binder {
+                    name: "#ready".to_string(),
+                    rep: Rep::Bool,
+                },
+                Box::new(Statement::Prim(
+                    "if".to_string(),
+                    vec![Producer::Var("#ready".to_string())],
+                    vec![
+                        // `prim if` takes what to do when it is not, first.
+                        Consumer::MuTilde(unit("#no"), Box::new(make)),
+                        Consumer::MuTilde(unit("#yes"), Box::new(have)),
+                    ],
+                )),
+            )],
+        );
+        out.defs.push(Def {
+            symbol: forcing(&v.symbol),
+            rep_vars: Vec::new(),
+            effect_vars: Vec::new(),
+            params: Vec::new(),
+            conts: vec!["#k".to_string()],
+            body,
+        });
+    }
+    out
+}
+
+/// `s` with `halt` the continuation `#halt`.
+fn rehalted(s: &Statement) -> Statement {
+    fn c(x: &Consumer) -> Consumer {
+        match x {
+            Consumer::Halt => Consumer::Var("#halt".to_string()),
+            Consumer::Var(_) => x.clone(),
+            Consumer::MuTilde(b, s) => Consumer::MuTilde(b.clone(), Box::new(rehalted(s))),
+            Consumer::Case(arms) => Consumer::Case(
+                arms.iter()
+                    .map(|a| Arm {
+                        pattern: a.pattern.clone(),
+                        fields: a.fields.clone(),
+                        body: rehalted(&a.body),
+                    })
+                    .collect(),
+            ),
+            Consumer::Method(m, ps, cs) => Consumer::Method(
+                m.clone(),
+                ps.iter().map(p).collect(),
+                cs.iter().map(c).collect(),
+            ),
+        }
+    }
+    fn p(x: &Producer) -> Producer {
+        match x {
+            Producer::Con(k, xs) => Producer::Con(k.clone(), xs.iter().map(p).collect()),
+            Producer::Tuple(xs) => Producer::Tuple(xs.iter().map(p).collect()),
+            Producer::Array(xs) => Producer::Array(xs.iter().map(p).collect()),
+            Producer::Record(fs) => {
+                Producer::Record(fs.iter().map(|(l, x)| (l.clone(), p(x))).collect())
+            }
+            Producer::Mu(k, s) => Producer::Mu(k.clone(), Box::new(rehalted(s))),
+            Producer::Cocase(ms) => Producer::Cocase(
+                ms.iter()
+                    .map(|m| Method {
+                        name: m.name.clone(),
+                        params: m.params.clone(),
+                        conts: m.conts.clone(),
+                        body: rehalted(&m.body),
+                    })
+                    .collect(),
+            ),
+            _ => x.clone(),
+        }
+    }
+    match s {
+        Statement::Cut(x, k) => Statement::Cut(p(x), c(k)),
+        Statement::Call(f, xs, ks) => Statement::Call(
+            f.clone(),
+            xs.iter().map(p).collect(),
+            ks.iter().map(c).collect(),
+        ),
+        Statement::Prim(op, xs, ks) => Statement::Prim(
+            op.clone(),
+            xs.iter().map(p).collect(),
+            ks.iter().map(c).collect(),
+        ),
+        Statement::Let(b, x, rest) => Statement::Let(b.clone(), p(x), Box::new(rehalted(rest))),
+        Statement::Handle(h) => Statement::Handle(Box::new(Handle {
+            clauses: h
+                .clauses
+                .iter()
+                .map(|cl| Clause {
+                    op: cl.op.clone(),
+                    params: cl.params.clone(),
+                    resumption: cl.resumption.clone(),
+                    cont: cl.cont.clone(),
+                    body: rehalted(&cl.body),
+                })
+                .collect(),
+            ret: (h.ret.0.clone(), h.ret.1.clone(), rehalted(&h.ret.2)),
+            body_cont: h.body_cont.clone(),
+            body: rehalted(&h.body),
+            cont: c(&h.cont),
+        })),
+        Statement::Perform(op, xs, k) => {
+            Statement::Perform(op.clone(), xs.iter().map(p).collect(), c(k))
+        }
+        Statement::Error(_) => s.clone(),
     }
 }

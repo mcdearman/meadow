@@ -39,6 +39,13 @@ beyond the last release is under _Unreleased_.
 
 ### Added
 
+- `meadow cut FILE -- ARGS` gives the program what follows `--` as its
+  arguments.
+- A program of Cut may spawn threads: `prim threadSpawn(desc(rep), f; k)`
+  says how what the thread answers is represented. And a top-level `val` is
+  made the first time a thread reads it, not when the program starts, so a
+  thread other than the first has it too.
+
 - The language server answers `meadow/ir`: the definition at a position as
   core, Cut or AxCut, with what each part of the text is and where the name
   at the position is in it. The VS Code extension's **Meadow: Show IR** shows

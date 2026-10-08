@@ -416,6 +416,13 @@ pass! {
        let root = newCoreFile out nowhere pkg 0 defs [] [] [] named in
        CoreProgram (freezeCore out) root)
 
+-- What a unit that keeps nothing keeps.
+@pub fun nothing () : CoreProgram =
+  runSt (\() ->
+    let out = newCoreBuilder () in
+    let root = newCoreFile out nowhere "" 0 [] [] [] [] [] in
+    CoreProgram (freezeCore out) root)
+
 -- The functions `their` unit keeps for this one to copy, each by the binder
 -- its symbol has here: only one the unit names is ever called by it.
 fun imported (binders : HashMap String Int) (their : CoreProgram) (h : HashMap Int Body)

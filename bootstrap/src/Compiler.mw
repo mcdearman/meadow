@@ -309,7 +309,10 @@ fun checkedOf
                        (V.map (\(l : Linked) -> l.summary) linked)
                        (V.concatMap (\(l : Linked) -> l.arities) linked)
                  in
-                 let core = if inlines then Inline.program direct [] else direct in
+                 let core =
+                   if inlines then Inline.program direct (V.map (\(l : Linked) -> l.bodies) linked)
+                   else direct
+                 in
                  let ownDatas =
                    V.concatMap
                      (\d ->
@@ -348,7 +351,8 @@ fun checkedOf
                                      V.filter (\(x : Entry Int) -> x.key == al.value) l.arities)
                                    linked)
                                aliases),
-                        summary = Dictionaries.summary plain
+                        summary = Dictionaries.summary plain,
+                        bodies = if inlines then Inline.exports core else Inline.nothing ()
                       },
                       Seq.declarations
                         core
@@ -378,7 +382,8 @@ fun emptyLinked () : Linked =
     defaults = [],
     aliases = [],
     arities = [],
-    summary = emptySummary ()
+    summary = emptySummary (),
+    bodies = Inline.nothing ()
   }
 
 -- A unit's declarations of Cut, where its compiler writes them: its object.

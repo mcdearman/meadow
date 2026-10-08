@@ -744,7 +744,12 @@ fun instanced src out cx (m : Meta) func (tys : [Type]) =
              C.invoke out m (topSymbol cx.pkg r.id) (descsOf out cx m tys) [cx.k]
            else
              (match H.lookup r.id cx.ext with
-              | Just (symbol, _) -> C.invoke out m symbol (descsOf out cx m tys) [cx.k]
+              -- One that is generic in no type is asked for at none: a
+              -- method's selector is written at its trait's types, and is
+              -- one function for them all.
+              | Just (symbol, n) ->
+                  if n == 0 then lowerTerm src out cx func
+                  else C.invoke out m symbol (descsOf out cx m tys) [cx.k]
               | None -> lowerTerm src out cx func))
   | _ -> lowerTerm src out cx func
 

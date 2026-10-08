@@ -863,7 +863,10 @@ def nowhere : Meta = spanMeta 0 0
   -- another unit's: its symbol, and how many they are.
   arities : [Entry Int],
   -- What `Dictionaries` needs to know of its definitions.
-  summary : Summary
+  summary : Summary,
+  -- The functions it keeps for a unit that imports it to copy to its calls
+  -- (`Inline.exports`).
+  bodies : CoreProgram
 }
 
 -- A declared type: its name in core, how many types it takes, and each

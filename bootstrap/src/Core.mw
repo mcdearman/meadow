@@ -15,6 +15,7 @@
 
 use Scythe (lexer!)
 use Lingua (syntax!, lang!, pass!)
+use Std.Macro (toDatum)
 use MeadowBoot.Types
 use MeadowBoot.Types.Type.*
 use Std.Collections.Vector as V
@@ -217,7 +218,7 @@ type Ty = Type
 -- What `Elab` makes of a program, and what is lowered to Cut, which needs to
 -- know how each value is represented.
 @pub(pkg) lang! {
-  pub Core extends Erased
+  pub Core extends Erased with reflect
   DataCtor + DataCtor { name : String, fields : [Ty] }
   Data + Data { name : String, arity : Int, ctors : [DataCtor] }
   Op + Op { name : String, arg : Ty, result : Ty }
@@ -243,6 +244,17 @@ type Ty = Type
   Term + TyApp { func : Term, tys : [Ty] }
   Term * { ty : Ty }
   Pat * { ty : Ty }
+}
+
+-- A program is kept in a unit's interface, which is compared and printed:
+-- two are the same when what is written of them is, and one prints as
+-- nothing much.
+impl PartialEq CoreProgram {
+  fun (==) a b = toDatum a == toDatum b
+}
+
+impl Debug CoreProgram {
+  fun debug p = "<core>"
 }
 
 -- The types taken off: what the CEK machine runs.

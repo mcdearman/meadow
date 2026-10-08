@@ -15,6 +15,13 @@ beyond the last release is under _Unreleased_.
 
 ### Breaking
 
+- The lockfile is `Meadow.lock`, spelt as `Meadow.toml` is. One named
+  `meadow.lock` is still read, and is renamed the first time the lock is
+  written; commit the rename.
+
+- `[a..b]` stops before `b`, as Rust's `a..b` does, and `[a..=b]` includes it.
+  Both included `b` before: the parser read the two alike. Write `..=` where
+  a range is to reach its end -- `[1..=10]` for one to ten.
 - An unstable feature is asked for in the source, not in `Meadow.toml`:
   `@!feature(ffi)` at the top of the package's root module, as Rust's
   `#![feature(…)]` is at the top of a crate's. `features = ["ffi"]` under
@@ -93,6 +100,13 @@ St s }`), and `! Reading r` where a method's type says what it performs. A
 
 ### Fixed
 
+- A build keeps the release its lock names when a newer one has been tagged
+  since. On a machine that had not fetched the dependency yet, a dependency
+  taken by `version` was resolved to the newest release before the lock was
+  looked at, and the lock's commit was then refused as "a tag that moves" --
+  so tagging a release broke every lock written before it, until
+  `meadow update`.
+
 - Two builds fetching the same dependency at once no longer fail with
   "could not put … in place": each unpacks into a directory of its own, and
   the one that finishes second finds the checkout there. On Windows the two
@@ -152,6 +166,9 @@ published once, and `master` is the nightly channel.
 
 ### Breaking
 
+- `[a..b]` stops before `b`, as Rust's `a..b` does, and `[a..=b]` includes it.
+  Both included `b` before: the parser read the two alike. Write `..=` where
+  a range is to reach its end -- `[1..=10]` for one to ten.
 - `Std.Ffi` is unstable. A package that uses it says so in its `Meadow.toml`,
   `features = ["ffi"]`, and a stable `meadow` refuses it; a nightly accepts it.
 - `Std.Ffi.Arg`'s constructors are `Arg.Int`, `Arg.Float`, `Arg.String` and

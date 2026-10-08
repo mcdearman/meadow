@@ -32,6 +32,7 @@ use MeadowBoot.Compiler (
   unitDatabase, buildUnits, givenUnits, setCompilerSource, compilerGrouped, compilerRenamed,
   compilerInferred, compilerCore
 )
+use Lingua.Make (linkDir)
 use Std.Path as Path
 use Lingua.Red as R
 use Lingua.Lang (metaStart, metaEnd)
@@ -201,13 +202,13 @@ fun cutFiles (files : [String]) =
 
 fun cutFile (path : String) =
   let file = absolute path in
-  let core =
+  let program =
     M.andThen
-      (\r -> M.andThen (\u -> compilerCore (unitDatabase u) 0) (Res.toMaybe (givenUnits r r)))
+      (\r -> Res.toMaybe (readToString (Path.join (linkDir r) "program.cut")))
       (packageOf file)
-  in match core with
+  in match program with
      | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in True)
-     | Just p -> (let u = writeOutput "== ${path}\n${Seq.written p}" in True)
+     | Just text -> (let u = writeOutput "== ${path}\n${text}" in True)
 
 fun runFile (path : String) =
   let file = absolute path in

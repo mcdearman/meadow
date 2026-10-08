@@ -23,7 +23,7 @@ struct Cli {
     /// else is an error saying what would have had to be fetched.
     #[arg(long, global = true)]
     offline: bool,
-    /// Refuse anything that would change `meadow.lock`. What CI wants: a build
+    /// Refuse anything that would change `Meadow.lock`. What CI wants: a build
     /// that quietly re-pins a dependency is a build of something nobody
     /// reviewed.
     #[arg(long, global = true)]
@@ -294,7 +294,7 @@ enum Cmd {
     /// Remove what a build wrote: the package's `target` directory, with the
     /// images, executables and incremental cache in it.
     ///
-    /// Sources, `Meadow.toml` and `meadow.lock` are not touched, and neither is
+    /// Sources, `Meadow.toml` and `Meadow.lock` are not touched, and neither is
     /// anything fetched into the dependency cache, which other packages share.
     Clean {
         /// The package, or a workspace, whose `target` to remove.
@@ -308,7 +308,7 @@ enum Cmd {
         dry_run: bool,
     },
     /// Bring a package's dependencies forward to what their branches and tags
-    /// now name, rewriting `meadow.lock`.
+    /// now name, rewriting `Meadow.lock`.
     ///
     /// The manifest is not touched: a dependency keeps the branch or tag it
     /// follows. Updating the toolchain is `meadow self update`.
@@ -1065,7 +1065,7 @@ fn command() {
             eprintln!("is not installed yet, re-run the installer:");
             eprintln!();
             eprintln!(
-                "  curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh | sh"
+                "  curl -fsSL https://raw.githubusercontent.com/meadow-lang/meadow/master/scripts/meadowup-init.sh | sh"
             );
             std::process::exit(1);
         }

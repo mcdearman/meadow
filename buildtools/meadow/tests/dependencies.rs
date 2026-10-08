@@ -168,7 +168,7 @@ fn a_locked_build_refuses_a_dependency_that_is_not_pinned() {
     resolver.locked = true;
     let err = PackageGraph::build_all_with(&[&app], &mut resolver)
         .expect_err("`--locked` with nothing pinned");
-    assert!(err.msg.contains("meadow.lock"), "{}", err.msg);
+    assert!(err.msg.contains("Meadow.lock"), "{}", err.msg);
 }
 
 #[test]
@@ -247,7 +247,7 @@ fn a_path_dependency_is_not_pinned() {
     let out = build_in(&app, "paths", |_| {});
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     assert!(
-        !app.join("meadow.lock").exists(),
+        !app.join("Meadow.lock").exists(),
         "a path dependency should not write a lockfile"
     );
 }
@@ -456,6 +456,59 @@ fn a_version_takes_the_newest_release_that_does_not_break_it() {
     assert!(out.diagnostics.is_empty(), "{:?}", out.diagnostics);
     // 0.1.1, not 0.2.0: below 1.0 the minor is the breaking digit.
     assert_eq!(ran(out), "\"0.1.1\"");
+}
+
+/// A release tagged after a lock was written is not a tag that moved: on a
+/// machine that has fetched nothing, the lock's release is still what is
+/// built against, until `meadow update` takes the newer one.
+#[test]
+fn a_release_tagged_since_the_lock_was_written_leaves_the_lock_standing() {
+    let Some(repo) = released_repo("rel-since", &["0.1.0"]) else {
+        return;
+    };
+    let app = app_wanting("rel-since-app", &repo, "0.1.0");
+    let first = build_in(&app, "rel-since-first", |_| {});
+    assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+    assert_eq!(ran(first), "\"0.1.0\"");
+
+    // The library releases again.
+    let d = repo.display().to_string();
+    std::fs::write(
+        repo.join("src/Lib.mw"),
+        "@pub def label = \"0.1.1\"\n\n@pub data Tag = Tag Int\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("Meadow.toml"),
+        "[package]\nname = \"Widget\"\nversion = \"0.1.1\"\n",
+    )
+    .unwrap();
+    assert!(
+        git(&["-C", &d, "add", "-A"])
+            && git(&[
+                "-C",
+                &d,
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "--quiet",
+                "-m",
+                "0.1.1",
+            ])
+            && git(&["-C", &d, "tag", "v0.1.1"]),
+        "a second release"
+    );
+
+    // Another machine: the same lock, and a cache with nothing in it.
+    let again = build_in(&app, "rel-since-second", |_| {});
+    assert!(again.diagnostics.is_empty(), "{:?}", again.diagnostics);
+    assert_eq!(
+        ran(again),
+        "\"0.1.0\"",
+        "what the lock pins, not the newest"
+    );
 }
 
 #[test]

@@ -124,6 +124,15 @@ use Std.Macro (Reflect)
   value : a
 }
 
+-- The binder the first of a unit's own `impl`s' dictionaries has: below
+-- every other binder, and below those of the units it knows the types of,
+-- so that a dictionary's binder is its own in a whole program.
+@pub fun firstDictOf (types : [TypeEnv]) : Int =
+  V.foldl
+    (\m (t : TypeEnv) -> V.foldl (\n (e : Entry ImplDef) -> min n (e.value.dict - 1)) m t.impls)
+    (0 - 2)
+    types
+
 -- An associated type's trait, and its place among the trait's; `effect`
 -- for an associated effect, which is a row where the rest are types.
 @derive(Debug, PartialEq, Reflect)
@@ -163,9 +172,26 @@ use Meaning.*
   level : Int
 }
 
--- How a wanted trait was answered: by the binding's own `where`, by an
--- `impl`, or not at all.
-@pub data Sol = ByGiven | ByImpl | Failed
+-- How a wanted trait was answered: by the binding's own `where` -- its
+-- place there, and the required traits to go through from it -- by an
+-- `impl`, its dictionary applied to what its own `where` wanted in turn, or
+-- not at all.
+@pub data Sol
+  = ByGiven Int [String]
+  | ByImpl Int [Type] [Int]
+  | Failed
+
+-- How a wanted trait is answered, as elaboration builds it: the enclosing
+-- function's own dictionary parameter, by its place; a required trait's
+-- dictionary out of one that requires it, by the field's label; an `impl`'s
+-- dictionary, by its binder, at the types its own variables are and applied
+-- to the dictionaries its `where` asks for; or nothing, reported already.
+@derive(Debug, PartialEq, Reflect)
+@pub data Evidence
+  = Given Int
+  | Super Evidence String
+  | Impl Int [Type] [Evidence]
+  | Missing
 
 use Sol.*
 
@@ -218,6 +244,26 @@ use Sol.*
   overloads : HashMap String [Meaning],
   pending : StRef s [Pending],
   subsumptions : StRef s [(Type, Type)],
+  -- What each mention of a name with a `where` wanted, by where it is: the
+  -- module and the node, as an overloaded name's meanings are kept.
+  atNode : StRef s (HashMap String [Int]),
+  -- The types a mention of a generic name is at, one for each variable over
+  -- types its scheme has: by where the mention is.
+  instAt : StRef s (HashMap String [Type]),
+  -- The wanted traits not answered yet, in the order they were wanted:
+  -- what answering looks through, where all of them is every one the unit
+  -- ever had.
+  unanswered : StRef s [Int],
+  -- Which of its meanings a name with several was found to have: by where
+  -- it is written, the meaning's place among them.
+  chosenAt : StRef s (HashMap String Int),
+  -- Mentions of a member of the group being inferred from inside it, which
+  -- are monomorphic and so wanted nothing: where, the member, and the
+  -- member mentioning it.
+  mentions : StRef s [(String, Int, Maybe Int)],
+  -- What those mentions are handed: the mentioning function's own
+  -- dictionaries.
+  fixed : StRef s (HashMap String [Evidence]),
   -- The variables that stand for a trait's associated effect at types whose
   -- `impl` is not found yet: what a call of a method of it performs.
   assocEffectVars : StRef s [Int],
@@ -327,8 +373,7 @@ fun describe (i : Inf s) (err : UnifyError) : String ! { St s | e } =
                 (match quantifyEach i p.tys q1 level classes with
                  | (tys, q2) ->
                      (match quantifyEach i p.assocs q2 level classes with
-                      | (assocs, q3) ->
-                          (V.pushBack ps (Pred { tr = p.tr, tys = tys, assocs = assocs }), q3))))
+                      | (assocs, q3) -> (V.pushBack ps (Pred { tr = p.tr, tys, assocs }), q3))))
           ([], q)
           preds
       in match scrutinee with

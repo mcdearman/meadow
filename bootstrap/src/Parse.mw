@@ -142,7 +142,7 @@ type Out = Int -> [String]
 
 fun nameOf (t : Syn) : Name = Name { text = R.text t, at = spanOf t }
 
-fun named (text : String) (at : Meta) : Name = Name { text = text, at = at }
+fun named (text : String) (at : Meta) : Name = Name { text, at }
 
 -- The first token under `s`, however deep, as a name.
 fun firstName (s : Syn) : Name =
@@ -2438,8 +2438,8 @@ fun interp (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
 fun braceE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
   let items = childrenOf NodeBraceItem s in
   let e = \k x -> exprIn c hs k x None in
-  match M.andThen (childOf NodeUpdFields) (childOf NodeBraceTail s) with
-  | Just u ->
+  match M.andThen updated (childOf NodeBraceTail s) with
+  | Just fields ->
       node
         d
         "Update"
@@ -2453,11 +2453,15 @@ fun braceE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
               "fields"
               (each
                  (\k f ->
-                   under k "FieldE" [
-                     ident (k + 1) (nameOf (must TokenLowerIdent f)),
-                     e (k + 1) (must NodeExpr f)
-                   ])
-                 (childrenOf NodeUpdField u))))
+                   (let n = nameOf (must TokenLowerIdent f) in
+                    under k "FieldE" [
+                      ident (k + 1) n,
+                      (match (childOf NodeExpr f, childOf NodeUpdValue f) with
+                       | (Just x, _) -> e (k + 1) x
+                       | (_, Just v) -> e (k + 1) (must NodeExpr v)
+                       | _ -> node (k + 1) "Var" n.at (ident (k + 2) n))
+                    ]))
+                 fields)))
   | None ->
       let fs =
         each
@@ -2476,6 +2480,15 @@ fun braceE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
           (\t -> M.map (\te -> \k -> e k (must NodeExpr te)) (childOf NodeTailExpr t))
           (childOf NodeBraceTail s)
       in node d "RecordE" m (V.append (many (d + 1) "fields" fs) (opt (d + 1) "base" base))
+
+-- The fields of an update, in order, if what follows a record's `|` is
+-- one: the first -- given a value, or a name alone with more after it --
+-- and the rest.
+fun updated (t : Syn) : Maybe [Syn] =
+  match (childOf NodeUpdFields t, childOf NodeUpdBares t) with
+  | (Just u, _) -> Just (V.pushFront (childrenOf NodeUpdField u) (must NodeUpdSet u))
+  | (_, Just u) -> Just (V.pushFront (childrenOf NodeUpdField u) (must NodeUpdBare u))
+  | _ -> None
 
 -- `[lo .. hi]`, `[a; b]`, `[;]`, `[a, b]`, `[]`.
 fun brackE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
@@ -2503,19 +2516,21 @@ fun brackE (c : Cx) (hs : [Int]) (d : Int) (s : Syn) (m : Meta) : [String] =
                    let hm = exprSpan c hi in
                    let hi1 =
                      \k ->
-                       node
-                         k
-                         "Infix"
-                         m
-                         (V.append
-                            (exprIn c hs (k + 1) hi None)
-                            (line
-                               (k + 1)
-                               "rest 1"
-                               (under (k + 2) "Op" [
-                                  ident (k + 3) (named "+" hm),
-                                  node (k + 3) "Lit" hm (leaf (k + 4) "Int 1")
-                                ])))
+                       if not (tokenIs TokenDoublePeriodEq r) then exprIn c hs k hi None
+                       else
+                         node
+                           k
+                           "Infix"
+                           m
+                           (V.append
+                              (exprIn c hs (k + 1) hi None)
+                              (line
+                                 (k + 1)
+                                 "rest 1"
+                                 (under (k + 2) "Op" [
+                                    ident (k + 3) (named "+" hm),
+                                    node (k + 3) "Lit" hm (leaf (k + 4) "Int 1")
+                                  ])))
                    in node
                         d
                         "App"

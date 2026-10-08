@@ -1,6 +1,6 @@
 # Meadow for VS Code
 
-Language support for [Meadow](https://github.com/mcdearman/meadow).
+Language support for [Meadow](https://github.com/meadow-lang/meadow).
 
 - **Syntax highlighting** — a TextMate grammar, plus semantic tokens from the
   compiler's own lexer once the server is running (which is what tells a type

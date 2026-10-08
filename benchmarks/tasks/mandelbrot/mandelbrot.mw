@@ -34,4 +34,4 @@ fun main () =
     (V.foldl
       (\a b -> a + b)
       0
-      (Thread.parMap (\w -> band w 0) [0..workers - 1]))
+      (Thread.parMap (\w -> band w 0) [0..workers]))

@@ -675,23 +675,46 @@ impl Resolver {
         // A requirement is not a reference until it is decided which release
         // meets it -- here, and once for everything in the build that can
         // share the release.
-        let resolved;
-        let mut resolved_version = None;
-        let reference = match reference {
-            GitRef::Version(req) => {
-                let (tag, version) = self.release_for(&dep.name, url, req)?;
-                resolved_version = Some(version.to_string());
-                resolved = GitRef::Tag(tag);
-                &resolved
-            }
-            other => other,
-        };
         let source = crate::lock::source_id(&dep.source).expect("a git source has an id");
         // Updating means ignoring what was pinned, so that the reference is
         // looked at afresh. Naming dependencies narrows that to those: the
         // rest keep the commits they had, which is the point of updating one
         // thing rather than everything.
         let refresh = self.update && (self.only.is_empty() || self.only.contains(&dep.name));
+        let resolved;
+        let mut resolved_version = None;
+        let reference = match reference {
+            GitRef::Version(req) => {
+                // The release the lock names is the release, while it still
+                // meets the requirement: one tagged since is taken by
+                // `meadow update`, not by a build on a machine that has not
+                // fetched this yet -- where the newest release's commit would
+                // otherwise be held against the one pinned, as a tag that
+                // moved.
+                let locked = if refresh {
+                    None
+                } else {
+                    self.lock
+                        .find(&dep.name, &source)
+                        .and_then(|l| l.version.as_deref())
+                        .and_then(crate::semver::Version::parse)
+                        .filter(|v| req.allows(v))
+                };
+                let (tag, version) = match locked {
+                    Some(version) => {
+                        self.releases
+                            .entry((url.to_string(), req.least.breaking()))
+                            .or_insert_with(|| version.clone());
+                        (self.tag_of(url, &version), version)
+                    }
+                    None => self.release_for(&dep.name, url, req)?,
+                };
+                resolved_version = Some(version.to_string());
+                resolved = GitRef::Tag(tag);
+                &resolved
+            }
+            other => other,
+        };
         let pinned = if refresh {
             None
         } else {

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs Meadow on macOS, Linux and Android (in Termux), from a release.
 #
-#   curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/meadow-lang/meadow/master/scripts/meadowup-init.sh | sh
 #
 # All this does is download `meadowup` for this machine and run
 # `meadowup install`. meadowup does the rest: it copies itself into
@@ -20,7 +20,7 @@
 
 set -eu
 
-REPO="mcdearman/meadow"
+REPO="meadow-lang/meadow"
 VERSION="latest"
 PASS_THROUGH=""
 

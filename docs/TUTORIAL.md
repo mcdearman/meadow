@@ -33,11 +33,11 @@ repository.
 On macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh | sh
+curl -fsSL https://raw.githubusercontent.com/meadow-lang/meadow/master/scripts/meadowup-init.sh | sh
 ```
 
 On Windows, download `meadowup-x86_64.exe` from the
-[releases page](https://github.com/mcdearman/meadow/releases/latest) and run it.
+[releases page](https://github.com/meadow-lang/meadow/releases/latest) and run it.
 
 Either way, `meadowup` installs itself and `meadow` into `~/.meadow/bin`, and
 `meadowup update` keeps them current. To build from a checkout instead, run
@@ -1723,22 +1723,23 @@ fun main () = println (len vec, List.length list, arrayLen arr)
 
 ### Ranges
 
-`[a..b]` builds an inclusive `Vector` range. Note that the prelude's `range`
-function is **half-open**, which is a genuine trap:
+`[a..b]` builds a `Vector` of the integers from `a` up to, not including,
+`b`, and `[a..=b]` includes `b` -- as Rust's ranges do. The prelude's `range`
+function is the half-open one:
 
 ```meadow
-fun main () = println ([1..5], range 1 5)
+fun main () = println ([1..5], [1..=5], range 1 5)
 ```
 
 ```
-([1, 2, 3, 4, 5], [1, 2, 3, 4])
+([1, 2, 3, 4], [1, 2, 3, 4, 5], [1, 2, 3, 4])
 ```
 
 ### Working with vectors
 
 ```meadow
 fun main () =
-  [1..10]
+  [1..=10]
   |> filter (\n -> n % 2 == 0)
   |> map (\n -> n * n)
   |> foldl (\acc n -> acc + n) 0
@@ -2458,12 +2459,12 @@ A package published as a git repository is depended on by URL, and `meadow add`
 writes the entry for you:
 
 ```sh
-meadow add mcdearman/meadow-unicode-width
+meadow add meadow-lang/UnicodeWidth
 ```
 
 ```toml
 [dependencies]
-UnicodeWidth = { git = "https://github.com/mcdearman/meadow-unicode-width", version = "0.1.0" }
+UnicodeWidth = { git = "https://github.com/meadow-lang/UnicodeWidth", version = "0.1.0" }
 ```
 
 A package's **releases** are the tags that read as versions: `v1.2.0`, or
@@ -2480,12 +2481,12 @@ Below `1.0` the minor is the breaking digit, as Cargo reads it: a package still
 finding its shape changes it there. A pre-release (`1.0.0-rc1`) is only ever
 chosen by a requirement that asks for one.
 
-Which release a build actually used is in `meadow.lock`, with the commit:
+Which release a build actually used is in `Meadow.lock`, with the commit:
 
 ```toml
 [[package]]
 name = "UnicodeWidth"
-source = "git+https://github.com/mcdearman/meadow-unicode-width?version=0.1.0"
+source = "git+https://github.com/meadow-lang/UnicodeWidth?version=0.1.0"
 version = "0.1.4"
 rev = "fa95092300d547891f5e1ecbd100b7e2438e1058"
 ```
@@ -4408,7 +4409,7 @@ a worked example.
   accumulating digits.
 - `+` is for integers and `+.` for floats; two different integer types never mix
   without a conversion.
-- `[1..5]` is **inclusive**; `range 1 5` is **half-open**.
+- `[1..5]` is **half-open**, as `range 1 5` is; `[1..=5]` includes the 5.
 - `@pub` is public, as in Rust; `@pub(pkg)` stops at the package, like `pub(crate)`.
 - A package that marks nothing has no visibility rules at all — mark one thing
   and every module has to say what it shares.

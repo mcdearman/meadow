@@ -1,4 +1,4 @@
-//! `meadow.lock` — exactly what a build used.
+//! `Meadow.lock` — exactly what a build used.
 //!
 //! A manifest says what is wanted: `{ git = "…", branch = "main" }`. That is not
 //! enough to build the same program twice, because a branch moves and a tag can
@@ -28,7 +28,21 @@ use crate::package::DepSource;
 use std::path::{Path, PathBuf};
 
 /// The file, as a name a manifest sits beside.
-pub const FILE: &str = "meadow.lock";
+pub const FILE: &str = "Meadow.lock";
+
+/// What it was called before it was spelt as `Meadow.toml` is: read where
+/// there is no [`FILE`], and renamed the first time the lock is written.
+pub const FORMER: &str = "meadow.lock";
+
+/// Whether `dir` holds a file spelt exactly `name`: what the directory
+/// lists, which is how it is spelt whatever the file system makes of case.
+fn named_exactly(dir: &Path, name: &str) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|e| e.file_name().to_str() == Some(name))
+    })
+}
 
 /// The format's version, so a later one can be recognised rather than
 /// misread. A lockfile from the future is regenerated, not guessed at.
@@ -60,10 +74,12 @@ impl Lock {
     /// Read the lockfile beside `dir`, or an empty one when there is none --
     /// which is what a first build sees.
     pub fn load(dir: &Path) -> Lock {
-        let Ok(text) = std::fs::read_to_string(dir.join(FILE)) else {
-            return Lock::default();
-        };
-        Lock::parse(&text)
+        let text = std::fs::read_to_string(dir.join(FILE))
+            .or_else(|_| std::fs::read_to_string(dir.join(FORMER)));
+        match text {
+            Ok(text) => Lock::parse(&text),
+            Err(_) => Lock::default(),
+        }
     }
 
     pub fn parse(text: &str) -> Lock {
@@ -172,6 +188,13 @@ impl Lock {
     /// untouched file keeps its timestamp, and nothing rebuilds for nothing.
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         let path: PathBuf = dir.join(FILE);
+        // One written under the former name is this file from now on. A
+        // rename, not a second file: where names differ only by case and the
+        // file system does not tell them apart, writing the new name would
+        // leave the old spelling on disk.
+        if named_exactly(dir, FORMER) {
+            std::fs::rename(dir.join(FORMER), &path)?;
+        }
         let text = self.render();
         if std::fs::read_to_string(&path).is_ok_and(|had| had == text) {
             return Ok(());
@@ -235,7 +258,7 @@ fn unquote(s: &str) -> String {
 /// A dependency that the lockfile pinned but the manifest no longer matches.
 pub fn changed(what: &str) -> String {
     format!(
-        "{what} is not what meadow.lock pins, and `--locked` was given.\n\
+        "{what} is not what Meadow.lock pins, and `--locked` was given.\n\
          Run `meadow update` to change the lockfile deliberately."
     )
 }
@@ -318,6 +341,37 @@ mod tests {
         lock.retain(&keep);
         assert_eq!(lock.packages.len(), 1);
         assert_eq!(lock.packages[0].name, "json");
+    }
+
+    /// A lock written under the name it had before is read, and is the
+    /// lock under its name now once it is written: one file, spelt as the
+    /// manifest is.
+    #[test]
+    fn a_lock_under_its_former_name_is_read_and_renamed() {
+        let dir = std::env::temp_dir().join(format!("meadow-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut lock = Lock::default();
+        lock.packages.push(Locked {
+            name: "Dep".to_string(),
+            source: "git+https://example.com/dep?branch=master".to_string(),
+            version: None,
+            rev: "a".repeat(40),
+            tree: "b".repeat(40),
+        });
+        std::fs::write(dir.join(FORMER), lock.render()).unwrap();
+        let read = Lock::load(&dir);
+        assert_eq!(read.packages, lock.packages, "read under its former name");
+        let mut changed = read;
+        changed.packages[0].rev = "c".repeat(40);
+        changed.save(&dir).unwrap();
+        assert!(named_exactly(&dir, FILE), "written under its name");
+        assert!(
+            !named_exactly(&dir, FORMER),
+            "and not left under the old one"
+        );
+        assert_eq!(Lock::load(&dir).packages, changed.packages);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

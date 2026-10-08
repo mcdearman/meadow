@@ -1,0 +1,71 @@
+# Written by meadow. Commit this file: it is what makes a build on
+# another machine the build you tested. Change it with `meadow update`.
+
+version = 1
+
+[[package]]
+name = "Anstyle"
+source = "git+https://github.com/meadow-lang/Bloom?version=0.2.0"
+version = "0.2.1"
+rev = "66c067ee073ae777336c5bb8f8bc2eac71e14a59"
+tree = "344ca224a72f8d22632104c46f238d134138b8d9"
+
+[[package]]
+name = "Doodle"
+source = "git+https://github.com/meadow-lang/Doodle?version=0.1.1"
+version = "0.1.2"
+rev = "35e4db741549d6233835d9d228a93dd42ded0adf"
+tree = "be2d69f5e1b318ff0f541e00c187c340aab09f23"
+
+[[package]]
+name = "Fuzzy"
+source = "git+https://github.com/meadow-lang/Fuzzy?version=0.1.0"
+version = "0.1.0"
+rev = "381f057669eac9b3ad80dd0a8e0ae2fc5874e636"
+tree = "809c6aa34620f8b8270c7811bb4b54e56719cbfe"
+
+[[package]]
+name = "LineEditor"
+source = "git+https://github.com/meadow-lang/LineEditor?version=0.2.0"
+version = "0.2.1"
+rev = "89225cde596daadc4138905fa17d0efccebc43ab"
+tree = "8f685240f4d853d8a0db9e04a30ca408d925d62c"
+
+[[package]]
+name = "Lingua"
+source = "git+https://github.com/meadow-lang/Lingua.git?branch=master"
+rev = "c5859a058bc22b165be548c8c53a452306d1141e"
+tree = "8701c8939d7fb29b4eac49502668a7ee94c86311"
+
+[[package]]
+name = "Nettle"
+source = "git+https://github.com/meadow-lang/Nettle.git?branch=master"
+rev = "dc1757850d72971e3ab077e1eb977645e18b15d8"
+tree = "90350e8de9be9b476a1d2c4734aed3dfb85deb60"
+
+[[package]]
+name = "Pretty"
+source = "git+https://github.com/meadow-lang/Pretty.git?version=0.2.0"
+version = "0.2.2"
+rev = "cf3d7de14a6008b2795544677cdd8e1ca03c6cd0"
+tree = "8649540453782376b76abaaf227e7ee931daa2f8"
+
+[[package]]
+name = "Scythe"
+source = "git+https://github.com/meadow-lang/Scythe.git?branch=master"
+rev = "ba1b2d2815d837a9749789e6c6145a565efd0729"
+tree = "bf8c0f80d3d41083a68e875ad77bd249ea0c77a5"
+
+[[package]]
+name = "UnicodeWidth"
+source = "git+https://github.com/meadow-lang/UnicodeWidth?version=0.2.0"
+version = "0.2.0"
+rev = "a4580b8010ecfba736c0f7d105a308db6972e60e"
+tree = "018d5c43b7b4c92e41fdcb4b91907ae7654bd335"
+
+[[package]]
+name = "UnicodeWidth"
+source = "git+https://github.com/meadow-lang/UnicodeWidth?version=0.2.0"
+version = "0.2.0"
+rev = "a4580b8010ecfba736c0f7d105a308db6972e60e"
+tree = "018d5c43b7b4c92e41fdcb4b91907ae7654bd335"

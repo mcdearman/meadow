@@ -696,3 +696,12 @@ def result = f 0
     );
     assert!(e.contains("refutable pattern in function parameter"), "{e}");
 }
+
+#[test]
+fn a_range_stops_before_its_end_unless_it_says_to_include_it() {
+    // As Rust's `..` and `..=`: the two were read alike once, both to the end.
+    is(
+        "def result = ([1..5], [1..=5], [3..3], [3..=3])",
+        "([1, 2, 3, 4], [1, 2, 3, 4, 5], [], [3])",
+    );
+}

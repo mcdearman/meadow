@@ -35,8 +35,8 @@ fun step at (s : Int) (n : Int) =
     in step at s2 (n - 1)
 
 fun main () =
-  let tvs = V.map (\i -> Stm.newTVarIO 1000) [0..accounts - 1] in
+  let tvs = V.map (\i -> Stm.newTVarIO 1000) [0..accounts] in
   let spare = Stm.newTVarIO 0 in
   let at = \i -> V.getOr spare tvs i in
-  let _ = Thread.parMap (\w -> step at (w + 1) moves) [0..workers - 1] in
+  let _ = Thread.parMap (\w -> step at (w + 1) moves) [0..workers] in
   println (Str.join "," (V.map (\tv -> show (Stm.readTVarIO tv)) tvs))

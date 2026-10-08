@@ -53,8 +53,8 @@ use MeadowBoot.Hygiene as Hy
       let bare =
         Lc {
           tokens = H.fromVec (V.map (\(l : Lexed) -> (l.from, l.token)) (lex input).tokens),
-          exps = exps,
-          fx = fx,
+          exps,
+          fx,
           macros = H.empty
         }
       in
@@ -142,7 +142,7 @@ record Nm = {
 
 fun nameOf (t : GTree) : Nm = Nm { text = R.text t, at = spanOf t }
 
-fun named (text : String) (at : Meta) : Nm = Nm { text = text, at = at }
+fun named (text : String) (at : Meta) : Nm = Nm { text, at }
 
 fun firstName (s : GTree) : Nm =
   match s with
@@ -162,112 +162,196 @@ fun lastName (s : GTree) : Nm =
 fun nm b (n : Nm) = newAstName b n.at n.text
 
 -- --- declarations ------------------------------------------------------------
+--
+-- A pass, `lowerDecl`, from a declaration of the grammar's to the tree's.
+-- What a declaration answers is not one node: a signature with clauses is
+-- two, a synonym several, and a macro call whatever it expanded to -- each
+-- under the attributes written on it, a signature keeping only `@cfg`. So
+-- the form under the attributes answers its nodes, each with whether it is
+-- a signature, and the declaration puts the attributes on them.
 
--- A declaration's nodes: more than one for a signature with clauses, or a
--- synonym -- each under the attributes written on it, a signature keeping
--- only `@cfg`.
-fun decl (c : Lc) b (s : GTree) =
-  let item = M.andThen firstNode (childOf NodeItem s) in
-  let isCall = M.map R.kindOf item == Just NodeMacCall in
-  -- A macro call: what it expanded to, in its place -- a call of one of the
-  -- module's `macro`s expanded here, and left a call if it cannot be.
-  match (if isCall then M.andThen (\i -> M.map (\m -> (i, m)) (rulesOf c i)) item else None) with
-  | Just (i, m) -> M.unwrapOr (written c b s) (expandedDecls c b m i)
-  | None ->
-      (match (if isCall then expansion c "decls" (spanOf s) else None) with
-       | Just made -> V.map (jDecl c b) (jarr made)
-       | None ->
-           V.append
-             (written c b s)
-             (V.map (jDecl c b) (M.unwrapOr [] (M.map jarr (expansion c "derived" (spanOf s))))))
+fun decl (c : Lc) b (s : GTree) = lowerDeclDecl () b c s
 
--- A declaration as it was written, each of its nodes under its attributes.
-fun written (c : Lc) b (s : GTree) =
-  let attrs = childrenOf NodeAttr s in
-  let bare =
-    (match firstNode (must NodeItem s) with
-     | Just item -> item_ c b item
-     | None -> [])
-  in if V.isEmpty attrs then V.map snd bare
-     else
-       V.map
-         (\x ->
-           let kept =
-             (if fst x then V.filter (\a -> (firstName (must NodeAttrName a)).text == "cfg") attrs
-              else attrs)
-           in if V.isEmpty kept then snd x
-              else newAstDeclAttributed b (spanOf s) (V.map (attr c b) kept) (snd x))
-         bare
+pass! {
+  lowerDecl : Grouped -> Ast with c from Decl
+    | Decl _ -> []
+    | Item _ -> []
+    | Fixity _ -> []
+    | ModDecl _ -> []
+    | UseDecl _ -> []
+    | DataDecl _ -> []
+    | RecordDecl _ -> []
+    | EffectDecl _ -> []
+    | TypeDecl _ -> []
+    | TraitDecl _ -> []
+    | ImplDecl _ -> []
+    | MacroDecl _ -> []
+    | MacCall _ -> []
+    | FunItem _ -> []
+    | DefItem _ -> []
+    | PatternDecl _ -> []
+    -- A macro call is what it expanded to, in its place: a call of one of
+    -- the module's `macro`s expanded here, and left a call if it cannot be.
+    -- Anything else is what was written, and what a `@derive` on it wrote.
+    | Decl { raw attrs, later item } ->
+        (let call =
+           only (\i -> R.kindOf i == NodeMacCall) (M.andThen firstNode (childOf NodeItem node))
+         in
+         let written = \u -> attributed c out node attrs (item c) in
+         match M.andThen (\i -> M.map (\m -> (i, m)) (rulesOf c i)) call with
+         | Just (i, m) -> M.unwrapOr (written ()) (expandedDecls c out m i)
+         | None ->
+             (match M.andThen (\i -> expansion c "decls" (spanOf node)) call with
+              | Just made -> V.map (jDecl c out) (jarr made)
+              | None ->
+                  V.append
+                    (written ())
+                    (V.map
+                       (jDecl c out)
+                       (M.unwrapOr [] (M.map jarr (expansion c "derived" (spanOf node)))))))
+    | Item {
+      fixity, modDecl, useDecl, dataDecl, recordDecl, effectDecl, typeDecl, traitDecl, implDecl,
+      macroDecl, macCall, funItem, defItem, patternDecl
+    } ->
+        V.concat
+          (V.concatMap asList [
+             fixity, modDecl, useDecl, dataDecl, recordDecl, effectDecl, typeDecl, traitDecl,
+             implDecl, macroDecl, macCall, funItem, defItem, patternDecl
+           ])
+    | Fixity { raw ops } ->
+        [(
+          False,
+          newAstDeclFixity
+            out
+            (spanOf node)
+            (V.map (\f -> nm out (firstName (must NodeOpName f))) ops)
+        )]
+    | ModDecl { raw name } -> [(False, newAstDeclMod out (spanOf node) (nm out (firstName name)))]
+    | UseDecl { raw path, raw glob, raw alias, raw names } ->
+        [(False, useDecl out (spanOf node) path glob alias names)]
+    | DataDecl { variants } ->
+        [(False, newAstDeclData out (spanOf node) (declared out node) (taking out node) variants)]
+    -- A variant's fields: named, when the first thing after its name is a
+    -- brace list of at least one field and no `| r`, and otherwise its types
+    -- in order.
+    | Variant { attrs, raw args } ->
+        (let fieldList =
+           M.andThen
+             (\a ->
+               only
+                 (\r -> V.len (childrenOf NodeFieldTy r) > 0 and not (has NodeRowTail r))
+                 (childOf NodeRecTy a))
+             (V.get args 0)
+         in
+         let name = nm out (nameOf (must TokenUpperIdent node)) in
+         match fieldList with
+         | Just r ->
+             newAstVariant
+               out
+               (spanOf node)
+               attrs
+               name
+               True
+               []
+               (V.map (field c out) (childrenOf NodeFieldTy r))
+         | None -> newAstVariant out (spanOf node) attrs name False (V.map (tatom c out) args) [])
+    | Attr {} -> attr c out node
+    | RecordDecl { raw fields } ->
+        [(
+          False,
+          newAstDeclRecord
+            out
+            (spanOf node)
+            (declared out node)
+            (taking out node)
+            (V.map (field c out) (childrenOf NodeFieldTy fields))
+        )]
+    | EffectDecl { raw body } ->
+        (match childOf NodeEffectAlias body with
+         | Just alias ->
+             [(
+               False,
+               newAstDeclEffectAlias
+                 out
+                 (spanOf node)
+                 (declared out node)
+                 (taking out node)
+                 (row c out (must NodeEffRow alias))
+             )]
+         | None ->
+             [(
+               False,
+               newAstDeclEffect
+                 out
+                 (spanOf node)
+                 (declared out node)
+                 (taking out node)
+                 (V.map (field c out) (childrenOf NodeFieldTy (must NodeRecTy body)))
+             )])
+    | TypeDecl { raw ty } ->
+        [(
+          False,
+          newAstDeclAlias out (spanOf node) (declared out node) (taking out node) (tyOf c out ty)
+        )]
+    | TraitDecl { raw supers, raw items } ->
+        [(
+          False,
+          traitDecl
+            c
+            out
+            (spanOf node)
+            (must TokenUpperIdent node)
+            (childrenOf TokenLowerIdent node)
+            supers
+            items
+        )]
+    | ImplDecl { raw tys, raw context, raw items } ->
+        [(False, implDecl c out (spanOf node) (must TokenUpperIdent node) tys context items)]
+    | MacroDecl {} ->
+        [(False, newAstDeclMacro out (spanOf node) (nm out (nameOf (must TokenLowerIdent node))))]
+    | MacCall {} -> [(False, newAstDeclMacCall out (spanOf node) (macCall out node))]
+    -- With a body, a binding; without, a signature, and its clauses the
+    -- binding.
+    | FunItem { raw name, raw annot, raw body, raw clauses } ->
+        (match body with
+         | Just _ -> [(False, newAstDeclBind out (spanOf node) (bindOf c out node))]
+         | None -> sigDecl c out node True (vid name) (M.unwrapOr node annot) clauses)
+    | DefItem { raw pat, raw annot, raw body, raw clauses } ->
+        (match body with
+         | Just _ -> [(False, newAstDeclBind out (spanOf node) (bindOf c out node))]
+         | None -> sigDecl c out node False (patName pat) (M.unwrapOr node annot) clauses)
+    | PatternDecl { raw form } -> patternDecl c out node (nameOf (must TokenUpperIdent node)) form
+}
 
--- A bare declaration's nodes, each with whether it is a signature.
-fun item_ (c : Lc) b (s : GTree) =
-  let m = spanOf s in
-  match s with
-  | GroupedFixity assoc prec ops ->
-      [(False, newAstDeclFixity b m (V.map (\f -> nm b (firstName (must NodeOpName f))) ops))]
-  | GroupedModDecl name -> [(False, newAstDeclMod b m (nm b (firstName name)))]
-  | GroupedUseDecl path glob alias names -> [(False, useDecl b m path glob alias names)]
-  | GroupedDataDecl name params variants ->
-      [(
-        False,
-        newAstDeclData
-          b
-          m
-          (nm b (nameOf name))
-          (V.map (\p -> nm b (nameOf p)) params)
-          (V.map (variant c b) variants)
-      )]
-  | GroupedRecordDecl name params fields ->
-      [(
-        False,
-        newAstDeclRecord
-          b
-          m
-          (nm b (nameOf name))
-          (V.map (\p -> nm b (nameOf p)) params)
-          (V.map (field c b) (childrenOf NodeFieldTy fields))
-      )]
-  | GroupedEffectDecl name params body ->
-      (match childOf NodeEffectAlias body with
-       | Just alias ->
-           [(
-             False,
-             newAstDeclEffectAlias
-               b
-               m
-               (nm b (nameOf name))
-               (V.map (\p -> nm b (nameOf p)) params)
-               (row c b (must NodeEffRow alias))
-           )]
-       | None ->
-           [(
-             False,
-             newAstDeclEffect
-               b
-               m
-               (nm b (nameOf name))
-               (V.map (\p -> nm b (nameOf p)) params)
-               (V.map (field c b) (childrenOf NodeFieldTy (must NodeRecTy body)))
-           )])
-  | GroupedTypeDecl name params t ->
-      [(
-        False,
-        newAstDeclAlias b m (nm b (nameOf name)) (V.map (\p -> nm b (nameOf p)) params) (ty c b t)
-      )]
-  | GroupedTraitDecl name params supers items -> [(False, traitDecl c b m name params supers items)]
-  | GroupedImplDecl tr tys context items -> [(False, implDecl c b m tr tys context items)]
-  | GroupedMacroDecl name rules -> [(False, newAstDeclMacro b m (nm b (nameOf name)))]
-  | GroupedMacCall _ _ _ -> [(False, newAstDeclMacCall b m (macCall b s))]
-  | GroupedFunItem name _ annot body clauses ->
-      (match body with
-       | Just _ -> [(False, newAstDeclBind b m (bindOf c b s))]
-       | None -> sigDecl c b s True (vid name) (M.unwrapOr s annot) clauses)
-  | GroupedDefItem p annot body clauses ->
-      (match body with
-       | Just _ -> [(False, newAstDeclBind b m (bindOf c b s))]
-       | None -> sigDecl c b s False (patName p) (M.unwrapOr s annot) clauses)
-  | GroupedPatternDecl name form -> patternDecl c b s (nameOf name) form
-  | _ -> []
+-- `x`, if it is one `keep` keeps.
+fun only keep (x : Maybe a) : Maybe a =
+  match x with
+  | Just v -> if keep v then Just v else None
+  | None -> None
+
+-- A type, as the rest of this file writes one: the pass's cases name a
+-- field `ty`, which this is not.
+fun tyOf (c : Lc) b (s : GTree) = ty c b s
+
+-- The name a `data`, a `record`, an `effect` or a `type` declares, and the
+-- parameters it takes.
+fun declared b (s : GTree) = nm b (nameOf (must TokenUpperIdent s))
+
+fun taking b (s : GTree) = V.map (\p -> nm b (nameOf p)) (childrenOf TokenLowerIdent s)
+
+-- A declaration's nodes, each under the attributes written on it: a
+-- signature's only its `@cfg`.
+fun attributed (c : Lc) b (s : GTree) (attrs : [GTree]) bare =
+  if V.isEmpty attrs then V.map snd bare
+  else
+    V.map
+      (\x ->
+        let kept =
+          (if fst x then V.filter (\a -> (firstName (must NodeAttrName a)).text == "cfg") attrs
+           else attrs)
+        in if V.isEmpty kept then snd x
+           else newAstDeclAttributed b (spanOf s) (V.map (attr c b) kept) (snd x))
+      bare
 
 fun attr (c : Lc) b (s : GTree) =
   let metas =
@@ -341,27 +425,6 @@ fun useName (i : GTree) : Nm =
   match firstNode n with
   | Just x -> (if R.kindOf x == NodeParenOp then firstName (must NodeOpName x) else firstName x)
   | None -> firstName n
-
--- A variant's fields: named, when the first thing after its name is a brace
--- list of at least one field and no `| r`, and otherwise its types in order.
-fun variant (c : Lc) b (s : GTree) =
-  let atoms = childrenOf NodeTAtom s in
-  let fieldList =
-    (match V.get atoms 0 with
-     | Just a ->
-         (match childOf NodeRecTy a with
-          | Just r ->
-              (if V.len (childrenOf NodeFieldTy r) > 0 and not (has NodeRowTail r) then Just r
-               else None)
-          | None -> None)
-     | None -> None)
-  in
-  let attrs = V.map (attr c b) (childrenOf NodeAttr s) in
-  let name = nm b (nameOf (must TokenUpperIdent s)) in
-  match fieldList with
-  | Just r ->
-      newAstVariant b (spanOf s) attrs name True [] (V.map (field c b) (childrenOf NodeFieldTy r))
-  | None -> newAstVariant b (spanOf s) attrs name False (V.map (tatom c b) atoms) []
 
 fun field (c : Lc) b (s : GTree) =
   newAstField
@@ -830,20 +893,157 @@ fun row (c : Lc) b (s : GTree) = lowerTyEffRow () b s
 
 -- --- patterns ----------------------------------------------------------------
 --
--- A pattern is written by a function that may be told to span somewhere else:
--- one pattern in parentheses, as an argument, spans the parentheses.
+-- A pass, `lowerPat`, from the grammar's patterns and parameters to the
+-- tree's. What it carries says where a pattern is told to span, if not where
+-- it was written -- one pattern in parentheses, as an argument, spans the
+-- parentheses -- and whether parentheses round one pattern are part of it
+-- (`spans`): of an argument they are, of a parameter not.
 
-fun pat (c : Lc) b (s : GTree) = patAt c b s None
+-- What a pattern carries where nothing tells it to span anywhere else.
+fun px (c : Lc) =
+  let nowhere : Maybe Meta = None in
+  { c, over = nowhere, spans = True }
 
-fun patAt (c : Lc) b (s : GTree) (over : Maybe Meta) =
-  let atoms =
-    V.pushFront (V.map (\t -> must NodePAtom t) (childrenOf NodeConsTail s)) (must NodePAtom s)
-  in asesAt
-       b
-       (V.map (\a -> (\o -> patom c b a o, patomSpan a)) atoms)
-       (childrenOf NodeAsTail s)
-       (spanOf s)
-       over
+fun pat (c : Lc) b (s : GTree) = lowerPatPat () b (px c) s
+
+fun param (c : Lc) b (s : GTree) = lowerPatParam () b (px c) s
+
+-- Parentheses in a pattern: `()`, `(p : T)`, `(f -> p)`, a tuple -- or one
+-- pattern, which as an argument (`spans`) takes the parentheses' span and as
+-- a parameter keeps its own. A pattern's own, or an expression's read as
+-- one: the two are written alike.
+fun parenPat (c : Lc) b (s : GTree) (spans : Bool) (over : Maybe Meta) =
+  let m = M.unwrapOr (spanOf s) over in
+  let elems = childrenOf NodeElem s in
+  let elem = \e o -> lowerPatElem () b { (px c) | over = o } e in
+  match childOf NodeParenAnnot s with
+  | Just a -> newAstPatAnn b m (elem (V.getOr s elems 0) None) (ty c b (must NodeType a))
+  | None ->
+      (match V.len elems with
+       | 0 -> newAstPatUnit b m
+       | 1 -> elem (V.getOr s elems 0) (if spans then Just m else None)
+       | _ -> newAstPatTuple b m (V.map (\e -> elem e None) elems))
+
+pass! {
+  lowerPat : Grouped -> Ast with cx from Pat, Param, Elem
+    | Pat { later first, later conses, raw ases } ->
+        asesAt
+          out
+          (V.zip
+             (V.map (\f -> \o -> f { cx | over = o }) (V.pushFront conses first))
+             (V.pushFront
+                (V.map (\t -> patomSpan (must NodePAtom t)) (childrenOf NodeConsTail node))
+                (patomSpan (must NodePAtom node))))
+          ases
+          (spanOf node)
+          cx.over
+    | ConsTail { atom } -> atom
+    | PAtom { con, arg } -> M.unwrapOr (M.unwrapOr (0 - 1) arg) con
+    -- `A x y`, `A.B x y`, or either with nothing after it.
+    | ConPat { raw qual, later args } ->
+        conOf out node qual (V.map (\a -> a (px cx.c)) args) (M.unwrapOr (spanOf node) cx.over)
+    | NullCon { raw qual } -> conOf out node qual [] (M.unwrapOr (spanOf node) cx.over)
+    | Parg { later con, later arg } ->
+        (match (con, arg) with
+         | (Just f, _) -> f (px cx.c)
+         | (_, Just f) -> f (px cx.c)
+         | _ -> 0 - 1)
+    -- A pattern's argument, spanning all it was written with.
+    | Arg { later paren, recPat, array, brack, raw var, raw mac } ->
+        (let m = M.unwrapOr (spanOf node) cx.over in
+         match (paren, V.get (V.concatMap asList [recPat, array, brack]) 0, var, mac) with
+         | (Just f, _, _, _) -> f { cx | spans = True }
+         | (_, Just p, _, _) -> p
+         | (_, _, Just v, _) -> newAstPatVar out m (nm out (vid v))
+         | (_, _, _, Just call) -> patCall cx.c out m call
+         | _ -> litOrWild cx.c out node m)
+    -- A parameter: as a pattern's argument, but for parentheses round one
+    -- pattern, which are not part of it, and a bracket, which starts a whole
+    -- pattern.
+    | Param { later con, later paren, later recPat, later brack, later array, raw var } ->
+        (let plain = px cx.c in
+         let m = spanOf node in
+         match V.get (V.concatMap asList [con, recPat, brack, array]) 0 with
+         | Just f -> f plain
+         | None ->
+             (match (paren, var) with
+              | (Just f, _) -> f { plain | spans = False }
+              | (_, Just v) -> newAstPatVar out m (nm out (vid v))
+              | _ -> litOrWild cx.c out node m))
+    | BrackParam { later first, later conses, raw ases } ->
+        asesAt out (headed cx node NodeBrackPat first conses) ases (spanOf node) None
+    | ArrParam { later first, later conses, raw ases } ->
+        asesAt out (headed cx node NodeArrPat first conses) ases (spanOf node) None
+    | RecPat { later fields, raw open } ->
+        newAstPatRecord
+          out
+          (M.unwrapOr (spanOf node) cx.over)
+          (V.map (\f -> f (px cx.c)) fields)
+          (M.isSome open)
+    | PField { later value } ->
+        (let n = nameOf (must TokenLowerIdent node) in
+         newAstPatField
+           out
+           (spanOf node)
+           (nm out n)
+           (match value with
+            | Just f -> f (px cx.c)
+            | None -> newAstPatVar out n.at (nm out n)))
+    | PFieldValue { pat } -> pat
+    | ArrPat { later items } ->
+        newAstPatArray out (M.unwrapOr (spanOf node) cx.over) (V.map (\f -> f (px cx.c)) items)
+    -- `[p; q]`, `[;]`, `[p, q]`, `[]`.
+    | BrackPat { raw body } ->
+        (let m = M.unwrapOr (spanOf node) cx.over in
+         let each =
+           \k t -> V.map (pat cx.c out) (V.concatMap (childrenOf NodePat) (childrenOf k t))
+         in match body with
+            | None -> newAstPatVector out m []
+            | Just inside ->
+                (match childOf NodePat inside with
+                 | None -> newAstPatList out m []
+                 | Just first ->
+                     (let p = pat cx.c out first in
+                      match (childOf NodeListPatTail inside, childOf NodeVecPatTail inside) with
+                      | (Just t, _) -> newAstPatList out m (V.pushFront (each NodeSemiPat t) p)
+                      | (_, Just t) -> newAstPatVector out m (V.pushFront (each NodeCommaPat t) p)
+                      | _ -> newAstPatVector out m [p])))
+    | PatParen {} -> parenPat cx.c out node cx.spans cx.over
+    -- An element of a pattern's parentheses: `f -> p`, or a pattern.
+    | Elem { raw expr, raw ases, raw view } ->
+        (match view with
+         | Just v ->
+             (let p = must NodePat v in
+              newAstPatView
+                out
+                (M.unwrapOr
+                   (spanMeta (metaStart (exprSpan cx.c expr)) (metaEnd (spanOf p)))
+                   cx.over)
+                (exprOf cx.c out expr)
+                (pat cx.c out p))
+         | None -> asesAt out (exprPatParts cx.c out expr) ases (spanOf node) cx.over)
+}
+
+-- A parameter that starts with a bracket's pattern: that, at the span it is
+-- told to take, and what is consed after it.
+fun headed cx (s : GTree) (k : Grouped) first conses =
+  V.zip
+    (V.map (\f -> \o -> f { (px cx.c) | over = o }) (V.pushFront conses first))
+    (V.pushFront
+       (V.map (\t -> patomSpan (must NodePAtom t)) (childrenOf NodeConsTail s))
+       (spanOf (must k s)))
+
+-- A constructor's pattern, qualified by its type or not.
+fun conOf b (s : GTree) (qual : Maybe GTree) written (m : Meta) =
+  match qual with
+  | Just q ->
+      newAstPatQualCons
+        b
+        m
+        (nm b (nameOf (must TokenUpperIdent s)))
+        (nm b (nameOf (must TokenUpperIdent q)))
+        written
+  | None -> newAstPatCons b m (nm b (nameOf (must TokenUpperIdent s))) written
 
 -- A pattern's parts, each written at a span it may be told to take, and the
 -- span it has of its own: joined by `::`, then by `as`.
@@ -881,155 +1081,15 @@ fun patomSpan (s : GTree) : Meta =
   | Just con -> spanOf con
   | None -> spanOf s
 
-fun patom (c : Lc) b (s : GTree) (over : Maybe Meta) =
-  match childOf NodeConPat s with
-  | Just con -> conPat c b con (childrenOf NodeParg con) over
-  | None -> arg c b (must NodeArg s) over
-
--- `A x y`, `A.B x y`, or either with nothing after it.
-fun conPat (c : Lc) b (s : GTree) (args : [GTree]) (over : Maybe Meta) =
-  let m = M.unwrapOr (spanOf s) over in
-  let written = V.map (parg c b) args in
-  match childOf NodeQualTail s with
-  | Just q ->
-      newAstPatQualCons
-        b
-        m
-        (nm b (nameOf (must TokenUpperIdent s)))
-        (nm b (nameOf (must TokenUpperIdent q)))
-        written
-  | None -> newAstPatCons b m (nm b (nameOf (must TokenUpperIdent s))) written
-
-fun parg (c : Lc) b (s : GTree) =
-  match childOf NodeNullCon s with
-  | Just con -> conPat c b con [] None
-  | None -> arg c b (must NodeArg s) None
-
--- A pattern's argument, spanning all it was written with.
-fun arg (c : Lc) b (s : GTree) (over : Maybe Meta) =
-  let m = M.unwrapOr (spanOf s) over in
-  match firstNode s with
-  | Just n ->
-      let k = R.kindOf n in
-      if k == NodePatParen then parenPat c b n True over
-      else if k == NodeRecPat then recPat c b n m
-      else if k == NodeVid then newAstPatVar b m (nm b (vid n))
-      else if k == NodeArrPat then newAstPatArray b m (V.map (pat c b) (childrenOf NodePat n))
-      else if k == NodeBrackPat then brackPat c b n m
-      else if k == NodeMacCall then patCall c b m n
-      else newAstPatWild b m
-  | None -> litOrWild c b s m
-
 fun litOrWild (c : Lc) b (s : GTree) (m : Meta) =
   match V.get (tokenKids s) 0 with
   | Just t ->
       (if R.kindOf t == TokenWildcard then newAstPatWild b m else newAstPatLit b m (lit c b t))
   | None -> newAstPatWild b m
 
--- A parameter: as a pattern's argument, but for parentheses round one
--- pattern, which are not part of it, and a bracket, which starts a whole
--- pattern.
-fun param (c : Lc) b (s : GTree) =
-  let m = spanOf s in
-  match firstNode s with
-  | Just n ->
-      let k = R.kindOf n in
-      if k == NodeNullCon then conPat c b n [] None
-      else if k == NodePatParen then parenPat c b n False None
-      else if k == NodeRecPat then recPat c b n m
-      else if k == NodeVid then newAstPatVar b m (nm b (vid n))
-      else if k == NodeBrackParam or k == NodeArrParam then
-        let first = (if k == NodeBrackParam then must NodeBrackPat n else must NodeArrPat n) in
-        let head =
-          (\o ->
-            if k == NodeBrackParam then brackPat c b first (M.unwrapOr (spanOf first) o)
-            else
-              newAstPatArray
-                b
-                (M.unwrapOr (spanOf first) o)
-                (V.map (pat c b) (childrenOf NodePat first)))
-        in
-        let atoms =
-          V.pushFront
-            (V.map
-               (\t -> (let a = must NodePAtom t in (\o -> patom c b a o, patomSpan a)))
-               (childrenOf NodeConsTail n))
-            (head, spanOf first)
-        in asesAt b atoms (childrenOf NodeAsTail n) (spanOf n) None
-      else newAstPatWild b m
-  | None -> litOrWild c b s m
-
-fun recPat (c : Lc) b (s : GTree) (m : Meta) =
-  let fs =
-    V.map
-      (\f ->
-        let n = nameOf (must TokenLowerIdent f) in
-        newAstPatField
-          b
-          (spanOf f)
-          (nm b n)
-          (match childOf NodePFieldValue f with
-           | Just v -> pat c b (must NodePat v)
-           | None -> newAstPatVar b n.at (nm b n)))
-      (childrenOf NodePField s)
-  in newAstPatRecord b m fs (has NodeOpenTail s)
-
--- `[p; q]`, `[;]`, `[p, q]`, `[]`.
-fun brackPat (c : Lc) b (s : GTree) (m : Meta) =
-  match childOf NodeBrackPatBody s with
-  | None -> newAstPatVector b m []
-  | Just body ->
-      (match childOf NodePat body with
-       | None -> newAstPatList b m []
-       | Just first ->
-           let p = pat c b first in
-           (match childOf NodeListPatTail body with
-            | Just t ->
-                newAstPatList
-                  b
-                  m
-                  (V.pushFront
-                     (V.map (pat c b) (V.concatMap (childrenOf NodePat) (childrenOf NodeSemiPat t)))
-                     p)
-            | None ->
-                (match childOf NodeVecPatTail body with
-                 | Just t ->
-                     newAstPatVector
-                       b
-                       m
-                       (V.pushFront
-                          (V.map
-                             (pat c b)
-                             (V.concatMap (childrenOf NodePat) (childrenOf NodeCommaPat t)))
-                          p)
-                 | None -> newAstPatVector b m [p])))
-
--- Parentheses in a pattern: `()`, `(p : T)`, `(f -> p)`, a tuple -- or one
--- pattern, which as an argument (`spans`) takes the parentheses' span and as
--- a parameter keeps its own.
-fun parenPat (c : Lc) b (s : GTree) (spans : Bool) (over : Maybe Meta) =
-  let m = M.unwrapOr (spanOf s) over in
-  let elems = childrenOf NodeElem s in
-  match childOf NodeParenAnnot s with
-  | Just a -> newAstPatAnn b m (elemPat c b (V.getOr s elems 0) None) (ty c b (must NodeType a))
-  | None ->
-      (match V.len elems with
-       | 0 -> newAstPatUnit b m
-       | 1 -> elemPat c b (V.getOr s elems 0) (if spans then Just m else None)
-       | _ -> newAstPatTuple b m (V.map (\e -> elemPat c b e None) elems))
-
--- An element of a pattern's parentheses: `f -> p`, or a pattern.
-fun elemPat (c : Lc) b (s : GTree) (over : Maybe Meta) =
-  match childOf NodeViewTail s with
-  | Just v ->
-      let f = must NodeExpr s in
-      let p = must NodePat v in
-      newAstPatView
-        b
-        (M.unwrapOr (spanMeta (metaStart (exprSpan c f)) (metaEnd (spanOf p))) over)
-        (expr c b f)
-        (pat c b p)
-  | None -> asesAt b (exprPatParts c b (must NodeExpr s)) (childrenOf NodeAsTail s) (spanOf s) over
+-- An expression, as the rest of this file writes one: the pass's cases name
+-- a field `expr`, which this is not.
+fun exprOf (c : Lc) b (s : GTree) = expr c b s
 
 -- --- a pattern written as an expression --------------------------------------
 --
@@ -1419,100 +1479,237 @@ fun lit (c : Lc) b (t : GTree) =
 
 -- --- expressions -------------------------------------------------------------
 --
--- An expression is written with the holes of the section it is in, if any:
--- the start of each `_` it owns, in the order `meadow-parser` numbers them.
+-- A pass, `lowerExpr`, from the grammar's expressions to the tree's: a case
+-- to each rule. What it carries is the holes of the section an expression is
+-- in, if any -- the start of each `_` it owns, in the order `meadow-parser`
+-- numbers them -- and where the expression is told to span, if not where it
+-- was written: `(e)` spans `e`.
+
+-- What an expression carries, of a section's holes `hs`, told to span `over`.
+fun ex (c : Lc) (hs : [Int]) (over : Maybe Meta) = { c, hs, over }
 
 fun expr (c : Lc) b (s : GTree) = exprIn c b [] s None
 
--- `f <| g <| x` is `f (g x)`; `x |> f |> g` is `g (f x)`: applications, each
--- spanning what it joins.
 fun exprIn (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
-  let parts = V.pushFront (childrenOf NodeBackPipe s) s in
-  let pipes = V.map (\p -> must NodePipeL p) parts in
-  if V.len pipes == 1 then pipeL c b hs (must NodePipeL s) over else backs c b hs pipes over
+  lowerExprExpr () b (ex c hs over) s
 
-fun backs (c : Lc) b (hs : [Int]) (pipes : [GTree]) (over : Maybe Meta) =
-  match V.get pipes 0 with
+-- Each of `fs`, which writes a part where it is told to span, with the span
+-- the part has of its own.
+fun spanning cx fs (spans : [Meta]) = V.zip (V.map (\f -> \o -> f { cx | over = o }) fs) spans
+
+pass! {
+  lowerExpr : Grouped -> Ast with cx from Expr, LowAtom
+    -- `f <| g <| x` is `f (g x)`: applications, each spanning what it joins.
+    | Expr { later first, later backs } ->
+        applied
+          out
+          False
+          (spanning
+             cx
+             (V.pushFront backs first)
+             (V.map
+                (\p -> pipeSpan cx.c (must NodePipeL p))
+                (V.pushFront (childrenOf NodeBackPipe node) node)))
+          cx.over
+    | BackPipe { operand } -> operand
+    -- `x |> f |> g` is `g (f x)`: a left fold, the last applied to the rest.
+    | PipeL { later first, later pipes } ->
+        applied
+          out
+          True
+          (spanning
+             cx
+             (V.pushFront pipes first)
+             (V.map
+                (\p -> orSpan cx.c (must NodeOrE p))
+                (V.pushFront (childrenOf NodePipe node) node)))
+          cx.over
+    | Pipe { operand } -> operand
+    | OrE { later first, later ors } ->
+        binFold
+          out
+          False
+          (spanning
+             cx
+             (V.pushFront ors first)
+             (V.map
+                (\t -> andSpan cx.c (must NodeAndE t))
+                (V.pushFront (childrenOf NodeOrTail node) node)))
+          cx.over
+    | OrTail { operand } -> operand
+    | AndE { later first, later ands } ->
+        binFold
+          out
+          True
+          (spanning
+             cx
+             (V.pushFront ands first)
+             (V.map
+                (\t -> opsSpan cx.c (M.unwrapOr t (firstNode t)))
+                (V.pushFront (childrenOf NodeAndTail node) node)))
+          cx.over
+    | AndTail { operand } -> operand
+    -- A chain of operators, grouped: `(+) a b` for each operator applied to
+    -- two, spanning its operands, and `Cons a b` for `::`. A chain's span is
+    -- its operands'; the parentheses round one are not part of it.
+    | Infix { later lhs, raw op, later rhs } ->
+        (let plain = { cx | over = None } in
+         let m =
+           (match node with
+            | GroupedInfix l _ r -> join (opsSpan cx.c l) (opsSpan cx.c r)
+            | _ -> spanOf node)
+         in
+         let name = S.trim (R.text op) in
+         let l = lhs plain in
+         let r = rhs plain in
+         if name == "::" then newAstExprCons out m (nm out (named "Cons" (spanOf op))) [l, r]
+         else
+           newAstExprApp out m (newAstExprVar out (spanOf op) (nm out (named name (spanOf op)))) [
+             l,
+             r
+           ])
+    | Leaf { operand } -> operand
+    | Operand { later base } ->
+        (let minuses = childrenOf TokenMinus node in
+         if V.isEmpty minuses then base cx
+         else negated cx.c out cx.hs minuses (must NodeBase node) cx.over)
+    -- What is applied, and to what: a macro call, a qualified name -- which
+    -- spans its arguments too -- a constructor, or an atom.
+    | Base { raw head, later args } ->
+        (let m = M.unwrapOr (spanOf node) cx.over in
+         let plain = { cx | over = None } in
+         let written = \u -> V.map (\a -> a plain) args in
+         let applied =
+           \f -> if V.isEmpty args then f cx.over else newAstExprApp out m (f None) (written ())
+         in match firstNode head with
+            | Just h ->
+                (let k = R.kindOf h in
+                 if k == NodeMacCall then
+                   applied (\o -> exprCall cx.c out (M.unwrapOr (macSpan h) o) h)
+                 else if k == NodeQualHead then
+                   applied (\o ->
+                     newAstExprQual out (spanOf node) (nm out (firstName h)) (nm out (lastName h)))
+                 else applied (\o -> lowerExprLowAtom () out { cx | over = o } h))
+            | None -> newAstExprCons out m (nm out (firstName head)) (written ()))
+    | Atom {} ->
+        (let m = spanOf node in
+         match firstNode node with
+         | Just n ->
+             (let k = R.kindOf n in
+              if k == NodeMacAtom then fieldsOf out n (exprCall cx.c out (macSpan n) n)
+              else if k == NodeQualAtom then
+                (let toks = V.filter (\t -> R.kindOf t != TokenPeriod) (tokenKids n) in
+                 let q =
+                   (match V.get toks 0 with
+                    | Just t -> nameOf t
+                    | None -> named "" m)
+                 in
+                 let x =
+                   (match V.get toks 1 with
+                    | Just t -> nameOf t
+                    | None -> named "" m)
+                 in fieldsOf out n (newAstExprQual out (from q.at x.at) (nm out q) (nm out x)))
+              else lowerExprLowAtom () out { cx | over = None } n)
+         | None -> newAstExprCons out m (nm out (firstName node)) [])
+    | LowAtom { closed, open } ->
+        M.unwrapOr (M.unwrapOr (newAstExprUnit out (spanOf node)) open) closed
+    -- An atom and its `.field`s: with any, the atom spans itself.
+    | ClosedAtom { later prim, raw fields } ->
+        (if V.isEmpty fields then prim cx else fieldsOf out node (prim { cx | over = None }))
+    | Paren {} -> parenE cx.c out cx.hs node cx.over
+    | OpRef {} ->
+        newAstExprVar
+          out
+          (M.unwrapOr (spanOf node) cx.over)
+          (nm out (firstName (must NodeOpName node)))
+    | LitE {} ->
+        newAstExprLit
+          out
+          (M.unwrapOr (spanOf node) cx.over)
+          (lit cx.c out (V.getOr node (tokenKids node) 0))
+    | InterpE {} -> interp cx.c out cx.hs node (M.unwrapOr (spanOf node) cx.over)
+    | VarE {} -> newAstExprVar out (M.unwrapOr (spanOf node) cx.over) (nm out (firstName node))
+    -- `_`: the parameter of the section that owns it, or a hole.
+    | HoleE {} ->
+        (let m = M.unwrapOr (spanOf node) cx.over in
+         let at = metaStart (spanOf node) in
+         match V.find (\i -> V.getOr (0 - 1) cx.hs i == at) (V.range 0 (V.len cx.hs)) with
+         | Just i -> newAstExprVar out m (nm out (named "_hole${show i}" (spanOf node)))
+         | None -> newAstExprHole out m)
+    | BraceE {} -> braceE cx.c out cx.hs node (M.unwrapOr (spanOf node) cx.over)
+    | BrackE {} -> brackE cx.c out cx.hs node (M.unwrapOr (spanOf node) cx.over)
+    | ArrE { later items } ->
+        newAstExprArray
+          out
+          (M.unwrapOr (spanOf node) cx.over)
+          (V.map (\x -> x { cx | over = None }) items)
+    | AsExpr { expr } -> expr
+    | IfE { later cond, later yes, later no } ->
+        (let plain = { cx | over = None } in
+         newAstExprIf out (M.unwrapOr (spanOf node) cx.over) (cond plain) (yes plain) (no plain))
+    -- A lambda's body is in no section: its holes are its own.
+    | LamE { raw params, raw body } ->
+        newAstExprLam
+          out
+          (M.unwrapOr (spanOf node) cx.over)
+          (V.map (pat cx.c out) params)
+          (expr cx.c out body)
+    | MatchE { later scrutinee, later arms } ->
+        (let plain = { cx | over = None } in
+         newAstExprMatch
+           out
+           (M.unwrapOr (spanOf node) cx.over)
+           (scrutinee plain)
+           (V.map (\a -> a plain) arms))
+    | Arm { raw pat, guard, body } -> newAstArm out (spanOf node) (patOf cx.c out pat) guard body
+    | Guard { cond } -> cond
+    | LetE { raw binds, later body } ->
+        newAstExprLet
+          out
+          (M.unwrapOr (spanOf node) cx.over)
+          (V.concatMap (letBind cx.c out cx.hs) binds)
+          (body { cx | over = None })
+    | HandleE { raw expr, raw arms } ->
+        handleE cx.c out cx.hs (M.unwrapOr (spanOf node) cx.over) expr arms
+}
+
+-- A pattern, as the rest of this file writes one: the pass's cases name a
+-- field `pat`, which this is not.
+fun patOf (c : Lc) b (s : GTree) = pat c b s
+
+-- Parts applied one to the next, each application spanning what it joins:
+-- the first to the rest (`f <| g <| x`), or, `last`, the last to the rest
+-- (`x |> f |> g`).
+fun applied b (last : Bool) parts (over : Maybe Meta) =
+  let n = V.len parts in
+  match V.get parts (if last then n - 1 else 0) with
   | None -> newAstExprUnit b (spanMeta 0 0)
-  | Just f ->
-      let rest = V.drop pipes 1 in
-      if V.isEmpty rest then pipeL c b hs f over
+  | Just (f, own) ->
+      if n == 1 then f over
       else
-        let m = M.unwrapOr (V.foldl (\acc p -> join acc (pipeSpan c p)) (pipeSpan c f) rest) over in
-        newAstExprApp b m (pipeL c b hs f None) [backs c b hs rest None]
-
-fun pipeL (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
-  let ors = V.pushFront (V.map (\p -> must NodeOrE p) (childrenOf NodePipe s)) (must NodeOrE s) in
-  pipes c b hs ors over
-
--- A left fold: the last is applied to the rest.
-fun pipes (c : Lc) b (hs : [Int]) (ors : [GTree]) (over : Maybe Meta) =
-  let n = V.len ors in
-  match V.get ors (n - 1) with
-  | None -> newAstExprUnit b (spanMeta 0 0)
-  | Just f ->
-      if n == 1 then orE c b hs f over
-      else
-        let rest = V.take ors (n - 1) in
-        let m = M.unwrapOr (V.foldl (\acc o -> join acc (orSpan c o)) (orSpan c f) rest) over in
-        newAstExprApp b m (orE c b hs f None) [pipes c b hs rest None]
-
-fun orE (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
-  binFold
-    b
-    False
-    (V.pushFront (V.map (\t -> must NodeAndE t) (childrenOf NodeOrTail s)) (must NodeAndE s))
-    (\x o -> andE c b hs x o)
-    (andSpan c)
-    over
-
-fun andE (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
-  let parts =
-    V.pushFront
-      (V.map (\t -> M.unwrapOr t (firstNode t)) (childrenOf NodeAndTail s))
-      (M.unwrapOr s (firstNode s))
-  in binFold b True parts (\x o -> ops c b hs x o) (opsSpan c) over
+        let rest = if last then V.take parts (n - 1) else V.drop parts 1 in
+        let m = M.unwrapOr (V.foldl (\acc p -> join acc (snd p)) own rest) over in
+        newAstExprApp b m (f None) [applied b last rest None]
 
 -- `a or b or c` is `(a or b) or c`: each spanning what it joins, and so is
 -- its operator.
-fun binFold b (isAnd : Bool) (xs : [GTree]) write spanFn (over : Maybe Meta) =
-  let n = V.len xs in
-  match V.get xs (n - 1) with
+fun binFold b (isAnd : Bool) parts (over : Maybe Meta) =
+  let n = V.len parts in
+  match V.get parts (n - 1) with
   | None -> newAstExprUnit b (spanMeta 0 0)
-  | Just r ->
-      if n == 1 then write r over
+  | Just (write, own) ->
+      if n == 1 then write over
       else
-        let rest = V.take xs (n - 1) in
-        let m = V.foldl (\acc x -> join acc (spanFn x)) (spanFn r) rest in
+        let rest = V.take parts (n - 1) in
+        let m = V.foldl (\acc x -> join acc (snd x)) own rest in
         let op = nm b (named (if isAnd then "and" else "or") m) in
-        let lhs = binFold b isAnd rest write spanFn None in
-        let rhs = write r None in
+        let lhs = binFold b isAnd rest None in
+        let rhs = write None in
         if isAnd then newAstExprAnd b (M.unwrapOr m over) op lhs rhs
         else newAstExprOr b (M.unwrapOr m over) op lhs rhs
 
--- A chain of operators, grouped: `(+) a b` for each operator applied to two,
--- spanning its operands, and `Cons a b` for `::`. A chain's span is its
--- operands'; the parentheses round one are not part of it.
-fun ops (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
-  match s with
-  | GroupedInfix l op r ->
-      let lhs = ops c b hs l None in
-      let rhs = ops c b hs r None in
-      let m = join (opsSpan c l) (opsSpan c r) in
-      let name = S.trim (R.text op) in
-      if name == "::" then newAstExprCons b m (nm b (named "Cons" (spanOf op))) [lhs, rhs]
-      else
-        newAstExprApp b m (newAstExprVar b (spanOf op) (nm b (named name (spanOf op)))) [lhs, rhs]
-  | GroupedLeaf operand -> operandE c b hs operand over
-  | _ -> newAstExprUnit b (spanOf s)
-
 -- `-e`: a literal's own value negated, and anything else under `neg` -- the
 -- minus nearest the operand first, each spanning from itself to the end.
-fun operandE (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
-  let minuses = childrenOf TokenMinus s in
-  let base = must NodeBase s in
-  if V.isEmpty minuses then baseE c b hs base over else negated c b hs minuses base over
-
 fun negated (c : Lc) b (hs : [Int]) (minuses : [GTree]) (base : GTree) (over : Maybe Meta) =
   let n = V.len minuses in
   let inner = V.drop minuses 1 in
@@ -1528,7 +1725,8 @@ fun negated (c : Lc) b (hs : [Int]) (minuses : [GTree]) (base : GTree) (over : M
         b
         m
         (nm b (named "neg" m))
-        (if V.isEmpty inner then baseE c b hs base None else negated c b hs inner base None)
+        (if V.isEmpty inner then lowerExprBase () b (ex c hs None) base
+         else negated c b hs inner base None)
 
 fun negSpan (c : Lc) (minuses : [GTree]) (base : GTree) : Meta =
   match V.get minuses 0 with
@@ -1558,113 +1756,14 @@ fun literalOf (c : Lc) (s : GTree) : Maybe (String, Bool) =
          | None -> None)
     | None -> None
 
--- What is applied, and to what: a macro call, a qualified name -- which spans
--- its arguments too -- a constructor, or an atom.
-fun baseE (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
-  let m = M.unwrapOr (spanOf s) over in
-  let head = must NodeHead s in
-  let args = childrenOf NodeAtom s in
-  let written = \u -> V.map (atomE c b hs) args in
-  let applied = \f -> if V.isEmpty args then f over else newAstExprApp b m (f None) (written ()) in
-  match firstNode head with
-  | Just h ->
-      let k = R.kindOf h in
-      if k == NodeMacCall then applied (\o -> exprCall c b (M.unwrapOr (macSpan h) o) h)
-      else if k == NodeQualHead then
-        applied (\o -> newAstExprQual b (spanOf s) (nm b (firstName h)) (nm b (lastName h)))
-      else if V.isEmpty args then lowAtom c b hs h over
-      else newAstExprApp b m (lowAtom c b hs h None) (written ())
-  | None -> newAstExprCons b m (nm b (firstName head)) (written ())
-
-fun atomE (c : Lc) b (hs : [Int]) (s : GTree) =
-  let m = spanOf s in
-  match firstNode s with
-  | Just n ->
-      let k = R.kindOf n in
-      if k == NodeMacAtom then fields b n (exprCall c b (macSpan n) n)
-      else if k == NodeQualAtom then
-        let toks = V.filter (\t -> R.kindOf t != TokenPeriod) (tokenKids n) in
-        let q =
-          (match V.get toks 0 with
-           | Just t -> nameOf t
-           | None -> named "" m)
-        in
-        let x =
-          (match V.get toks 1 with
-           | Just t -> nameOf t
-           | None -> named "" m)
-        in fields b n (newAstExprQual b (from q.at x.at) (nm b q) (nm b x))
-      else lowAtom c b hs n None
-  | None -> newAstExprCons b m (nm b (firstName s)) []
-
 -- An atom's `.field`s, each spanning the atom and every field: the
 -- outermost last.
-fun fields b (s : GTree) (inner : Int) =
+fun fieldsOf b (s : GTree) (inner : Int) =
   let m = spanOf s in
   V.foldl
     (\e f -> newAstExprProj b m e (nm b (nameOf (must TokenLowerIdent f))))
     inner
     (childrenOf NodeFieldTail s)
-
-fun lowAtom (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
-  match childOf NodeClosedAtom s with
-  | Just ca ->
-      let prim = M.unwrapOr ca (firstNode ca) in
-      if has NodeFieldTail ca then fields b ca (closedPrim c b hs prim None)
-      else closedPrim c b hs prim over
-  | None -> openPrim c b hs (M.unwrapOr s (firstNode s)) over
-
-fun closedPrim (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
-  let m = M.unwrapOr (spanOf s) over in
-  let k = R.kindOf s in
-  if k == NodeParen then parenE c b hs s over
-  else if k == NodeOpRef then newAstExprVar b m (nm b (firstName (must NodeOpName s)))
-  else if k == NodeLitE then newAstExprLit b m (lit c b (V.getOr s (tokenKids s) 0))
-  else if k == NodeInterpE then interp c b hs s m
-  else if k == NodeVarE then newAstExprVar b m (nm b (firstName s))
-  else if k == NodeHoleE then
-    (match V.find (\i -> V.getOr (0 - 1) hs i == metaStart (spanOf s)) (V.range 0 (V.len hs)) with
-     | Just i -> newAstExprVar b m (nm b (named "_hole${show i}" (spanOf s)))
-     | None -> newAstExprHole b m)
-  else if k == NodeBraceE then braceE c b hs s m
-  else if k == NodeBrackE then brackE c b hs s m
-  else
-    newAstExprArray
-      b
-      m
-      (V.map (\x -> exprIn c b hs (must NodeExpr x) None) (childrenOf NodeAsExpr s))
-
-fun openPrim (c : Lc) b (hs : [Int]) (s : GTree) (over : Maybe Meta) =
-  let m = M.unwrapOr (spanOf s) over in
-  let e = \x -> exprIn c b hs x None in
-  match s with
-  | GroupedIfE cond yes no -> newAstExprIf b m (e cond) (e yes) (e no)
-  | GroupedLamE params body -> newAstExprLam b m (V.map (pat c b) params) (expr c b body)
-  | GroupedMatchE scrutinee arms ->
-      newAstExprMatch
-        b
-        m
-        (e scrutinee)
-        (V.concatMap
-           (\a ->
-             match a with
-             | GroupedArm p guard body ->
-                 [newAstArm
-                    b
-                    (spanOf a)
-                    (pat c b p)
-                    (M.andThen
-                       (\g ->
-                         match g with
-                         | GroupedGuard cond -> Just (e cond)
-                         | _ -> None)
-                       guard)
-                    (e body)]
-             | _ -> [])
-           arms)
-  | GroupedLetE binds body -> newAstExprLet b m (V.concatMap (letBind c b hs) binds) (e body)
-  | GroupedHandleE target arms -> handleE c b hs m target arms
-  | _ -> newAstExprUnit b m
 
 -- A `let`'s binding: `fun f x = …`, `f x = …` (a name, maybe `rec`), or any
 -- other pattern `= …` -- whose value a section's holes are in; a function's
@@ -1775,8 +1874,8 @@ fun interp (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
 fun braceE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
   let items = childrenOf NodeBraceItem s in
   let e = \x -> exprIn c b hs x None in
-  match M.andThen (childOf NodeUpdFields) (childOf NodeBraceTail s) with
-  | Just u ->
+  match M.andThen updated (childOf NodeBraceTail s) with
+  | Just fields ->
       let target =
         (match V.get items 0 with
          | Just i -> e (must NodeExpr (must NodeAsExpr i))
@@ -1787,12 +1886,16 @@ fun braceE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
            target
            (V.map
               (\f ->
-                newAstExprField
-                  b
-                  (spanOf f)
-                  (nm b (nameOf (must TokenLowerIdent f)))
-                  (e (must NodeExpr f)))
-              (childrenOf NodeUpdField u))
+                (let n = nameOf (must TokenLowerIdent f) in
+                 newAstExprField
+                   b
+                   (spanOf f)
+                   (nm b n)
+                   (match (childOf NodeExpr f, childOf NodeUpdValue f) with
+                    | (Just x, _) -> e x
+                    | (_, Just v) -> e (must NodeExpr v)
+                    | _ -> newAstExprVar b n.at (nm b n))))
+              fields)
   | None ->
       let fs =
         V.map
@@ -1813,6 +1916,15 @@ fun braceE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
           (childOf NodeBraceTail s)
       in newAstExprRecord b m fs base
 
+-- The fields of an update, in order, if what follows a record's `|` is
+-- one: the first -- given a value, or a name alone with more after it --
+-- and the rest.
+fun updated (t : GTree) : Maybe [GTree] =
+  match (childOf NodeUpdFields t, childOf NodeUpdBares t) with
+  | (Just u, _) -> Just (V.pushFront (childrenOf NodeUpdField u) (must NodeUpdSet u))
+  | (_, Just u) -> Just (V.pushFront (childrenOf NodeUpdField u) (must NodeUpdBare u))
+  | _ -> None
+
 -- `[lo .. hi]`, `[a; b]`, `[;]`, `[a, b]`, `[]`.
 fun brackE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
   let item = \x -> exprIn c b hs (must NodeExpr x) None in
@@ -1831,12 +1943,15 @@ fun brackE (c : Lc) b (hs : [Int]) (s : GTree) (m : Meta) =
                    let hi = must NodeExpr r in
                    let hm = exprSpan c hi in
                    let hiE = exprIn c b hs hi None in
-                   -- `[a .. b]` and `[a ..= b]` alike: `range a (b + 1)`.
+                   -- `[a .. b]` stops before `b`, `range a b`; `[a ..= b]`
+                   -- includes it, `range a (b + 1)`.
                    let hi1 =
-                     newAstExprApp b hm (newAstExprVar b hm (nm b (named "+" hm))) [
-                       hiE,
-                       newAstExprLit b hm (newAstLitInt b hm "1")
-                     ]
+                     if tokenIs TokenDoublePeriodEq r then
+                       newAstExprApp b hm (newAstExprVar b hm (nm b (named "+" hm))) [
+                         hiE,
+                         newAstExprLit b hm (newAstLitInt b hm "1")
+                       ]
+                     else hiE
                    in newAstExprApp b m (newAstExprVar b m (nm b (named "range" m))) [lo, hi1]
                | None ->
                    (match childOf NodeListTail body with
@@ -2034,11 +2149,7 @@ fun macrosOf (c : Lc) (pkg : String) (top : GTree) : HashMap String Macro =
 fun macroOf (c : Lc) (pkg : String) (rules : [GTree]) : Maybe Macro =
   let read = V.map (ruleOf c) rules in
   if V.all M.isSome read then
-    Just
-      (Macro {
-         rules = V.concatMap (\x -> match x with | Just y -> [y] | None -> []) read,
-         pkg = pkg
-       })
+    Just (Macro { rules = V.concatMap (\x -> match x with | Just y -> [y] | None -> []) read, pkg })
   else None
 
 -- A rule: its matcher, read, and its template.
@@ -2485,8 +2596,8 @@ fun goesBefore (there : Fixity) (here : Fixity) : Bool =
 fun applyOp b (outs : [Int]) o =
   match (o, V.get outs (V.len outs - 2), V.get outs (V.len outs - 1)) with
   | ((op, _), Just l, Just r) ->
-      let lm = metaAstExprIn b l in
-      let rm = metaAstExprIn b r in
+      let lm = metaAstExpr b l in
+      let rm = metaAstExpr b r in
       let m = spanMeta (min (metaStart lm) (metaStart rm)) (max (metaEnd lm) (metaEnd rm)) in
       let rest = V.take outs (V.len outs - 2) in
       if jstr op 3 == "::" then

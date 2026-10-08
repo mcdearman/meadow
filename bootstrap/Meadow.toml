@@ -3,8 +3,8 @@ name = "MeadowBoot"
 version = "0.1.0"
 
 [dependencies]
-Lingua = { git = "https://github.com/mcdearman/Lingua.git", branch = "master" }
-Scythe = { git = "https://github.com/mcdearman/Scythe.git", branch = "master" }
+Lingua = { git = "https://github.com/meadow-lang/Lingua.git", branch = "master" }
+Scythe = { git = "https://github.com/meadow-lang/Scythe.git", branch = "master" }
 
 # Bytecode, on the JIT: a build with no LLVM in it, which is a third of the
 # time one through Silo takes.

@@ -163,9 +163,9 @@ pub const STEPS: &[Step] = &[
             "order it happens.",
         ],
         code: &[
-            "[1..10]",
-            "[1..10] |> filter (\\n -> n % 2 == 0)",
-            "[1..10] |> filter (\\n -> n % 2 == 0) |> map double |> sum",
+            "[1..=10]",
+            "[1..=10] |> filter (\\n -> n % 2 == 0)",
+            "[1..=10] |> filter (\\n -> n % 2 == 0) |> map double |> sum",
         ],
     },
     Step {
@@ -308,7 +308,7 @@ pub const STEPS: &[Step] = &[
             "and no further.",
         ],
         code: &[
-            "fun tiny () = [1..20000]",
+            "fun tiny () = [1..=20000]",
             ":time sum (map double (tiny ()))",
             ":time sum (Thread.parMap double (tiny ()))",
         ],
@@ -352,7 +352,7 @@ pub const STEPS: &[Step] = &[
             "use Std.Stm as Stm",
             "fun deposits () = let account = Stm.newTVarIO 100 in let _ = Thread.parMap (\\n -> Stm.atomically (\\() -> Stm.modifyTVar account (\\b -> b + n))) [50, 50] in Stm.atomically (\\() -> Stm.readTVar account)",
             "deposits ()",
-            "fun contended () = let total = Stm.newTVarIO 0 in let _ = Thread.parMap (\\n -> Stm.atomically (\\() -> Stm.modifyTVar total (\\b -> b + n))) [1..500] in Stm.atomically (\\() -> Stm.readTVar total)",
+            "fun contended () = let total = Stm.newTVarIO 0 in let _ = Thread.parMap (\\n -> Stm.atomically (\\() -> Stm.modifyTVar total (\\b -> b + n))) [1..=500] in Stm.atomically (\\() -> Stm.readTVar total)",
             "contended ()",
             "contended ()",
         ],

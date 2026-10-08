@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 /// Where releases come from.
-pub const REPO: &str = "mcdearman/meadow";
+pub const REPO: &str = "meadow-lang/meadow";
 
 /// The build tool's file name on this system.
 pub const fn exe_name() -> &'static str {

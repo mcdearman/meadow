@@ -238,10 +238,10 @@ use Std.Result.Result.*
 def nothing = Lexing { tokens = [], problems = [] }
 
 fun push (l : Lexing) (t : Token) (from : Int) (to : Int) : Lexing =
-  { l | tokens = V.pushBack l.tokens (Lexed { token = t, from = from, to = to }) }
+  { l | tokens = V.pushBack l.tokens (Lexed { token = t, from, to }) }
 
 fun problem (l : Lexing) (from : Int) (to : Int) (message : String) : Lexing =
-  { l | problems = V.pushBack l.problems (Problem { from = from, to = to, message = message }) }
+  { l | problems = V.pushBack l.problems (Problem { from, to, message }) }
 
 fun joined (a : Lexing) (b : Lexing) : Lexing =
   Lexing { tokens = V.append a.tokens b.tokens, problems = V.append a.problems b.problems }

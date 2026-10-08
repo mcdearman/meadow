@@ -4,7 +4,7 @@
 -- under its `src/`. What it depends on is what its manifest's
 -- `[dependencies]` name -- a `path`, from the unit, or a `git` repository,
 -- which `meadow` has fetched into its cache at the commit the root unit's
--- `meadow.lock` pins -- and the standard library, which every unit but the
+-- `Meadow.lock` pins -- and the standard library, which every unit but the
 -- standard library itself depends on, and whose sources are where
 -- `MEADOWBOOT_STD` says.
 --
@@ -74,6 +74,15 @@ fun expansionsOf (dir : String) : [String] ! { Fs, Process | e } =
 @pub fun manifestOf (dir : String) : String = Path.normalize (Path.join dir "Meadow.toml")
 
 -- The name a manifest gives its package.
+-- The names a manifest's `text` gives the units it depends on, in the order
+-- it lists them: what a `use` knows each by, which is not always what the
+-- package calls itself -- `Anstyle = { git = "…/MeadowAnstyle" }` is a
+-- package named `Bloom`.
+@pub fun dependencyNames (text : String) : [String] =
+  V.map
+    (\(e : Entry) -> e.key)
+    (V.filter (\(e : Entry) -> e.section == "dependencies") (readToml text))
+
 @pub fun packageName (text : String) : String =
   match V.find (\(e : Entry) -> e.section == "package" and e.key == "name") (readToml text) with
   | Just e ->
@@ -125,14 +134,17 @@ fun locate (root : String) (dir : String) (e : Entry) : Result String String ! {
   | (_, Just url) ->
       (match pinned root dir e.key with
        | Just rev -> checkout url rev
-       | None -> Err "`${e.key}` is not in `meadow.lock`: run `meadow build` once to fetch it")
+       | None -> Err "`${e.key}` is not in `Meadow.lock`: run `meadow build` once to fetch it")
   | _ -> Err "`${e.key}` is neither a `path` nor a `git` dependency"
 
--- The commit `meadow.lock` pins package `name` at: the root's, or the unit's.
+-- The commit `Meadow.lock` pins package `name` at: the root's, or the unit's.
 fun pinned (root : String) (dir : String) (name : String) : Maybe String ! { Fs | e } =
   let inLock =
     \d ->
-      match readToString (Path.join d "meadow.lock") with
+      -- Under the name it had before, where one is still spelt so.
+      match (match readToString (Path.join d "Meadow.lock") with
+       | Ok text -> Ok text
+       | Err _ -> readToString (Path.join d "meadow.lock")) with
       | Ok text ->
           M.andThen
             (\(p : Entry) -> field "rev" p.value)
@@ -264,8 +276,8 @@ fun tables (es : [Entry]) : [Entry] =
                    V.pushBack
                      es
                      (Entry {
-                        section = section,
-                        index = index,
+                        section,
+                        index,
                         key = unquoted (S.trim (stringSlice l 0 at)),
                         value = valueOf (S.trim (stringSlice l (at + 1) (stringByteLength l)))
                       })
@@ -325,14 +337,14 @@ use Std.Test (assertEq)
 @test fun aManifestsDependenciesAreItsInlineTables () =
   let es =
     readToml
-      "[package]\nname = \"MeadowBoot\"\n\n[dependencies]\nLingua = { path = \"../../Lingua\" }\nScythe = { git = \"https://github.com/mcdearman/Scythe.git\", branch = \"master\" } # fetched\n"
+      "[package]\nname = \"MeadowBoot\"\n\n[dependencies]\nLingua = { path = \"../../Lingua\" }\nScythe = { git = \"https://github.com/meadow-lang/Scythe.git\", branch = \"master\" } # fetched\n"
   in assertEq
        (V.map
           (\(e : Entry) -> (e.key, field "path" e.value, field "git" e.value))
           (V.filter (\(e : Entry) -> e.section == "dependencies") es))
        [
          ("Lingua", Just "../../Lingua", None),
-         ("Scythe", None, Just "https://github.com/mcdearman/Scythe.git")
+         ("Scythe", None, Just "https://github.com/meadow-lang/Scythe.git")
        ]
        "a path and a git repository"
 
@@ -346,5 +358,6 @@ use Std.Test (assertEq)
        "one table each"
 
 @test fun aCheckoutIsNamedForItsRepository () =
-  let a = assertEq (repoName "https://github.com/mcdearman/Scythe.git") "Scythe" "without `.git`" in
-  assertEq (repoName "https://github.com/someone/meadow-json/") "meadow-json" "without the slash"
+  let a =
+    assertEq (repoName "https://github.com/meadow-lang/Scythe.git") "Scythe" "without `.git`"
+  in assertEq (repoName "https://github.com/someone/meadow-json/") "meadow-json" "without the slash"

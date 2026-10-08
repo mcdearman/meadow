@@ -17,13 +17,13 @@ fun main () = println (classify 42)
 ## Install
 
 **Windows** — download `meadowup-x86_64.exe` from the
-[latest release](https://github.com/mcdearman/meadow/releases/latest) and run
+[latest release](https://github.com/meadow-lang/meadow/releases/latest) and run
 it. (Take `meadowup-aarch64.exe` on an ARM machine.)
 
 **macOS / Linux / Android**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh | sh
+curl -fsSL https://raw.githubusercontent.com/meadow-lang/meadow/master/scripts/meadowup-init.sh | sh
 ```
 
 On Android, run that in [Termux](https://termux.dev): it notices it is on
@@ -59,7 +59,7 @@ installer program.
 Options after `sh -s --` are passed to `meadowup install`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh \
+curl -fsSL https://raw.githubusercontent.com/meadow-lang/meadow/master/scripts/meadowup-init.sh \
   | sh -s -- --version v0.2.0 --no-modify-path
 ```
 
@@ -82,7 +82,7 @@ next release like any other install. You need a Rust toolchain, and the build
 takes a few minutes.
 
 ```sh
-git clone https://github.com/mcdearman/meadow && cd meadow
+git clone https://github.com/meadow-lang/meadow && cd meadow
 scripts/install.sh                     # build and install this checkout
 scripts/install.sh --with-extension    # ...and the VS Code extension
 scripts/install.sh --version <tag>     # fetch that tag into ~/.meadow/src and build it
@@ -158,9 +158,9 @@ meadow test --workspace         # ...or every member (`--exclude NAME` leaves on
 meadow add owner/repo           # add a dependency from GitHub
 meadow add owner/repo --tag v1  # ...at a tag (or `--branch`, `--rev`)
 meadow add ../util              # ...or a directory
-meadow update                   # bring dependencies forward, rewriting meadow.lock
+meadow update                   # bring dependencies forward, rewriting Meadow.lock
 meadow update json --dry-run    # ...one of them, and only say what would change
-meadow build --locked           # fail rather than change meadow.lock (what CI wants)
+meadow build --locked           # fail rather than change Meadow.lock (what CI wants)
 meadow build --offline          # never fetch; use what is already cached
 ```
 
@@ -178,7 +178,7 @@ util = { path = "../util" }
 you, and finds the package's name by reading its own manifest rather than
 guessing it from the URL.
 
-What was actually used goes in **`meadow.lock`** — the commit, and a hash of its
+What was actually used goes in **`Meadow.lock`** — the commit, and a hash of its
 source tree. Commit that file: it is what makes a build on another machine the
 build you tested. A branch moves, and a tag _can_ be moved, so a build follows
 the lockfile and never the reference; `meadow update` is how the lockfile
@@ -627,7 +627,7 @@ A commit is checked that way on a rented Linux machine before it is pushed, and
 whoever ran it says so on the commit, as a status called `suite/linux-x86_64`:
 
 ```sh
-gh api repos/mcdearman/meadow/statuses/<sha> -f state=success \
+gh api repos/meadow-lang/meadow/statuses/<sha> -f state=success \
   -f context=suite/linux-x86_64 -f description="check-parallel.sh passed"
 ```
 

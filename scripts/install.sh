@@ -6,7 +6,7 @@
 # This is for working on Meadow, or for a machine with no release build. To
 # install a release, use scripts/meadowup-init.sh instead:
 #
-#   curl -fsSL https://raw.githubusercontent.com/mcdearman/meadow/master/scripts/meadowup-init.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/meadow-lang/meadow/master/scripts/meadowup-init.sh | sh
 #
 # Builds the whole toolchain from source -- `meadow` (the compiler, the build
 # system and the language server) and `meadowup`, which looks after which
@@ -33,7 +33,7 @@
 
 set -eu
 
-REPO="mcdearman/meadow"
+REPO="meadow-lang/meadow"
 MEADOW_HOME="${MEADOW_HOME:-$HOME/.meadow}"
 BIN_DIR="$MEADOW_HOME/bin"
 

@@ -1,8 +1,8 @@
 # MeadowBoot
 
 Meadow's compiler, written in Meadow — the bootstrap. It is built with
-[Lingua](https://github.com/mcdearman/Lingua), Meadow's language workbench,
-and its lexer is written by [Scythe](https://github.com/mcdearman/Scythe).
+[Lingua](https://github.com/meadow-lang/Lingua), Meadow's language workbench,
+and its lexer is written by [Scythe](https://github.com/meadow-lang/Scythe).
 
 Each pass is checked against the Rust compiler's, input by input. A pass
 writes what it made as text, a line an item, and the test writes the Rust

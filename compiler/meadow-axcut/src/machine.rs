@@ -283,10 +283,16 @@ impl<'p> Machine<'p> {
                 let i = index(&vals[0])?;
                 Ok(Value::Bool(matches!(self.globals.get(i), Some(Some(_)))))
             }
-            Prim::GlobalGet => match self.globals.get(index(&vals[0])?) {
-                Some(Some(v)) => Ok(v.clone()),
-                _ => err("a definition read before it was evaluated"),
-            },
+            Prim::GlobalGet => {
+                let i = index(&vals[0])?;
+                match self.globals.get(i) {
+                    Some(Some(v)) => Ok(v.clone()),
+                    _ => err(format!(
+                        "definition {i} read before it was evaluated, when {} of them were",
+                        self.globals.iter().filter(|g| g.is_some()).count()
+                    )),
+                }
+            }
             Prim::Once => Ok(Value::Ref(Rc::new(RefCell::new(Value::Bool(false))))),
             // This machine keeps every continuation on the heap, so the stack
             // primitives have nothing to cut or rejoin. `Detach` answers a

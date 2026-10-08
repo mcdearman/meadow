@@ -78,36 +78,71 @@ fun findImpl (i : Inf s) (tr : String) (key : String) : Maybe ImplDef ! { St s |
 fun wantedAt (i : Inf s) (k : Int) : Wanted ! { St s | e } = B.at i.wanted k
 
 fun setSol (i : Inf s) (k : Int) (sol : Maybe Sol) : () ! { St s | e } =
-  B.put i.wanted k { (wantedAt i k) | sol = sol }
+  let u = B.put i.wanted k { (wantedAt i k) | sol = sol } in
+  -- One whose answer is taken back is unanswered again.
+  if M.isNone sol and not (V.elem k (stGetRef i.unanswered)) then
+    stSetRef i.unanswered (V.pushBack (stGetRef i.unanswered) k)
+  else ()
 
--- Ask for `p`. An associated effect of what it asks for is a variable until
--- an `impl` says what it is, and is remembered as one: a call that performs
--- it has to wait for that, and not be tied to wherever it is made first
--- (`joinEffectInto`).
+-- A wanted trait, kept: where it is among them.
+@pub fun wanting (i : Inf s) (w : Wanted) : Int ! { St s | e } =
+  let k = B.push i.wanted w in
+  let u = stSetRef i.unanswered (V.pushBack (stGetRef i.unanswered) k) in
+  k
+
+-- Ask for `p`.
 fun want (i : Inf s) (p : Pred) (owner : Maybe Int) : Int ! { St s | e } =
-  let u =
-    V.foldl
-      (\w x ->
-        match zonk i.ar x with
-        | Var id ->
-            if slotKind i.ar id == Effect then
-              stSetRef i.assocEffectVars (V.pushBack (stGetRef i.assocEffectVars) id)
-            else ()
-        | _ -> ())
-      ()
-      p.assocs
-  in B.push i.wanted (Wanted { pred = p, owner = owner, sol = None })
+  wanting i (Wanted { pred = p, owner, sol = None })
+
+-- Whether variable `id` is, for now, an associated type or effect of a
+-- wanted trait nothing has answered: what an `impl` will say it is. Looked
+-- for among the unanswered alone, which are few where every associated
+-- effect a unit ever asked for is not.
+@pub fun awaited (i : Inf s) (id : Int) : Bool ! { St s | e } =
+  V.any
+    (\k ->
+      (let w = wantedAt i k in
+       M.isNone w.sol
+         and V.any
+           (\t -> match zonk i.ar t with | Var now -> now == id | _ -> False)
+           w.pred.assocs))
+    (stGetRef i.unanswered)
 
 -- The scheme of a name mentioned, instantiated, wanting what its `where`
 -- asks for.
-@pub fun instantiateAt (i : Inf s) (sc : Scheme) : Type ! { St s | e } =
-  if V.isEmpty sc.preds then instantiate i sc
+@pub fun instantiateAt (i : Inf s) (node : String) (sc : Scheme) : Type ! { St s | e } =
+  if V.isEmpty sc.quant then instantiate i sc
   else
-    match instantiateWithPreds i sc with
-    | (t, preds) ->
-        let owner = stGetRef i.member in
-        let u = V.foldl (\w p -> (let k = want i p owner in ())) () preds in
-        t
+    let fresh = freshQuantifiers i.ar sc in
+    let types = overTypes sc fresh in
+    let u0 =
+      if V.isEmpty types then () else stSetRef i.instAt (H.insert node types (stGetRef i.instAt))
+    in
+    let t = substBound sc.ty fresh in
+    if V.isEmpty sc.preds then t
+    else
+      let owner = stGetRef i.member in
+      let at = V.map (\p -> want i p owner) (predsAt sc fresh) in
+      let u = stSetRef i.atNode (H.insert node at (stGetRef i.atNode)) in
+      t
+
+-- Those of `fresh`, one for each of `sc`'s quantifiers, that are variables
+-- over types: what a value's representation can depend on.
+@pub fun overTypes (sc : Scheme) (fresh : [Type]) : [Type] =
+  V.concatMap
+    (\k -> if V.getOr Plain sc.quant k == Plain then [V.getOr Error fresh k] else [])
+    (V.range 0 (V.len sc.quant))
+
+-- A scheme's `where`, its quantifiers `fresh`.
+fun predsAt (sc : Scheme) (fresh : [Type]) : [Pred] =
+  V.map
+    (\(p : Pred) ->
+      Pred {
+        tr = p.tr,
+        tys = V.map (\t -> substBound t fresh) p.tys,
+        assocs = V.map (\t -> substBound t fresh) p.assocs
+      })
+    sc.preds
 
 -- A binding begins: what is wanted from here on is its body's.
 @pub fun beginBinding (i : Inf s) : Int ! { St s | e } =
@@ -116,8 +151,12 @@ fun want (i : Inf s) (p : Pred) (owner : Maybe Int) : Int ! { St s | e } =
 -- Answer every wanted whose types are known by now, and settle associated
 -- types that have to agree.
 @pub fun solveWanted (i : Inf s) : () ! { St s | e } =
-  let progress = V.foldl (\acc k -> solveOne i k or acc) False (V.range 0 (B.len i.wanted)) in
-  if progress then solveWanted i else ()
+  let progress = V.foldl (\acc k -> solveOne i k or acc) False (stGetRef i.unanswered) in
+  -- What was answered is looked at no more; what answering one wanted in
+  -- turn is there already, after the rest.
+  let u =
+    stSetRef i.unanswered (V.filter (\k -> M.isNone (wantedAt i k).sol) (stGetRef i.unanswered))
+  in if progress then solveWanted i else ()
 
 fun solveOne (i : Inf s) (k : Int) : Bool ! { St s | e } =
   let w = wantedAt i k in
@@ -148,11 +187,12 @@ fun solveOne (i : Inf s) (k : Int) : Bool ! { St s | e } =
 -- wanted in turn.
 fun answerWith (i : Inf s) (k : Int) (tys : [Type]) (found : ImplDef) : () ! { St s | e } =
   let w = wantedAt i k in
-  match instantiateWithPreds i found.scheme with
-  | (dictTy, context) ->
-      let u = unifyAt i dictTy (Con w.pred.tr (V.append tys w.pred.assocs)) in
-      let v = V.foldl (\x p -> (let j = want i p w.owner in ())) () context in
-      setSol i k (Just ByImpl)
+  let fresh = freshQuantifiers i.ar found.scheme in
+  let u =
+    unifyAt i (substBound found.scheme.ty fresh) (Con w.pred.tr (V.append tys w.pred.assocs))
+  in
+  let subs = V.map (\p -> want i p w.owner) (predsAt found.scheme fresh) in
+  setSol i k (Just (ByImpl found.dict (overTypes found.scheme fresh) subs))
 
 -- Wanted `k` is of a type nothing will ever say: answered by the trait's
 -- `impl` for every type, or at `Int` for an integer literal's or an
@@ -195,7 +235,9 @@ fun isNumericTrait (tr : String) : Bool =
     ]
 
 -- One trait at one type has one set of associated types: tie wanted `k`'s to
--- those of whatever else asks the same.
+-- those of whatever else asks the same. What else asks is looked for among
+-- the unanswered before it: one answered has its own from what answered
+-- it, and every wanted the unit ever had is far more than those.
 fun agree (i : Inf s) (k : Int) (tys : [Type]) : () ! { St s | e } =
   let w = wantedAt i k in
   if V.isEmpty w.pred.assocs then ()
@@ -205,7 +247,7 @@ fun agree (i : Inf s) (k : Int) (tys : [Type]) : () ! { St s | e } =
         (\j ->
           (let o = wantedAt i j in
            if o.pred.tr == w.pred.tr then [(o.pred.tys, o.pred.assocs)] else []))
-        (V.range 0 k)
+        (V.filter (\j -> j < k) (stGetRef i.unanswered))
     in
     let given =
       V.concatMap
@@ -316,7 +358,7 @@ fun knownAssoc (i : Inf s) (owner : String) (assoc : String) (over : [Type])
         (let x = V.foldl (\y t -> holdBack i.ar t level) () w.pred.tys in
          V.foldl (\y t -> holdBack i.ar t level) () w.pred.assocs))
     ()
-    (V.range 0 (B.len i.wanted))
+    (stGetRef i.unanswered)
 
 -- The top-level bindings `members` have been inferred together: what each
 -- asks of its caller -- its `where` -- and the wanteds their bodies had of
@@ -349,14 +391,49 @@ fun knownAssoc (i : Inf s) (owner : String) (assoc : String) (over : [Type])
         in
         let only = if V.len members == 1 then M.map fst (V.get members 0) else None in
         let w = V.foldl (\x pj -> placeWanted i lists only pj) () pending in
-        H.fromVec
-          (V.map
-             (\kv ->
-               (
-                 fst kv,
-                 V.map (\j -> V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j) (snd kv)
-               ))
-             (H.toVec lists))
+        -- A member mentioned from inside the group was monomorphic there, so
+        -- nothing was wanted at the mention: it is handed the mentioning
+        -- function's own dictionaries, trait for trait.
+        let mentioned = stGetRef i.mentions in
+        let w2 = stSetRef i.mentions [] in
+        let w3 =
+          V.foldl
+            (\x mention ->
+              match mention with
+              | (node, callee, from) ->
+                  (match (
+                     H.lookup callee lists,
+                     M.andThen
+                       (\f -> H.lookup f lists)
+                       (match from with | Just f -> Just f | None -> only)
+                   ) with
+                   | (Just theirs, Just ours) ->
+                       if V.isEmpty theirs then ()
+                       else
+                         stSetRef
+                           i.fixed
+                           (H.insert
+                              node
+                              (V.map
+                                 (\j ->
+                                   match V.find
+                                     (\at -> V.get ours at == Just j)
+                                     (V.range 0 (V.len ours)) with
+                                   | Just at -> Evidence.Given at
+                                   | None -> Evidence.Missing)
+                                 theirs)
+                              (stGetRef i.fixed))
+                   | _ -> ()))
+            ()
+            mentioned
+        in H.fromVec
+             (V.map
+                (\kv ->
+                  (
+                    fst kv,
+                    V.map (\j -> V.getOr (Pred { tr = "", tys = [], assocs = [] }) all j) (snd kv)
+                  ))
+                (H.toVec lists))
 
 -- One wanted of the group's: through a given if one answers it, into the
 -- group's `where` if its variables are the group's, or left.
@@ -365,9 +442,9 @@ fun closeOne
     (level : Int)
     (signed : Bool)
     (signatureVars : [Int])
-    (acc : ([Pred], [(Int, Int)]))
+    (acc : ([Pred], [(Int, Int, [String])]))
     (k : Int)
-    : ([Pred], [(Int, Int)]) ! { St s | e } =
+    : ([Pred], [(Int, Int, [String])]) ! { St s | e } =
   match acc with
   | (all, pending) ->
       let w = wantedAt i k in
@@ -409,7 +486,7 @@ fun closeOne
                   (\x n -> unifyAt i (V.getOr Error w.pred.assocs n) (V.getOr Error theirs n))
                   ()
                   (V.range 0 (min (V.len w.pred.assocs) (V.len theirs)))
-              in (all, V.pushBack pending (k, j))
+              in (all, V.pushBack pending (k, j, V.map (\(sup : Super) -> sup.tr) path))
           | None ->
               if not ours then acc
               else if signed then
@@ -423,7 +500,7 @@ fun closeOne
                    in
                    let v = setSol i k (Just Failed) in
                    acc)
-              else (V.pushBack all w.pred, V.pushBack pending (k, V.len all))
+              else (V.pushBack all w.pred, V.pushBack pending (k, V.len all, []))
 
 -- The places in the group's `where` a member of type `t` asks for: every one
 -- whose types its own type settles, and those that settles in turn.
@@ -451,23 +528,27 @@ fun settleLoop (i : Inf s) (all : [Pred]) (settled : [Int]) (mine : [Int]) : [In
 
 -- A wanted is answered by its own function's parameter -- or, if its function
 -- does not ask for it, defaulted, or ambiguous.
-fun placeWanted (i : Inf s) (lists : HashMap Int [Int]) (only : Maybe Int) (pj : (Int, Int))
+fun placeWanted
+    (i : Inf s)
+    (lists : HashMap Int [Int])
+    (only : Maybe Int)
+    (pj : (Int, Int, [String]))
     : () ! { St s | e } =
-  let k = fst pj in
-  let j = snd pj in
+  let (k, j, path) = pj in
   let w = wantedAt i k in
   let owner = (match w.owner with | Just o -> Just o | None -> only) in
-  let placed =
+  let place =
     (match M.andThen (\o -> H.lookup o lists) owner with
-     | Just mine -> V.elem j mine
-     | None -> False)
-  in if placed then setSol i k (Just ByGiven)
-     else
-       let u = setSol i k None in
-       if defaultWanted i k then ()
-       else
-         (let v = report i "cannot tell which `impl ${spelling w.pred.tr}` is meant" in
-          setSol i k (Just Failed))
+     | Just mine -> V.find (\at -> V.get mine at == Just j) (V.range 0 (V.len mine))
+     | None -> None)
+  in match place with
+     | Just at -> setSol i k (Just (ByGiven at path))
+     | None ->
+         let u = setSol i k None in
+         if defaultWanted i k then ()
+         else
+           (let v = report i "cannot tell which `impl ${spelling w.pred.tr}` is meant" in
+            setSol i k (Just Failed))
 
 -- The unit is done: what is still wanted of a type nothing said is
 -- defaulted, one at a time, and what is left is ambiguous.
@@ -482,6 +563,30 @@ fun placeWanted (i : Inf s) (lists : HashMap Int [Int]) (only : Maybe Int) (pj :
          setSol i k (Just Failed)))
     ()
     (V.range 0 (B.len i.wanted))
+
+-- What each mention of a name with a `where` is applied to, once the unit
+-- is done: by where the mention is.
+@pub fun evidenceOfUnit (i : Inf s) : HashMap String [Evidence] ! { St s | e } =
+  V.foldl
+    (\h kv -> H.insert (fst kv) (V.map (evidenceOf i) (snd kv)) h)
+    (stGetRef i.fixed)
+    (H.toVec (stGetRef i.atNode))
+
+-- The types each mention of a generic name is at, once the unit is done.
+@pub fun instsOfUnit (i : Inf s) : HashMap String [Type] ! { St s | e } =
+  V.foldl
+    (\h kv -> H.insert (fst kv) (V.map (settled i.ar) (snd kv)) h)
+    H.empty
+    (H.toVec (stGetRef i.instAt))
+
+-- The dictionary that answers wanted `k`.
+@pub fun evidenceOf (i : Inf s) (k : Int) : Evidence ! { St s | e } =
+  match (wantedAt i k).sol with
+  | Just (ByGiven at path) ->
+      V.foldl (\e tr -> Evidence.Super e (superLabel tr)) (Evidence.Given at) path
+  | Just (ByImpl dict tys subs) ->
+      Evidence.Impl dict (V.map (settled i.ar) tys) (V.map (evidenceOf i) subs)
+  | _ -> Evidence.Missing
 
 fun finishFrom (i : Inf s) (k : Int) : () ! { St s | e } =
   if k >= B.len i.wanted then ()
@@ -570,8 +675,8 @@ fun liftEach (i : Inf s) (ts : [Type]) (st : AssocVars) : ([Type], AssocVars) ! 
            ([], st)
            (V.range 0 (V.len sh.assocs))
        in match scrutinee with
-          | (assocs, st2) -> (Pred { tr = tr, tys = tys, assocs = assocs }, st2))
-  | None -> (Pred { tr = tr, tys = tys, assocs = [] }, st)
+          | (assocs, st2) -> (Pred { tr, tys, assocs }, st2))
+  | None -> (Pred { tr, tys, assocs = [] }, st)
 
 -- Every predicate `table` still needs, after `preds`: the trait of each
 -- associated type at its types, unless one of `preds` is it.
@@ -602,7 +707,7 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int)
   let vars = indexed names in
   let raw = tyOf i a t vars in
   let quant = markEffectVars raw (V.replicate (V.len names) Plain) in
-  match liftAssocs i raw (AssocVars { table = [], quant = quant }) with
+  match liftAssocs i raw (AssocVars { table = [], quant }) with
   | (ty, st1) ->
       let scrutinee =
         V.foldl
@@ -622,7 +727,7 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int)
       in match scrutinee with
          | (preds, st2) ->
              match impliedPreds i preds st2 0 with
-             | (all, st3) -> Scheme { quant = st3.quant, preds = all, ty = ty, lacks = [] }
+             | (all, st3) -> Scheme { quant = st3.quant, preds = all, ty, lacks = [] }
 
 -- An annotation's type, its variables made fresh already: every `Elem τ` a
 -- fresh variable, wanted of `τ`'s `impl`.
@@ -751,12 +856,12 @@ fun impliedPreds (i : Inf s) (preds : [Pred]) (st : AssocVars) (k : Int)
     TraitShape {
       params = np,
       effectParams = V.replicate np False,
-      supers = supers,
+      supers,
       assocs = allAssocs,
-      assocParams = assocParams,
+      assocParams,
       ownAssocs = V.len assocs,
       methods = V.map (\m -> match m with | (mn, _, _, _) -> mn) methods,
-      dict = dict,
+      dict,
       labels =
         V.append
           (V.map (\(sup : Super) -> superLabel sup.tr) supers)
@@ -848,7 +953,7 @@ fun registerMethod
         V.map
           (\k -> (V.getOr "" assocs k, V.map (\p -> Bound p) (V.getOr [] assocParams k), np + k))
           (V.range 0 n)
-      in match liftAssocs i raw (AssocVars { table = table, quant = quant }) with
+      in match liftAssocs i raw (AssocVars { table, quant }) with
          | (ty, st) ->
              let field =
                substBound
@@ -860,8 +965,8 @@ fun registerMethod
              let sc =
                Scheme {
                  quant = st.quant,
-                 preds = [Pred { tr = tr, tys = V.take headArgs np, assocs = V.drop headArgs np }],
-                 ty = ty,
+                 preds = [Pred { tr, tys = V.take headArgs np, assocs = V.drop headArgs np }],
+                 ty,
                  lacks = []
                }
              in
@@ -891,17 +996,14 @@ fun registerMethod
   let u =
     stSetRef
       i.ctors
-      (H.insert
-         ctor
-         (Scheme { quant = quant, preds = [], ty = cty, lacks = [] })
-         (stGetRef i.ctors))
+      (H.insert ctor (Scheme { quant, preds = [], ty = cty, lacks = [] }) (stGetRef i.ctors))
   in
   let labels =
     (if V.all (\f -> M.isSome (fst f)) fields and not (V.isEmpty fields) then
        Just (V.map (\f -> M.unwrapOr "" (fst f)) fields)
      else None)
   in
-  let sig = VariantSig { name = ctor, fields = fieldTys, labels = labels } in
+  let sig = VariantSig { name = ctor, fields = fieldTys, labels } in
   let group = M.unwrapOr [] (H.lookup tyname (stGetRef i.variants)) in
   let replaced =
     (if V.any (\(v : VariantSig) -> v.name == ctor) group then
@@ -917,7 +1019,7 @@ fun registerMethod
         | Just nm ->
             H.insert
               nm
-              (Scheme { quant = quant, preds = [], ty = Fun [head] (snd f) RowEmpty, lacks = [] })
+              (Scheme { quant, preds = [], ty = Fun [head] (snd f) RowEmpty, lacks = [] })
               h
         | None -> h)
       accessors
@@ -1040,12 +1142,7 @@ fun registerMethod
                                (V.range sh.ownAssocs (V.len sh.assocs)) with
                              | (args, st3, preds) ->
                                  let sc =
-                                   Scheme {
-                                     quant = st3.quant,
-                                     preds = preds,
-                                     ty = Con tr args,
-                                     lacks = []
-                                   }
+                                   Scheme { quant = st3.quant, preds, ty = Con tr args, lacks = [] }
                                  in match findImpl i tr k with
                                     | Just prev ->
                                         (if prev.dict != dict then
@@ -1057,9 +1154,7 @@ fun registerMethod
 
 fun addImpl (i : Inf s) (tr : String) (k : String) (dict : Int) (sc : Scheme) : () ! { St s | e } =
   let u = setScheme i dict sc in
-  stSetRef
-    i.impls
-    (H.insert (implKey tr k) (ImplDef { dict = dict, scheme = sc }) (stGetRef i.impls))
+  stSetRef i.impls (H.insert (implKey tr k) (ImplDef { dict, scheme = sc }) (stGetRef i.impls))
 
 fun inheritedAssoc
     (i : Inf s)
@@ -1118,6 +1213,4 @@ fun distinctParams (head : Type) : Bool =
 -- an arena variable for each quantifier.
 @pub fun recordPoly (i : Inf s) (vid : Int) (sc : Scheme) : () ! { St s | e } =
   let vars = V.map (\k -> match freshIn i.ar k with | Var id -> id | _ -> 0) sc.quant in
-  stSetRef
-    i.generalized
-    (H.insert vid (Generalized { scheme = sc, vars = vars }) (stGetRef i.generalized))
+  stSetRef i.generalized (H.insert vid (Generalized { scheme = sc, vars }) (stGetRef i.generalized))

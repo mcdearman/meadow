@@ -198,13 +198,10 @@ fun frameOf (pkg : String) (src : Source) : (ModFrame, Bool) ! { Table Binder | 
               [(snd x, M.unwrapOr Private (visOf a (fst x)))]
             else [])
           decls
-      in (ModFrame { src = src, items = items, uses = uses }, said)
+      in (ModFrame { src, items, uses }, said)
 
 fun item (name : String) (kind : String) (id : Int) (vis : Vis) (owner : String) : Item =
-  Item {
-    name = name, kind = kind, id = id, vis = vis, owner = owner, flat = False, fields = None,
-    canon = ""
-  }
+  Item { name, kind, id, vis, owner, flat = False, fields = None, canon = "" }
 
 -- `i`, declared in module `path` of package `pkg`, with its canonical name:
 -- a type's its qualified path, a constructor's its type's and its own.
@@ -639,6 +636,7 @@ record Shared = {
   builtinType : Int,
   builtinCtor : Int,
   typeCtors : HashMap Int (HashMap String Int),
+  stdTypes : HashMap String Int,
   bools : HashMap String Int,
   builtinTypes : [(String, Int)],
   builtinCtors : [(String, Int)],
@@ -708,6 +706,7 @@ fun scopeOf (cx : UnitCx) (sh : Shared) (m : ModFrame) : (Scope, [Item], [(Meta,
       ctors = candidates (firstWins (V.append sh.builtinCtors base.ctors)) used.ctors,
       ctorFields = sh.ctorFields,
       typeCtors = sh.typeCtors,
+      stdTypes = sh.stdTypes,
       unknown = sh.unknown,
       builtinType = sh.builtinType,
       builtinCtor = sh.builtinCtor,
@@ -757,13 +756,13 @@ fun scopeOf (cx : UnitCx) (sh : Shared) (m : ModFrame) : (Scope, [Item], [(Meta,
   match tabled (\() -> renaming pkg isStd sources deps) with
   | ((programs, exports, anyVis, modules, depItems, prims), binders) ->
       Renamed {
-        programs = programs,
-        binders = binders,
+        programs,
+        binders,
         exports = V.map (\(e : Export) -> { e | site = siteOfId binders e.site }) exports,
-        anyVis = anyVis,
-        modules = modules,
-        depItems = depItems,
-        prims = prims
+        anyVis,
+        modules,
+        depItems,
+        prims
       }
 
 -- An export's site, while renaming: its binder's id, which is read back as
@@ -786,7 +785,7 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExpo
       (\(d : DepExports) -> Dep { name = d.name, items = depItemsOf d.exports, anyVis = d.anyVis })
       deps
   in
-  let cx = UnitCx { pkg = pkg, isStd = isStd, anyVis = anyVis, frames = frames, deps = depCx } in
+  let cx = UnitCx { pkg, isStd, anyVis, frames, deps = depCx } in
   -- Every constructor of every type the unit knows, by its type: its own
   -- modules', each type with the constructors declared beside it, and its
   -- dependencies'.
@@ -815,6 +814,17 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExpo
           items)
       H.empty
       groups
+  in
+  -- The standard library's types, by name, wherever in it they are: what a
+  -- type's name means where a built-in derive wrote it, whether or not the
+  -- module names that type itself.
+  let stdTypes =
+    V.foldl
+      (\h (t : Item) ->
+        if t.kind == "t" and M.isNone (H.lookup t.name h) then H.insert t.name t.id h else h)
+      H.empty
+      (if isStd then V.concatMap (\(f : ModFrame) -> f.items) frames
+       else V.concatMap (\(d : Dep) -> if d.name == "Std" then V.map snd d.items else []) depCx)
   in
   -- `and` and `or` are `Bool`'s constructors, whatever is in scope.
   let allItems =
@@ -897,17 +907,18 @@ fun renaming (pkg : String) (isStd : Bool) (sources : [Source]) (deps : [DepExpo
   in
   let sh =
     Shared {
-      prims = prims,
-      unknown = unknown,
-      builtinType = builtinType,
-      builtinCtor = builtinCtor,
-      typeCtors = typeCtors,
-      bools = bools,
-      builtinTypes = builtinTypes,
-      builtinCtors = builtinCtors,
-      traitAssocs = traitAssocs,
+      prims,
+      unknown,
+      builtinType,
+      builtinCtor,
+      typeCtors,
+      stdTypes,
+      bools,
+      builtinTypes,
+      builtinCtors,
+      traitAssocs,
       vectorEmpty = ctorNamed "Vector" "Empty",
-      ctorFields = ctorFields
+      ctorFields
     }
   in
   let done =

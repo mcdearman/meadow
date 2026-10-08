@@ -92,7 +92,7 @@ fn the_server_fetches_what_a_package_needs_once_and_pins_it() {
         "the dependency came with it"
     );
     assert!(
-        fetched.join("meadow.lock").exists(),
+        fetched.join("Meadow.lock").exists(),
         "pinned, as a build would have pinned it"
     );
     // From the cache from now on.

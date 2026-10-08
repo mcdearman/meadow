@@ -30,7 +30,7 @@
 //!
 //! `branch = "main"` moves, and a tag *can* be moved -- `git push --force`
 //! rewrites what `v1.2.0` means. So what a build resolved is recorded in
-//! `meadow.lock` and checked on the way back: if a tag now names a different
+//! `Meadow.lock` and checked on the way back: if a tag now names a different
 //! commit, that is an error rather than a silently different program. This is
 //! the integrity check for a git dependency, and git computes it for us, since
 //! a commit name *is* a hash of everything reachable from it.
@@ -148,6 +148,10 @@ pub fn ensure(
     // is for whoever asks for one directly -- `meadow add`; a build decides
     // between the requirements it has first and asks for the release it chose.
     let resolved;
+    // A version names whichever release is newest when it is resolved, so a
+    // release tagged since is not a tag that moved: what is pinned is still
+    // the release it was, and `meadow update` is how the newer one is taken.
+    let by_version = matches!(reference, GitRef::Version(_));
     let reference = match reference {
         GitRef::Version(req) => {
             let have = releases(cache, url, net)?;
@@ -175,7 +179,7 @@ pub fn ensure(
         && !is_commit_id(rev)
     {
         return Err(format!(
-            "meadow.lock gives `{rev}` as the commit of `{url}`, which is not a \
+            "Meadow.lock gives `{rev}` as the commit of `{url}`, which is not a \
              commit id; refusing it"
         ));
     }
@@ -217,17 +221,18 @@ pub fn ensure(
         Some(rev) => {
             let found = rev_parse(&db, rev).map_err(|_| {
                 format!(
-                    "`{url}` has no commit {rev}, which meadow.lock says to use.\n\
+                    "`{url}` has no commit {rev}, which Meadow.lock says to use.\n\
                      The history it was on may have been rewritten."
                 )
             })?;
             // A branch or tag that has moved is reported rather than followed.
             if let Ok(now) = rev_parse(&db, reference.refspec())
                 && now != found
+                && !by_version
                 && !matches!(reference, GitRef::Default | GitRef::Branch(_))
             {
                 return Err(format!(
-                    "`{}` of `{url}` now names commit {}, but meadow.lock says {}.\n\
+                    "`{}` of `{url}` now names commit {}, but Meadow.lock says {}.\n\
                      A tag that moves is a different program under the same name. \
                      Run `meadow update` to take the new one deliberately.",
                     reference.written().unwrap_or_else(|| "HEAD".to_string()),

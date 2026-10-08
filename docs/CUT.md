@@ -49,9 +49,8 @@ None of them depends on any front end.
 
 `meadow cut FILE` runs a program of Cut's text: lowered to AxCut and run on
 Glade, or, with `--runtime silo`, built as an executable and run. The lowering
-takes a program that handles no effects of its own -- data, objects,
-definitions, top-level values, primitives, and the operations the `native`
-table hands the runtime -- and refuses any other, saying what it met.
+takes everything here but a `μ` where a value is wanted other than as a
+definition's argument, and refuses a program with one, saying so.
 
 ## Representations
 
@@ -468,6 +467,17 @@ both front ends' interpreters agree on:
 - `mod` is the remainder of that division, with the dividend's sign.
 - `div` or `mod` by zero is a run-time error, "division by zero" or "modulo by
   zero". It is never undefined.
+
+A record is built by `record { l = p, ... }` and taken apart a field at a
+time, by its label -- written as a string literal, since it is a name the back
+end is given and not a value the program computes:
+
+```text
+prim select(r, "x"; c)              the field `x` of `r`
+prim extend(r, "x", p; c)           `r` with its `x` set, or added, to `p`
+```
+
+Reading a field a record does not have is a run-time error.
 
 Text and arrays have their own primitives, among them `concatStrings` (an
 array of strings, joined), `stringByteLength`, `stringByteAt` (the byte at an

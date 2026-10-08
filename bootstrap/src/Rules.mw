@@ -120,7 +120,7 @@ fun isDeclBang (t : Tok) : Bool = match t.token with | Token.DeclBang -> True | 
 fun same (a : Tok) (b : Tok) : Bool = a.text == b.text and isDeclBang a == isDeclBang b
 
 -- `t`, standing for `from` to `to`.
-fun at (from : Int) (to : Int) (t : Tok) : Tok = { t | from = from, to = to }
+fun at (from : Int) (to : Int) (t : Tok) : Tok = { t | from = from, to }
 
 -- --- fragments ---------------------------------------------------------------
 
@@ -211,7 +211,7 @@ use Piece.*
 }
 
 fun invalid (msg : String) (label : String) (t : Tok) : Invalid =
-  Invalid { msg = msg, label = label, from = t.from, to = t.to }
+  Invalid { msg, label, from = t.from, to = t.to }
 
 fun pieces (trees : [Tree]) : Result Invalid [Piece] = piecesFrom trees 0 []
 

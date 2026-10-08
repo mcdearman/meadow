@@ -24,6 +24,6 @@ fun drain ch (n : Int) (acc : Int) : Int ! Thread =
 fun main () =
   let ch = Thread.newChannel () in
   let _ =
-    V.map (\p -> Thread.spawn (\() -> send ch (p * each) 0)) [0..producers - 1]
+    V.map (\p -> Thread.spawn (\() -> send ch (p * each) 0)) [0..producers]
   in
   println (drain ch (producers * each) 0)

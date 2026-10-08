@@ -191,11 +191,25 @@ fn lowered(p: &Program, prints: bool) -> R<Lowered> {
         next_tag: 0,
         defs: HashMap::new(),
         vals: HashMap::new(),
+        literals: HashMap::new(),
         methods: Vec::new(),
     };
     l.declare(p)?;
     for (i, v) in whole.vals.iter().enumerate() {
         l.vals.insert(v.symbol.clone(), (i as i64, l.rep(&v.rep)?));
+        if let Statement::Cut(x, Consumer::Halt) = &v.body
+            && matches!(
+                x,
+                Producer::Int(_)
+                    | Producer::Float(_)
+                    | Producer::Char(_)
+                    | Producer::Bool(_)
+                    | Producer::Unit
+                    | Producer::Str(_)
+            )
+        {
+            l.literals.insert(v.symbol.clone(), x.clone());
+        }
     }
     for (i, d) in p.defs.iter().enumerate() {
         // What makes a value is the value's, to whoever asks what a block
@@ -289,6 +303,10 @@ struct Lower {
     /// Each top-level value's place among the machine's globals, and how it
     /// is represented.
     vals: HashMap<Symbol, (i64, ax::Rep)>,
+    /// The values that are a literal written out: a mention of one is the
+    /// literal, which costs nothing to write again -- what
+    /// `meadow_core::globals::inline_literals` does to a program of core.
+    literals: HashMap<Symbol, Producer>,
     /// Every method any object of the program has, by name: a method's tag
     /// is its place here, so that a call need not know which object it has.
     methods: Vec<String>,
@@ -1562,6 +1580,9 @@ impl Lower {
             // time this thread wants it (`lazily`): what follows is what it
             // is given to.
             Producer::Val(v) => {
+                if let Some(literal) = self.literals.get(v).cloned() {
+                    return self.atom(&literal, sc, steps);
+                }
                 let Some(&(_, rep)) = self.vals.get(v) else {
                     return Err(format!("`{v}` is not a value of this program"));
                 };
@@ -1972,7 +1993,8 @@ fn forced(def: &Symbol) -> Symbol {
 /// no other. What `meadow_core::globals` does to a program of core. The
 /// definition asks whether the value's place is filled, answers what is
 /// there if it is, and otherwise runs the value's statement -- `halt` in it
-/// the continuation that fills the place and answers.
+/// the continuation that fills the place and answers. A value that is a
+/// function written out has no place: its definition answers the function.
 fn lazily(p: &Program) -> Program {
     let mut out = p.clone();
     out.vals.clear();
@@ -2010,6 +2032,21 @@ fn lazily(p: &Program) -> Program {
                 Box::new(Statement::Cut(Producer::Var("#had".to_string()), k())),
             )],
         );
+        // A function is made again where it is wanted, and has no place: it
+        // holds nothing, so making it is one object, where asking whether a
+        // place is filled and reading it are two calls into the runtime --
+        // and a program mentions its functions far more than its values.
+        if let Statement::Cut(Producer::Cocase(methods), Consumer::Halt) = &v.body {
+            out.defs.push(Def {
+                symbol: forcing(&v.symbol),
+                rep_vars: Vec::new(),
+                effect_vars: Vec::new(),
+                params: Vec::new(),
+                conts: vec!["#k".to_string()],
+                body: Statement::Cut(Producer::Cocase(methods.clone()), k()),
+            });
+            continue;
+        }
         let body = Statement::Prim(
             "globalReady".to_string(),
             vec![place()],

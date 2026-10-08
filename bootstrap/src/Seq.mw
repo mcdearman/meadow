@@ -164,11 +164,16 @@ pass! {
          let inner = lowerTerm src out { cx | k = C.cont out here k } body in
          C.give out here (C.function out here "v${show param}" (repIn cx paramTy) k inner) cx.k)
     | App { raw func, raw arg } ->
-        (let f = "f${show node}" in
-         let a = "a${show node}" in
-         let call = C.applied out here (C.var out here f) (C.var out here a) cx.k in
-         let given = named src out cx here a arg call in
-         named src out cx here f func given)
+        (match spine src func [arg] with
+         | (head, args) ->
+             (match known src cx head (V.len args) with
+              | Just (symbol, tys, n) -> direct src out cx here node symbol tys n args
+              | None ->
+                  (let f = "f${show node}" in
+                   let a = "a${show node}" in
+                   let call = C.applied out here (C.var out here f) (C.var out here a) cx.k in
+                   let given = named src out cx here a arg call in
+                   named src out cx here f func given)))
     | Let { id, raw value, raw body } ->
         (if kindCoreTerm src value == CoreTermKind.TyLam then
            genericLet src out cx here id value body
@@ -197,12 +202,20 @@ pass! {
          -- continuation alone does not say: one of an array's items is
          -- whatever the array holds.
          let x = "x${show node}" in
+         -- A thread is started with how what it answers is represented: a
+         -- task is a pointer, and says nothing of it.
+         let answers =
+           (match (op, tyCoreTerm src node) with
+            | ("ThreadSpawn", Con "Task" tys) ->
+                (if V.len tys == 1 then descsOf out cx here tys else [])
+            | _ -> [])
+         in
          let done =
            C.prim
              out
              here
              (primName op)
-             (V.map (\n -> C.var out here n) names)
+             (V.append answers (V.map (\n -> C.var out here n) names))
              [C.binding
                 out
                 here
@@ -388,7 +401,20 @@ pass! {
            here
            a
            arg
-           (C.performed out here (opSymbol eff op) [C.var out here a] cx.k))
+           -- What it is resumed with is named at its own representation:
+           -- an effect that takes types declares none for what one of them
+           -- stands for, and a continuation alone does not say.
+           (C.performed
+              out
+              here
+              (opSymbol eff op)
+              [C.var out here a]
+              (C.binding
+                 out
+                 here
+                 "x${show node}"
+                 (repIn cx (tyCoreTerm src node))
+                 (C.give out here (C.var out here "x${show node}") cx.k))))
     | Handle { raw body, raw clauses, retId, raw ret } ->
         (let h = "h${show node}" in
          let b = "b${show node}" in
@@ -439,6 +465,105 @@ pass! {
     | PRecord { raw fields } -> ()
     | PField { label, raw pat } -> ()
 }
+
+-- --- calls ------------------------------------------------------------------
+--
+-- A function written at the top with its parameters -- `fun f x y = e` -- is
+-- two definitions: one of all its parameters at once, and the function as
+-- a value, which takes them one at a time and calls that. A call that
+-- gives a name of one all the arguments it is written with calls the first
+-- directly, and makes no function on the way.
+
+-- What is called, and its arguments in order: `f a b` is `f` and `a`, `b`.
+fun spine src func (args : [CoreTerm]) =
+  match viewCoreTerm src func with
+  | CoreTermView.App r -> spine src r.func (V.pushFront args r.arg)
+  | _ -> (func, args)
+
+-- The definition of all its parameters `head` names, the types it is asked
+-- for at, and how many parameters that is -- if it names one, and is given
+-- at least that many arguments.
+fun known src cx head (given : Int) : Maybe (String, [Type], Int) =
+  let named =
+    \id tys generic ->
+      (match H.lookup id cx.arity with
+       | Just (symbol, n, types) ->
+           if n > 0 and given >= n and (types > 0) == generic then Just (symbol, tys, n) else None
+       | None -> None)
+  in match viewCoreTerm src head with
+     | CoreTermView.Var r -> named r.id [] False
+     | CoreTermView.TyApp r ->
+         (match viewCoreTerm src r.func with
+          | CoreTermView.Var v -> named v.id r.tys True
+          | _ -> None)
+     | _ -> None
+
+-- The symbol of a function's definition of all its parameters, by the
+-- symbol of the function.
+fun directly (symbol : String) : String = "${symbol}f"
+
+-- A call of the definition `symbol` of `n` parameters with the first `n` of
+-- `args`, each named in turn, and what it answers applied to the rest one
+-- at a time.
+fun direct src out cx (m : Meta) node (symbol : String) (tys : [Type]) (n : Int) args =
+  let names = V.map (\i -> "a${show node}_${show i}") (V.range 0 (V.len args)) in
+  let rest = V.drop names n in
+  let after =
+    V.foldr
+      (\i k ->
+        (let f = if i == 0 then "f${show node}" else "f${show node}_${show i}" in
+         C.binding
+           out
+           m
+           f
+           "ptr"
+           (C.applied out m (C.var out m f) (C.var out m (V.getOr "" rest i)) k)))
+      cx.k
+      (V.range 0 (V.len rest))
+  in
+  let call =
+    C.invoke
+      out
+      m
+      (directly symbol)
+      (V.append (descsOf out cx m tys) (V.map (\x -> C.var out m x) (V.take names n)))
+      [after]
+  in V.foldr (\pair acc -> named src out cx m (fst pair) (snd pair) acc) call (V.zip names args)
+
+-- A function of `params` as a value, given to `k`: one that takes them one
+-- at a time from the `i`th on, and then calls the definition of them all,
+-- `symbol`'s, generic in `vars`.
+fun curried out cx (symbol : String) (vars : [Int]) (params : [(Int, Type)]) (i : Int) k =
+  if i >= V.len params then
+    C.invoke
+      out
+      C.nowhere
+      (directly symbol)
+      (V.append
+         (descsOf out cx C.nowhere (V.map (\v -> Var v) vars))
+         (V.map (\p -> C.var out C.nowhere "v${show (fst p)}") params))
+      [k]
+  else
+    (let p = V.getOr (0, Error) params i in
+     let w = "w${show i}" in
+     C.give
+       out
+       C.nowhere
+       (C.function
+          out
+          C.nowhere
+          "v${show (fst p)}"
+          (repIn cx (snd p))
+          w
+          (curried out cx symbol vars params (i + 1) (C.cont out C.nowhere w)))
+       k)
+
+-- A function's parameters as it is written with them, each with its type,
+-- and its body: `\x -> \y -> e` is `x`, `y` and `e`.
+fun lams src term (params : [(Int, Type)]) =
+  match viewCoreTerm src term with
+  | CoreTermView.Lam r -> lams src r.body (V.pushBack params (r.param, r.paramTy))
+  | _ -> (params, term)
 
 -- `term` lowered so that its value is `name` in `rest`.
 fun named src out cx (m : Meta) (name : String) term rest =
@@ -920,6 +1045,27 @@ fun lowered
       H.empty
       (coreFileExterns a file)
   in
+  -- Each function written with its parameters, its own and another unit's:
+  -- its symbol, how many they are, and how many types it is generic in.
+  let arity =
+    V.foldl
+      (\h x ->
+        if coreExternArity a x > 0 then
+          H.insert
+            (coreExternId a x)
+            (coreExternSymbol a x, coreExternArity a x, coreExternTypes a x)
+            h
+        else h)
+      (V.foldl
+         (\h d ->
+           (let (vars, inner) = peel a (coreDefBody a d) in
+            let n = V.len (fst (lams a inner [])) in
+            if n > 0 then H.insert (coreDefId a d) (topSymbol pkg (coreDefId a d), n, V.len vars) h
+            else h))
+         H.empty
+         defs)
+      (coreFileExterns a file)
+  in
   let tops =
     V.foldl
       (\h x -> H.insert (coreExternId a x) True h)
@@ -1012,7 +1158,8 @@ fun lowered
         locals = H.empty,
         pkg,
         pkgs = packages,
-        ext
+        ext,
+        arity
       }
     in
     -- A definition generic in its type is a `def` of the descriptors,
@@ -1022,26 +1169,45 @@ fun lowered
         (\d ->
           (let (vars, inner) = peel a (coreDefBody a d) in
            let before = V.len (stGetRef lifted) in
+           let symbol = topSymbol pkg (coreDefId a d) in
+           let within = { cx | tvars = vars } in
+           let (params, body) = lams a inner [] in
+           -- A function of parameters is a definition of them all at once,
+           -- and the value that takes them one at a time is a call of it.
+           let whole =
+             if V.isEmpty params then []
+             else
+               [C.genericDecl
+                  out
+                  C.nowhere
+                  (directly symbol)
+                  (V.map tname vars)
+                  (V.map
+                     (\p -> C.param out C.nowhere "v${show (fst p)}" (repIn within (snd p)))
+                     params)
+                  [C.param out C.nowhere "k" "ptr"]
+                  (lowerTerm a out { within | k = C.cont out C.nowhere "k" } body)]
+           in
+           let value =
+             \k ->
+               if V.isEmpty params then lowerTerm a out { within | k = k } inner
+               else curried out within symbol vars params 0 k
+           in
            let made =
              if V.isEmpty vars then
-               C.valDecl
-                 out
-                 C.nowhere
-                 (topSymbol pkg (coreDefId a d))
-                 (repOf (tyCoreTerm a inner))
-                 (lowerTerm a out cx inner)
+               C.valDecl out C.nowhere symbol (repOf (tyCoreTerm a inner)) (value halt)
              else
                C.genericDecl
                  out
                  C.nowhere
-                 (topSymbol pkg (coreDefId a d))
+                 symbol
                  (V.map tname vars)
                  []
                  [C.param out C.nowhere "k" "ptr"]
-                 (lowerTerm a out { cx | tvars = vars, k = C.cont out C.nowhere "k" } inner)
+                 (value (C.cont out C.nowhere "k"))
            in (
-                topSymbol pkg (coreDefId a d),
-                V.pushBack (V.drop (stGetRef lifted) before) made,
+                symbol,
+                V.concat [V.drop (stGetRef lifted) before, whole, [made]],
                 V.map
                   (\id ->
                     match H.lookup id ext with
@@ -1072,7 +1238,7 @@ fun lowered
           out
           C.nowhere
           "${package}\"#entry\""
-          "str"
+          (answering answerTy)
           (V.concat [declared, effects, vals, [shown], showers])
     in (C.finished out root, V.append declared effects, parts))
 
@@ -1101,18 +1267,15 @@ fun entered out sh (pkg : String) (entry : Int) (answerTy : Type) (types : Int) 
             (shownTo sh (C.var out C.nowhere "r") answerTy (C.cont out C.nowhere "k"))]
      else
        (match mainOf answerTy with
-        | Just answered ->
+        -- A `main` is run for what it does: what it answers is the
+        -- program's, and nothing is shown of it.
+        | Just _ ->
             C.applied
               out
               C.nowhere
               (C.sym out C.nowhere (topSymbol pkg entry))
               (C.unit out C.nowhere)
-              (C.binding
-                 out
-                 C.nowhere
-                 "r"
-                 (repOf answered)
-                 (shownTo sh (C.var out C.nowhere "r") answered (C.cont out C.nowhere "k")))
+              (C.cont out C.nowhere "k")
         | None ->
             shownTo
               sh
@@ -1149,10 +1312,19 @@ fun entered out sh (pkg : String) (entry : Int) (answerTy : Type) (types : Int) 
       let showers = showersOf sh [] in
       C.finished
         out
-        (C.file out C.nowhere "${package}\"#entry\"" "str" (V.pushFront showers shown)))
+        (C.file
+           out
+           C.nowhere
+           "${package}\"#entry\""
+           (answering answerTy)
+           (V.pushFront showers shown)))
   in (C.header cut ++ roles known, C.body cut ++ C.showInt package)
 
 fun fst3 (t : (a, b, c)) : a = match t with | (x, _, _) -> x
+
+-- What becomes of a program's answer: a `main`'s is nothing to show, and
+-- anything else is the text its entry made of it.
+fun answering (t : Type) : String = if M.isSome (mainOf t) then "none" else "str"
 
 -- What a function of `()` answers, if `t` is one: a program's `main`.
 fun mainOf (t : Type) : Maybe Type =
@@ -1175,6 +1347,99 @@ fun mainOf (t : Type) : Maybe Type =
 
 -- The package a program of core is of.
 @pub fun packageOf (p : CoreProgram) : String = coreFilePackage (coreArena p) (coreRoot p)
+
+-- Each function a program of core writes with its parameters: its symbol,
+-- and how many they are.
+@pub fun aritiesOf (p : CoreProgram) : [(String, Int)] =
+  let a = coreArena p in
+  let file = coreRoot p in
+  let pkg = coreFilePackage a file in
+  V.concatMap
+    (\d ->
+      (let n = V.len (fst (lams a (snd (peel a (coreDefBody a d))) [])) in
+       if n > 0 then [(topSymbol pkg (coreDefId a d), n)] else []))
+    (coreFileDefs a file)
+
+-- For each definition, how many of the names it binds are of a type
+-- nothing describes -- a variable no definition around it is generic in --
+-- and how many of a type that is an error: what is lowered as a pointer
+-- for want of anything better, and is wrong where the value is not one.
+@pub fun undescribed (p : CoreProgram) : [(String, Int, Int)] =
+  let a = coreArena p in
+  let file = coreRoot p in
+  let pkg = coreFilePackage a file in
+  V.concatMap
+    (\d ->
+      (let (vars, inner) = peel a (coreDefBody a d) in
+       match loose a inner vars (0, 0) with
+       | (v, e) -> if v + e > 0 then [(topSymbol pkg (coreDefId a d), v, e)] else []))
+    (coreFileDefs a file)
+
+-- One more name of type `t`, counted if nothing in `scope` describes it.
+fun counted (scope : [Int]) (t : Type) (n : (Int, Int)) : (Int, Int) =
+  match t with
+  | Var v -> if V.elem v scope then n else (fst n + 1, snd n)
+  | Bound _ -> (fst n + 1, snd n)
+  | Error -> (fst n, snd n + 1)
+  | _ -> n
+
+fun loosePat (a : CoreArena) (p : CorePat) (scope : [Int]) (n : (Int, Int)) : (Int, Int) =
+  match viewCorePat a p with
+  | CorePatView.PVar r -> counted scope r.ty n
+  | CorePatView.PAs r -> loosePat a r.pat scope (counted scope r.ty n)
+  | CorePatView.PTuple r -> V.foldl (\x q -> loosePat a q scope x) n r.items
+  | CorePatView.PArray r -> V.foldl (\x q -> loosePat a q scope x) n r.items
+  | CorePatView.PCtor r -> V.foldl (\x q -> loosePat a q scope x) n r.args
+  | CorePatView.PRecord r -> V.foldl (\x f -> loosePat a (corePFieldPat a f) scope x) n r.fields
+  | CorePatView.PWild _ -> n
+  | CorePatView.PLit _ -> n
+
+fun loose (a : CoreArena) (t : CoreTerm) (scope : [Int]) (n : (Int, Int)) : (Int, Int) =
+  let each = \ts acc -> V.foldl (\x u -> loose a u scope x) acc ts in
+  match viewCoreTerm a t with
+  | CoreTermView.Var _ -> n
+  | CoreTermView.Lam r -> loose a r.body scope (counted scope r.paramTy n)
+  | CoreTermView.TyLam r -> loose a r.body (V.append scope r.vars) n
+  | CoreTermView.TyApp r -> loose a r.func scope n
+  | CoreTermView.App r -> loose a r.arg scope (loose a r.func scope n)
+  | CoreTermView.Let r ->
+      loose a r.body scope (loose a r.value scope (counted scope (tyCoreTerm a r.value) n))
+  | CoreTermView.LetRec r -> loose a r.body scope (each (V.map (\b -> coreBindValue a b) r.binds) n)
+  | CoreTermView.If r -> each [r.cond, r.yes, r.no] n
+  | CoreTermView.Tuple r -> each r.items n
+  | CoreTermView.Array r -> each r.items n
+  | CoreTermView.Proj r -> loose a r.tuple scope n
+  | CoreTermView.Record r -> each (V.map (\f -> coreFieldValue a f) r.fields) n
+  | CoreTermView.Sel r -> loose a r.target scope (counted scope r.ty n)
+  | CoreTermView.Extend r -> each [r.target, r.value] n
+  | CoreTermView.Ctor r -> each r.args n
+  | CoreTermView.Prim r -> each r.args (counted scope r.ty n)
+  | CoreTermView.Perform r -> loose a r.arg scope (counted scope r.ty n)
+  | CoreTermView.Case r ->
+      V.foldl
+        (\acc arm ->
+          (let bound = loosePat a (coreArmPat a arm) scope acc in
+           let guarded =
+             (match coreArmGuard a arm with
+              | Just g -> loose a g scope bound
+              | None -> bound)
+           in loose a (coreArmBody a arm) scope guarded))
+        (loose a r.scrutinee scope n)
+        r.arms
+  | CoreTermView.Handle r ->
+      let body = loose a r.body scope n in
+      let clauses =
+        V.foldl
+          (\acc c -> loose a (coreClauseBody a c) scope (counted scope (coreClauseParamTy a c) acc))
+          body
+          r.clauses
+      in (match r.ret with
+          | Just ret -> loose a ret scope clauses
+          | None -> clauses)
+  | CoreTermView.Join r -> loose a r.body scope (loose a r.rhs scope n)
+  | CoreTermView.Jump r -> each r.args n
+  | CoreTermView.Ill _ -> n
+  | CoreTermView.Const _ -> n
 
 -- Each constructor whose fields have names, with them.
 @pub fun namedOf (p : CoreProgram) : [(String, [String])] =

@@ -620,9 +620,11 @@ fun implDefs out (cx : Low s) (a : BareArena) d (dict : Int) =
       let fields =
         V.map
           (\mn ->
-            (let t = methodType cx tr mn in
+            -- The method's type at this `impl`, not over the trait's own
+            -- parameters: what a default's argument is here is this type's.
+            (let t = here mn in
              match V.find (\o -> fst o == mn) own with
-             | Just (_, mid) -> given out cx mid ds t (instOf cx mid (here mn))
+             | Just (_, mid) -> given out cx mid ds t (instOf cx mid t)
              | None ->
                  (match H.lookup (methodKey tr mn) cx.defaults with
                   | Just did ->
@@ -855,7 +857,10 @@ def nowhere : Meta = spanMeta 0 0
   defaults : [DefaultSig],
   -- What it exports of another unit's: the binder the name has here, and
   -- the symbol it is.
-  aliases : [Entry String]
+  aliases : [Entry String],
+  -- Each function it writes with its parameters, and each it exports of
+  -- another unit's: its symbol, and how many they are.
+  arities : [Entry Int]
 }
 
 -- A declared type: its name in core, how many types it takes, and each
@@ -975,6 +980,13 @@ def nowhere : Meta = spanMeta 0 0
                allTypes
            in
            let first = firstDictOf (V.map (\(d : Imported) -> d.types) deps) in
+           let arities =
+             V.foldl
+               (\h (d : Imported) ->
+                 V.foldl (\g (a : Entry Int) -> H.insert a.key a.value g) h d.linked.arities)
+               H.empty
+               deps
+           in
            let aliased =
              V.foldl
                (\h (d : Imported) ->
@@ -1226,7 +1238,14 @@ def nowhere : Meta = spanMeta 0 0
                (V.map
                   (\x ->
                     match x with
-                    | (id, symbol, n) -> newCoreExtern out nowhere id symbol n)
+                    | (id, symbol, n) ->
+                        newCoreExtern
+                          out
+                          nowhere
+                          id
+                          symbol
+                          n
+                          (M.unwrapOr 0 (H.lookup symbol arities)))
                   externs)
            in
            let last = stGetRef cx.nextDict in

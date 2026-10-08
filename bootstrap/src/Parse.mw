@@ -124,9 +124,12 @@ fun tokenOf (c : Cx) (t : Syn) : Maybe Token = H.lookup (R.offset t) c.tokens
 fun descendants (k : Surface) (s : Syn) : [Syn] =
   match s with
   | Syntax g i ->
+      -- `s` itself counts, as it did when this read every slot from `s` on.
       V.map
         (\j -> Syntax g j)
-        (V.filter (\j -> G.kindAt g j == k and not (G.isTokenAt g j)) (V.range i (G.after g i)))
+        (V.append
+           (if G.kindAt g i == k and not (G.isTokenAt g i) then [i] else [])
+           (V.filter (\j -> not (G.isTokenAt g j)) (G.slotsWhere (\x -> x == k) g i)))
 
 -- --- writing -----------------------------------------------------------------
 --

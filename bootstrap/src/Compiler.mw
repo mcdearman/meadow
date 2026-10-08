@@ -733,7 +733,9 @@ fun compiling (u : Given Interface) =
     \what -> if timed then writeError "${show (monotonic ())} ${unitDir u} ${what}\n" else ()
   in
   let m0 = mark "given" in
-  let db = unitDatabase u in
+  -- A unit's files are parsed, and their operators grouped, each on a thread
+  -- of its own: neither needs what another file's comes to.
+  let db = parallelCompiler (unitDatabase u) in
   let sources = V.filter (\s -> S.endsWith ".mw" (fst s)) (unitSources u) in
   let files = V.map fst sources in
   let parsed = compilerParsedEach db files in

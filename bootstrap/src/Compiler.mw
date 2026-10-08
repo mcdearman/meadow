@@ -32,6 +32,7 @@ use MeadowBoot.Scopes (Source, Export, Renamed, DepExports, renameUnit)
 use MeadowBoot.Infer (inferUnit, Inferred)
 use MeadowBoot.Elab (unitCore, defSymbol, Linked, DataSig, DefaultSig, Imported)
 use MeadowBoot.Seq as Seq
+use MeadowBoot.Lint (lint)
 use MeadowBoot.Types
 use MeadowBoot.Core (CoreProgram)
 use MeadowBoot.Solve (TypeEnv, noTypes, Entry)
@@ -760,6 +761,22 @@ fun compiling (u : Given Interface) =
                                  "${symbol}: ${show vars} of no type described, ${show errors} of an error\n")
                          ()
                          (Seq.undescribed core)
+                   | _ -> ())
+                in
+                -- `MEADOWBOOT_LINT`: where the unit's core does not agree with
+                -- itself on how a value is represented.
+                let linted =
+                  (match (getEnv "MEADOWBOOT_LINT", made) with
+                   | (Just _, Just (core, _, _)) ->
+                       V.foldl
+                         (\w x -> writeError "meadow:${pkg}/d${show (fst x)}: ${snd x}\n")
+                         ()
+                         (lint
+                            core
+                            (sigsOf
+                               (V.concatMap
+                                  (\(i : Interface) -> i.linked.datas)
+                                  (V.map snd (unitImports u)))))
                    | _ -> ())
                 in
                 let linked =

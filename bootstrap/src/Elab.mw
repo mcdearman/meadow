@@ -1212,7 +1212,7 @@ def nowhere : Meta = spanMeta 0 0
                (V.concatMap
                   (\k ->
                     match V.get bares k with
-                    | Just p -> moduleDatas out (itemsOf k) p
+                    | Just p -> moduleDatas out (itemsOf k) variants p
                     | None -> [])
                   (V.range 0 (V.len bares)))
            in
@@ -1384,7 +1384,7 @@ fun declShapes (a : BareArena) (d : BareDecl) : [(String, String, Int, Maybe [St
 -- A module's `data` and `record` declarations, as core declares a type: its
 -- canonical name, how many types it takes, and each constructor with its
 -- fields' types.
-fun moduleDatas out (items : [Item]) (p : BareProgram) =
+fun moduleDatas out (items : [Item]) (variants : [VariantSig]) (p : BareProgram) =
   match p with
   | BareProgram a root ->
       V.concatMap
@@ -1421,11 +1421,14 @@ fun moduleDatas out (items : [Item]) (p : BareProgram) =
                            out
                            nowhere
                            (canon owner (bareNameText a (bareVariantName a v)))
-                           (if bareVariantNamed a v then
-                              V.map
-                                (\f -> written a params (bareFieldTy a f))
-                                (bareVariantFields a v)
-                            else V.map (\t -> written a params t) (bareVariantPositional a v)))
+                           (resolved
+                              variants
+                              (canon owner (bareNameText a (bareVariantName a v)))
+                              (if bareVariantNamed a v then
+                                 V.map
+                                   (\f -> written a params (bareFieldTy a f))
+                                   (bareVariantFields a v)
+                               else V.map (\t -> written a params t) (bareVariantPositional a v))))
                        (bareDeclDataVariants a d))])
               else if kindBareDecl a d == BareDeclKind.Record then
                 (let owner = bareNameText a (bareDeclRecordName a d) in
@@ -1439,11 +1442,23 @@ fun moduleDatas out (items : [Item]) (p : BareProgram) =
                        out
                        nowhere
                        (canon owner owner)
-                       (V.map
-                          (\f -> written a params (bareFieldTy a f))
-                          (bareDeclRecordFields a d))]])
+                       (resolved
+                          variants
+                          (canon owner owner)
+                          (V.map
+                             (\f -> written a params (bareFieldTy a f))
+                             (bareDeclRecordFields a d)))]])
               else []))
         (bareModuleDecls a root)
+
+-- A constructor's fields' types as inference has them -- an alias what it
+-- stands for, which is what says how a field is represented: a type written
+-- `Node` that is an `Int` is an `Int` -- or as they were written, for one
+-- inference does not know.
+fun resolved (variants : [VariantSig]) (ctor : String) (written : [Type]) : [Type] =
+  match V.find (\(v : VariantSig) -> v.name == ctor) variants with
+  | Just (v : VariantSig) -> if V.len v.fields == V.len written then v.fields else written
+  | None -> written
 
 -- A module's effects, as core declares one: its name, and each operation
 -- with what it takes and what it answers.

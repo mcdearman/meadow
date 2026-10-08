@@ -49,7 +49,7 @@ use Std.Maybe.Maybe.*
 -- functions that call themselves.
 
 -- How a value of type `t` is represented.
-fun repOf (t : Type) : String =
+@pub fun repOf (t : Type) : String =
   match t with
   | Con "Int" [] -> "i64"
   | Con "Float" [] -> "f64"

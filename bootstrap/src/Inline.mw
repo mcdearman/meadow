@@ -13,10 +13,11 @@
 -- a call is copied with every name it binds a new one, which nothing else
 -- has.
 --
--- Not here yet: a function generic in its types, whose copy has to be
--- written at the types the call is at; one from another unit, whose body
--- that unit has to keep for this one; and the function the program calls
--- once, however large.
+-- A function generic in its types is copied at the types the call is at.
+--
+-- Not here yet: a function from another unit, whose body that unit has to
+-- keep for this one; and the function the program calls once, however
+-- large.
 
 use Lingua (pass!)
 use Lingua.Lang (Meta, spanMeta)
@@ -39,8 +40,10 @@ def nowhere : Meta = spanMeta 0 0
 -- Where the names this pass makes start, as `meadow_core`'s do.
 def base : Int = 2097152000
 
--- A function to copy: its parameters in order, and its body.
+-- A function to copy: the type variables it is generic in, its parameters
+-- in order, and its body.
 record Body = {
+  vars : [Int],
   params : [Int],
   body : CoreTerm
 }
@@ -95,6 +98,12 @@ fun mentions (a : CoreArena) (t : CoreTerm) (seen : [Int]) : [Int] =
   | CoreTermView.Var r -> if V.elem r.id seen then seen else V.pushBack seen r.id
   | _ -> V.foldl (\acc k -> mentions a k acc) seen (kids a t)
 
+-- A definition under the type variables it is generic in.
+fun peel (a : CoreArena) (t : CoreTerm) : ([Int], CoreTerm) =
+  match viewCoreTerm a t with
+  | CoreTermView.TyLam r -> (r.vars, r.body)
+  | _ -> ([], t)
+
 -- A function's parameters as it is written with them, and its body.
 fun lams (a : CoreArena) (t : CoreTerm) (params : [Int]) : ([Int], CoreTerm) =
   match viewCoreTerm a t with
@@ -131,19 +140,22 @@ fun candidates (p : CoreProgram) : HashMap Int Body =
   let small =
     V.foldl
       (\h d ->
-        (let (params, body) = lams a (coreDefBody a d) [] in
+        (let (vars, inner) = peel a (coreDefBody a d) in
+         let (params, body) = lams a inner [] in
          if V.isEmpty params or size a body budget 0 > budget then h
-         else H.insert (coreDefId a d) (Body { params, body }) h))
+         else H.insert (coreDefId a d) (Body { vars, params, body }) h))
       H.empty
       (coreFileDefs a (coreRoot p))
   in settled a small (H.toVec small) H.empty
 
 -- --- a copy, every name it binds a new one ---------------------------------------
 
--- What a copy carries: the names that stay as they are -- the program's
+-- What a copy carries: the type each type variable of the function is at
+-- the call; the names that stay as they are -- the program's
 -- definitions and what it names of other units -- the new name of each
 -- other met so far, and the next new name.
 record Fresh s = {
+  types : HashMap Int Type,
   kept : HashMap Int Bool,
   names : StRef s (HashMap Int Int),
   next : StRef s Int
@@ -162,21 +174,74 @@ fun renamed (cx : Fresh s) (id : Int) =
           let w = stSetRef cx.names (H.insert id n names) in
           n))
 
+-- A type of the function's, at the types the call is at.
+fun at (cx : Fresh s) (t : Type) : Type =
+  if H.isEmpty cx.types then t
+  else
+    (match t with
+     | Var v -> M.unwrapOr t (H.lookup v cx.types)
+     | Con name args -> Con name (V.map (\x -> at cx x) args)
+     | Fun params result eff -> Fun (V.map (\x -> at cx x) params) (at cx result) (at cx eff)
+     | Tuple items -> Tuple (V.map (\x -> at cx x) items)
+     | Record row -> Record (at cx row)
+     | RowExtend label field rest -> RowExtend label (at cx field) (at cx rest)
+     | other -> other)
+
+-- A body written again: every name it binds a new one, and every type in
+-- it at the types the call is at -- a name's representation comes from its
+-- type all the way down, so a copy carries the types it is a copy for.
 pass! {
   copy : Core -> Core with cx from Term
-    | Var { id, ty } -> Var { id = renamed cx id, ty }
-    | Lam { param, paramTy, body, ty } -> Lam { param = renamed cx param, paramTy, body, ty }
-    | Let { id, value, body, ty } -> Let { id = renamed cx id, value, body, ty }
+    | Var { id, ty } -> Var { id = renamed cx id, ty = at cx ty }
+    | Lam { param, paramTy, body, ty } ->
+        Lam { param = renamed cx param, paramTy = at cx paramTy, body, ty = at cx ty }
+    | TyLam { vars, body, ty } -> TyLam { vars, body, ty = at cx ty }
+    | TyApp { func, tys, ty } -> TyApp { func, tys = V.map (\x -> at cx x) tys, ty = at cx ty }
+    | App { func, arg, ty } -> App { func, arg, ty = at cx ty }
+    | Let { id, value, body, ty } -> Let { id = renamed cx id, value, body, ty = at cx ty }
+    | LetRec { binds, body, ty } -> LetRec { binds, body, ty = at cx ty }
     | Bind { id, value } -> Bind { id = renamed cx id, value }
-    | PVar { id, ty } -> PVar { id = renamed cx id, ty }
-    | PAs { id, pat, ty } -> PAs { id = renamed cx id, pat, ty }
+    | If { cond, yes, no, ty } -> If { cond, yes, no, ty = at cx ty }
+    | Tuple { items, ty } -> Tuple { items, ty = at cx ty }
+    | Array { items, ty } -> Array { items, ty = at cx ty }
+    | Proj { tuple, index, ty } -> Proj { tuple, index, ty = at cx ty }
+    | Record { fields, ty } -> Record { fields, ty = at cx ty }
+    | Sel { target, label, ty } -> Sel { target, label, ty = at cx ty }
+    | Extend { target, label, value, ty } -> Extend { target, label, value, ty = at cx ty }
+    | Ctor { name, args, ty } -> Ctor { name, args, ty = at cx ty }
+    | Prim { op, args, ty } -> Prim { op, args, ty = at cx ty }
+    | Case { scrutinee, arms, ty } -> Case { scrutinee, arms, ty = at cx ty }
+    | Perform { eff, op, arg, ty } -> Perform { eff, op, arg, ty = at cx ty }
+    | Ill { ty } -> Ill { ty = at cx ty }
+    | Const { lit, ty } -> Const { lit, ty = at cx ty }
+    | PWild { ty } -> PWild { ty = at cx ty }
+    | PVar { id, ty } -> PVar { id = renamed cx id, ty = at cx ty }
+    | PAs { id, pat, ty } -> PAs { id = renamed cx id, pat, ty = at cx ty }
+    | PLit { lit, ty } -> PLit { lit, ty = at cx ty }
+    | PTuple { items, ty } -> PTuple { items, ty = at cx ty }
+    | PArray { items, ty } -> PArray { items, ty = at cx ty }
+    | PCtor { name, args, ty } -> PCtor { name, args, ty = at cx ty }
+    | PRecord { fields, ty } -> PRecord { fields, ty = at cx ty }
     | Join { id, params, rhs, body, ty } ->
-        Join { id = renamed cx id, params = V.map (\x -> renamed cx x) params, rhs, body, ty }
-    | Jump { id, args, ty } -> Jump { id = renamed cx id, args, ty }
+        Join {
+          id = renamed cx id,
+          params = V.map (\x -> renamed cx x) params,
+          rhs,
+          body,
+          ty = at cx ty
+        }
+    | Jump { id, args, ty } -> Jump { id = renamed cx id, args, ty = at cx ty }
     | Clause { eff, op, param, paramTy, resume, body } ->
-        Clause { eff, op, param = renamed cx param, paramTy, resume = renamed cx resume, body }
+        Clause {
+          eff,
+          op,
+          param = renamed cx param,
+          paramTy = at cx paramTy,
+          resume = renamed cx resume,
+          body
+        }
     | Handle { body, clauses, retId, ret, ty } ->
-        Handle { body, clauses, retId = M.map (\x -> renamed cx x) retId, ret, ty }
+        Handle { body, clauses, retId = M.map (\x -> renamed cx x) retId, ret, ty = at cx ty }
 }
 
 -- --- the pass --------------------------------------------------------------------
@@ -190,21 +255,35 @@ record Cx s = {
   next : StRef s Int
 }
 
--- What `func` is applied to already, and the name at its head.
+-- What `func` is applied to already, and the name at its head with the
+-- types it is at.
 fun spine out func args =
   match viewCoreTerm out func with
   | CoreTermView.App r -> spine out r.func (V.pushFront args r.arg)
-  | CoreTermView.Var r -> (Just r.id, args)
+  | CoreTermView.Var r -> (Just (r.id, []), args)
+  | CoreTermView.TyApp r ->
+      (match viewCoreTerm out r.func with
+       | CoreTermView.Var v -> (Just (v.id, r.tys), args)
+       | _ -> (None, args))
   | _ -> (None, args)
 
 fun call out (cx : Cx s) (m : Meta) func arg (t : Type) =
   match spine out func [arg] with
-  | (Just f, args) ->
+  | (Just (f, tys), args) ->
       (match H.lookup f cx.bodies with
        | Just (b : Body) ->
-           if V.len b.params != V.len args then newCoreTermApp out m func arg t
+           if V.len b.params != V.len args or V.len b.vars != V.len tys then
+             newCoreTermApp out m func arg t
            else
-             (let fresh = Fresh { kept = cx.kept, names = stNewRef H.empty, next = cx.next } in
+             (let fresh =
+                Fresh {
+                  types =
+                    V.foldl (\h vt -> H.insert (fst vt) (snd vt) h) H.empty (V.zip b.vars tys),
+                  kept = cx.kept,
+                  names = stNewRef H.empty,
+                  next = cx.next
+                }
+              in
               let body = copyTerm cx.src out fresh b.body in
               V.foldr
                 (\k rest ->

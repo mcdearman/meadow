@@ -330,6 +330,7 @@ fun checkedOf
                           (V.map (\(l : Linked) -> l.summary) linked)
                           (V.concatMap (\(l : Linked) -> l.arities) linked)
                           traits
+                          labelled
                           (not keep)
                           inlines
                     in
@@ -374,7 +375,7 @@ fun checkedOf
                                         V.filter (\(x : Entry Int) -> x.key == al.value) l.arities)
                                       linked)
                                   aliases),
-                           summary = Dictionaries.summary plain,
+                           summary = Dictionaries.summary plain labelled,
                            bodies =
                              if keep and not inlines then Inline.nothing ()
                              else Inline.exports core traits

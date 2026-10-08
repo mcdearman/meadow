@@ -708,13 +708,14 @@ fun imported
     (summaries : [Summary])
     (arities : [Entry Int])
     (traits : HashMap String Bool)
+    (labels : [Entry [String]])
     (known : Bool)
     (inlines : Bool)
     : CoreProgram =
   let a = coreArena p in
   let file = coreRoot p in
   let pkg = coreFilePackage a file in
-  let all = V.pushBack summaries (summary p) in
+  let all = V.pushBack summaries (summary p labels) in
   let symbols =
     V.foldl
       (\h x -> H.insert (coreExternId a x) (coreExternSymbol a x) h)

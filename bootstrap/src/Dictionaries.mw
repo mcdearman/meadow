@@ -100,8 +100,10 @@ fun wrapper a body (params : [Int]) : Maybe Wrapper =
       else None
   | _ -> None
 
--- What `p` says of itself, for the units that import it.
-@pub fun summary (p : CoreProgram) : Summary =
+-- What `p` says of itself, for the units that import it. `theirs` are the
+-- labels of the constructors other units declare: a trait of another unit
+-- has its dictionary's fields named there.
+@pub fun summary (p : CoreProgram) (theirs : [Entry [String]]) : Summary =
   let a = coreArena p in
   let file = coreRoot p in
   let pkg = coreFilePackage a file in
@@ -115,7 +117,7 @@ fun wrapper a body (params : [Int]) : Maybe Wrapper =
   let labels =
     V.foldl
       (\h n -> H.insert (coreNamedName a n) (coreNamedLabels a n) h)
-      H.empty
+      (V.foldl (\h (e : Entry [String]) -> H.insert e.key e.value h) H.empty theirs)
       (coreFileNamed a file)
   in
   let at = \d -> Entry { key = symbolIn pkg (coreDefId a d), value = d } in

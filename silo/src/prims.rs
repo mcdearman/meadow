@@ -673,6 +673,9 @@ fn prim(p: Prim, a: &[Val], d: &[i64]) -> Word {
         GlobalReady => Word::from(globals(|g| matches!(g.get(index(arg(0))), Some(Some(_))))),
         GlobalGet => match globals(|g| g.get(index(arg(0))).copied().flatten()) {
             Some((w, wd)) => {
+                if counting() {
+                    read(index(arg(0)));
+                }
                 heap::share(w, wd);
                 w
             }
@@ -1297,10 +1300,36 @@ fn count(p: Prim) {
     c[i] += 1;
 }
 
+/// How many times each top-level value's place was read, by its place.
+static READS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+fn read(i: usize) {
+    let mut c = READS.lock().unwrap_or_else(|e| e.into_inner());
+    if c.len() <= i {
+        c.resize(i + 1, 0);
+    }
+    c[i] += 1;
+}
+
 /// The counts, most first, when counting.
 pub fn report() {
     if !counting() {
         return;
+    }
+    {
+        // The places read most: a value's place is where it is among the
+        // program's values, in the order it lists them.
+        let r = READS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut places: Vec<(u64, usize)> = r
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n > 0)
+            .map(|(i, n)| (*n, i))
+            .collect();
+        places.sort_by(|a, b| b.0.cmp(&a.0));
+        for (n, i) in places.iter().take(24) {
+            eprintln!("aot: {n:>12}  reads of value {i}");
+        }
     }
     let c = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
     let mut all: Vec<(u64, Prim)> = c

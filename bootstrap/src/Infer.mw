@@ -2678,29 +2678,62 @@ fun checkMain (i : Inf s) (r : Renamed) : () ! { St s | e } =
      | None -> ()
      | Just (it : Item) ->
          (match H.lookup it.id (stGetRef i.generalized) with
-          | Just (g : Generalized) -> mainFits i g.scheme
+          | Just (g : Generalized) ->
+              -- One that fits is `() -> () ! Eff` from then on: nothing runs
+              -- `main` at another row.
+              if mainFits i g.scheme then
+                stSetRef
+                  i.generalized
+                  (H.insert
+                     it.id
+                     (Generalized {
+                        scheme =
+                          Scheme {
+                            quant = [],
+                            preds = [],
+                            ty =
+                              Fun
+                                [unitT ()]
+                                (unitT ())
+                                (V.foldr
+                                   (\l rest -> RowExtend l (Tuple []) rest)
+                                   RowEmpty
+                                   runtimeEffects),
+                            lacks = []
+                          },
+                        vars = []
+                      })
+                     (stGetRef i.generalized))
+              else ()
           | None -> ())
 
-fun mainFits (i : Inf s) (sc : Scheme) : () ! { St s | e } =
-  match zonk i.ar (instantiate i sc) with
-  | Fun params ret eff ->
-      if V.len params == 1
-        and fits i (V.getOr (unitT ()) params 0) (unitT ())
-        and fits i ret (unitT ()) then unanswered i (zonk i.ar eff)
-      else report i "`main` is `${showScheme sc}`, and has to be `() -> () ! Eff`"
-  | _ -> report i "`main` is `${showScheme sc}`, and has to be `() -> () ! Eff`"
+-- Whether `main`, of scheme `sc`, is what a `main` may be; what is wrong
+-- with it is said if not.
+fun mainFits (i : Inf s) (sc : Scheme) : Bool ! { St s | e } =
+  let wrong =
+    \u -> (let r = report i "`main` is `${showScheme sc}`, and has to be `() -> () ! Eff`" in False)
+  in match zonk i.ar (instantiate i sc) with
+     | Fun params ret eff ->
+         if V.len params == 1
+           and fits i (V.getOr (unitT ()) params 0) (unitT ())
+           and fits i ret (unitT ()) then unanswered i (zonk i.ar eff)
+         else wrong ()
+     | _ -> wrong ()
 
 fun fits (i : Inf s) (a : Type) (b : Type) : Bool ! { St s | e } =
   match unify i.ar a b with | Ok _ -> True | Err _ -> False
 
--- What `main` performs that nobody would answer, said.
-fun unanswered (i : Inf s) (eff : Type) : () ! { St s | e } =
+-- Whether `main` performs nothing but what the runtime answers; what nobody
+-- would answer is said.
+fun unanswered (i : Inf s) (eff : Type) : Bool ! { St s | e } =
   let names = V.filter (\l -> not (V.elem l runtimeEffects)) (V.map fst (labelsOf eff)) in
-  if V.isEmpty names then ()
+  if V.isEmpty names then True
   else
-    report
-      i
-      "`main` performs ${S.join ", " (V.map (\l -> "`${spelling l}`") names)}, which nothing would handle"
+    (let r =
+       report
+         i
+         "`main` performs ${S.join ", " (V.map (\l -> "`${spelling l}`") names)}, which nothing would handle"
+     in False)
 
 fun emptyMod () : Mod = Mod { a = emptyArena (), file = "" }
 

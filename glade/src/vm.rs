@@ -171,6 +171,10 @@ pub struct Vm<'p> {
     /// Where the program's console goes. `None` is the process's own stdin and
     /// stdout; a debugger speaking a protocol over those replaces both.
     pub io: Io,
+    /// Who answers the effects this program leaves unhandled that are not
+    /// the runtime's own, when another program is hosting this one -- see
+    /// [`crate::host`]. `None` for a program run on its own.
+    pub host: Option<crate::host::Host>,
     /// A thread operation the program just made, for the scheduler to carry
     /// out -- see [`crate::sched`]. The primitive leaves it here and the
     /// machine stops, since what happens next may be another thread's turn.
@@ -303,6 +307,7 @@ impl<'p> Vm<'p> {
             native_methods: std::ptr::null(),
             pinned: Vec::new(),
             io: Io::default(),
+            host: None,
             request: None,
             scheduled: false,
             globals: Vec::new(),

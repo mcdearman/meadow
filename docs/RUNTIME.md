@@ -1242,6 +1242,46 @@ by its static instruction count can still spend most of its time in
 `matmul` was 7.5% trapping instructions and 62% trapping time. The counter
 costs a lock per trap and is off unless asked for.
 
+### A native program, profiled by itself
+
+```sh
+MEADOW_SILO_PROFILE=prof.txt ./target/release/native/silo/MyProgram
+scripts/silo-profile.py ./target/release/native/silo/MyProgram prof.txt
+```
+
+A program built for Silo and run with `MEADOW_SILO_PROFILE` set interrupts
+itself once for every millisecond of processor time it uses, on every thread,
+and writes where it was -- the return addresses on the stack -- to the file
+when it ends. `scripts/silo-profile.py` puts those against the executable's
+symbols and prints the busiest: by the function running, by the function of
+the program itself it was in or called from (so the runtime's work is charged
+to whoever asked for it), and by kind of cost. It counts time, where the
+sampler above counts instructions; and it is for a machine where nothing
+outside the process may look -- a container allows neither `perf` nor
+`ptrace`. On macOS `sample <pid>` does as much unasked.
+
+### What a native program made and let go of
+
+```sh
+MEADOW_SILO_PRIMS=1 ./target/release/native/silo/MyProgram
+```
+
+Prints, when the program ends: each primitive that went through the runtime's
+shared entry and how often; the top-level values read most; how many blocks
+of each kind -- each constructor, each closure -- were erased, over every
+thread; of the blocks let go of whole, which function dropped them; and of
+the arrays made, how long and by which function. The last two are from one
+in every 1,024. Two builds of one program, set side by side, say where one
+does more than the other: MeadowBoot built by itself made half as many
+arrays again as MeadowBoot built by the Rust compiler, and the line that
+differed was the function that reads a tree's node off its children.
+
+To measure what a pass or a rule is worth, leave it out and time what is
+built: `MEADOW_SKIP_PASSES=simplify,joins` (of `release`, `inline`, `joins`,
+`simplify`, `lift`, `trmc`) for the core passes, `MEADOW_NO_REUSE` and
+`MEADOW_NO_BORROW` for the native back end's, `MEADOW_CUT_GENERIC` and
+`MEADOW_CUT_IMPURE` for what a program of Cut is given.
+
 ### Where a profile's stack comes from
 
 The machine has no `call` or `ret`, and nothing that is a stack pointer to

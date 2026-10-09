@@ -24,6 +24,7 @@ pub mod heap;
 pub mod native;
 pub mod parcel;
 pub mod prims;
+pub mod profile;
 pub mod region;
 pub mod sched;
 pub mod segments;
@@ -223,7 +224,9 @@ pub unsafe extern "C" fn meadow_run(
     let d = unsafe { meadow_result_desc };
     let run = move || {
         // What `main` answers is in its heap, which stays current here.
+        profile::start();
         let (mut main_ctx, v) = run_main(entry);
+        profile::finish();
         let text = show::show(v, d);
         prims::report();
         cycles::report();

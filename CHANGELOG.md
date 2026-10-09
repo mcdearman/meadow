@@ -39,6 +39,12 @@ beyond the last release is under _Unreleased_.
 
 ### Added
 
+- A natively compiled program can profile itself: run with
+  `MEADOW_SILO_PROFILE=<file>` it samples where its time goes, and
+  `scripts/silo-profile.py` reads the file against the executable. For a
+  machine that allows no profiler from outside, as a container does not.
+  `MEADOW_SILO_PRIMS` also says which blocks a program erased, which
+  functions dropped them, and which made its arrays.
 - A program of Cut keeps the continuation a call answers through on the
   stack, as a program the Rust compiler lowers does, and no longer on the
   heap: a handled body runs on a stack segment of its own, which an

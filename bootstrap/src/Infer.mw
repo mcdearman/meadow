@@ -78,7 +78,7 @@ fun rebuildRow (row : Type) (tail : Type) : Type =
 
 -- A called function's latent effect folded into the current region.
 fun joinEffect (i : Inf s) (phi : Type) : () ! { St s | e } =
-  match zonk i.ar phi with
+  match prune i.ar phi with
   | RowEmpty -> ()
   | _ -> joinEffectInto i (stGetRef i.curEffect) phi
 
@@ -988,9 +988,9 @@ fun applied (cx : Cx s) (src : HirArena) out (fty0 : Type) (args : [HirExpr]) =
           let ret = fresh i.ar in
           let phi = freshEffect i.ar in
           let u =
-            (match zonk i.ar fty with
+            (match prune i.ar fty with
              | Fun params fret feff ->
-                 if V.len params == 1 and isFun (V.getOr Error params 0) then
+                 if V.len params == 1 and isFun (prune i.ar (V.getOr Error params 0)) then
                    (let loose = loosenParameter i (V.getOr Error params 0) in
                     let x2 = unifyAt i aty loose in
                     let y = unifyAt i fret ret in
@@ -1001,7 +1001,7 @@ fun applied (cx : Cx s) (src : HirArena) out (fty0 : Type) (args : [HirExpr]) =
           let v =
             (if k == last then
                (let outer =
-                  (match zonk i.ar phi with
+                  (match prune i.ar phi with
                    | Var id -> slotLevel i.ar id < levelOf i.ar
                    | _ -> False)
                 in if outer then
@@ -1699,9 +1699,11 @@ pass! {
     | Ref { id, alts } ->
         Ref {
           id =
-            (match H.lookup "${show st.m}:${show node}" st.chosen with
-             | Just k -> V.getOr id alts k
-             | None -> id),
+            if V.isEmpty alts then id
+            else
+              (match H.lookup "${show st.m}:${show node}" st.chosen with
+               | Just k -> V.getOr id alts k
+               | None -> id),
           alts
         }
     | Expr.Lit { lit, typ } -> Expr.Lit { lit, typ = settled st.ar typ }

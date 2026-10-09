@@ -421,9 +421,8 @@ fun insertLacking (acc : [Lacking]) (l : Lacking) : [Lacking] =
 
 -- The arena variable behind each quantifier, in quantifier order.
 fun varsOf (q : Quantified) : [Int] =
-  V.map
-    (\k -> M.unwrapOr 0 (M.map fst (V.find (\kv -> snd kv == k) (H.toVec q.map))))
-    (V.range 0 (V.len q.kinds))
+  let behind = H.fromVec (V.map (\kv -> (snd kv, fst kv)) (H.toVec q.map)) in
+  V.map (\k -> M.unwrapOr 0 (H.lookup k behind)) (V.range 0 (V.len q.kinds))
 
 -- A binding not generalized, recorded as one.
 @pub fun recordMono (i : Inf s) (vid : Int) (sc : Scheme) : () ! { St s | e } =

@@ -337,7 +337,7 @@ fun describe (i : Inf s) (err : UnifyError) : String ! { St s | e } =
 -- --- schemes -----------------------------------------------------------------
 
 @pub fun instantiate (i : Inf s) (sc : Scheme) : Type ! { St s | e } =
-  substBound sc.ty (freshQuantifiers i.ar sc)
+  if V.isEmpty sc.quant then sc.ty else substBound sc.ty (freshQuantifiers i.ar sc)
 
 -- `sc` instantiated, and its `where` over the same fresh variables.
 @pub fun instantiateWithPreds (i : Inf s) (sc : Scheme) : (Type, [Pred]) ! { St s | e } =

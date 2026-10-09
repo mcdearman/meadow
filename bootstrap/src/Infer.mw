@@ -44,10 +44,13 @@ use Std.Sort (sortOn)
 -- A named function's type as a use sees it: the effect of each arrow it
 -- answers with left open at its end.
 fun openArrows (i : Inf s) (t : Type) : Type ! { St s | e } =
-  match zonk i.ar t with
+  -- Only what the type is at its top is asked, of it and of its effect: the
+  -- whole of each was written out again for the asking, at every mention of
+  -- a name.
+  match prune i.ar t with
   | Fun ps ret eff ->
       let eff2 =
-        (match zonk i.ar eff with
+        (match prune i.ar eff with
          | RowEmpty -> freshEffect i.ar
          | closed -> openRowEnd i closed)
       in
@@ -512,17 +515,17 @@ fun ctorType (i : Inf s) (name : String) : Maybe Type ! { St s | e } =
 -- The labels of constructor `name`'s fields, if they have them.
 fun ctorLabels (i : Inf s) (name : String) : Maybe [String] ! { St s | e } =
   let owner =
-    (match S.indexOf "." (reverseString name) with
-     | Just k -> stringSlice name 0 (stringByteLength name - k - 1)
-     | None -> name)
+    (let k = lastDot name (stringByteLength name - 1) in
+     if k < 0 then name else stringSlice name 0 k)
   in M.andThen
        (\(v : VariantSig) -> v.labels)
        (M.andThen
           (\vs -> V.find (\(v : VariantSig) -> v.name == name) vs)
           (H.lookup owner (stGetRef i.variants)))
 
-fun reverseString (s : String) : String =
-  S.join "" (V.reverse (V.map (\k -> stringSlice s k (k + 1)) (V.range 0 (stringByteLength s))))
+-- Where the last `.` of `s` at or before byte `k` is, or -1.
+fun lastDot (s : String) (k : Int) : Int =
+  if k < 0 then 0 - 1 else if toInt (stringByteAt s k) == 46 then k else lastDot s (k - 1)
 
 -- The canonical name of the constructor a reference is to.
 fun ctorName (i : Inf s) (a : HirArena) (ref : HirRef) : String = canonOf i (hirRefId a ref) ""
@@ -900,14 +903,19 @@ fun varType (cx : Cx s) out (ref : InferringRef) : Type ! { St s | e } =
   else
     match schemeOf i id with
     | Just sc ->
-        (let key = "${show cx.here.m}:${show ref}" in
-         -- A member of the group being inferred has no scheme yet: what it
-         -- will ask for is handed over when the group is closed.
-         let u =
-           if V.elem id (stGetRef i.group) then
-             stSetRef i.mentions (V.pushBack (stGetRef i.mentions) (key, id, stGetRef i.member))
-           else ()
-         in openArrows i (instantiateAt i key sc))
+        (let grouped = V.elem id (stGetRef i.group) in
+         -- A name that is of one type and not of the group is its type:
+         -- nothing is kept of the mention, so nothing is named by it.
+         if V.isEmpty sc.quant and not grouped then openArrows i sc.ty
+         else
+           (let key = "${show cx.here.m}:${show ref}" in
+            -- A member of the group being inferred has no scheme yet: what
+            -- it will ask for is handed over when the group is closed.
+            let u =
+              if grouped then
+                stSetRef i.mentions (V.pushBack (stGetRef i.mentions) (key, id, stGetRef i.member))
+              else ()
+            in openArrows i (instantiateAt i key sc)))
     | None ->
         (let t = freshGlobal i.ar in
          let u = setScheme i id (mono t) in

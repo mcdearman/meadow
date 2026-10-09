@@ -350,7 +350,11 @@ fun recursiveComp (edges : [[Int]]) (comp : [Int]) : Bool =
      | None -> False)
 
 fun sortedDistinct (xs : [Int]) : [Int] =
-  V.foldl (\acc x -> if V.elem x acc then acc else V.pushBack acc x) [] (sort xs)
+  -- Sorted, so one that is there already is the last put there.
+  V.foldl
+    (\acc x -> if V.get acc (V.len acc - 1) == Just x then acc else V.pushBack acc x)
+    []
+    (sort xs)
 
 def noBinding : Binding = Binding { bind = 0 - 1, binds = [] }
 

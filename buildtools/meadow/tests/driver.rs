@@ -383,6 +383,23 @@ fn a_program_of_cut_runs_on_glade_and_as_an_executable_of_silos() {
         assert!(ok, "{runtime:?}: {err}");
         assert_eq!(out, "generic", "{runtime:?}");
     }
+    // A program with no answer prints what it writes and nothing after:
+    // on Silo the `unit` it ended with was shown, as `<continuation>`.
+    std::fs::write(
+        dir.join("quiet.cut"),
+        "cut 0\nentry t:Main/main\nanswer none\n\n\
+         native {\n  t:Main/Console.say = Console.writeOutput\n}\n\n\
+         effect t:Main/Console { say(str) -> unit }\n\n\
+         def t:Main/main (; k: ptr) =\n  perform t:Main/Console.say(\"said\\n\"; μ̃ u: unit. <unit | k>)\n",
+    )
+    .unwrap();
+    for runtime in [&[][..], &["--runtime", "silo"]] {
+        let mut args = vec!["cut", "quiet.cut"];
+        args.extend_from_slice(runtime);
+        let (ok, out, err) = meadow(&dir, &args);
+        assert!(ok, "{runtime:?}: {err}");
+        assert_eq!(out, "said\n", "{runtime:?}");
+    }
     std::fs::write(
         dir.join("refused.cut"),
         "cut 0\nentry t:Main/main\nanswer none\n\n\

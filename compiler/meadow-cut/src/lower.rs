@@ -698,9 +698,12 @@ impl Lower {
             },
         });
         self.out.entry = Some(label);
+        // A program run for what it does answers nothing to show, whether
+        // its string was written out or it says it has no answer: taken for
+        // a reference, the `unit` it ends with was printed as one.
         self.out.results.insert(
             label,
-            if printed {
+            if self.prints {
                 ax::Rep::Bits(desc::UNIT)
             } else {
                 ax::Rep::Ref

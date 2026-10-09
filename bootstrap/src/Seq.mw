@@ -190,7 +190,7 @@ pass! {
                    let given = named src out cx here a arg call in
                    named src out cx here f func given)))
     | Let { id, raw value, raw body } ->
-        (if kindCoreTerm src value == CoreTermKind.TyLam then
+        (if kindCoreTerm src value == CoreTermKind.TyLam and not (once src value) then
            genericLet src out cx here id value body
          else named src out cx here "v${show id}" value (lowerTerm src out cx body))
     | If { raw cond, raw yes, raw no } ->
@@ -714,6 +714,81 @@ fun lifted src out cx (m : Meta) binds body =
      let u = stSetRef cx.lifted (V.append (stGetRef cx.lifted) made) in
      lowerTerm src out within body)
 
+-- Whether a value generic in its type is the same value at every type, and
+-- so is made once where it is bound: it is no function, and nothing in it
+-- binds a name whose type mentions a variable it is generic in. Such a
+-- value holds nothing of those types -- an empty map, `None`, a record of
+-- them -- and no code that would be handed something of them, so no
+-- descriptor says anything about it. Made a definition and asked for at
+-- each mention, as a generic function is, it is worked out again each time:
+-- a table built once in the source, built once for every use of it.
+fun once src value : Bool =
+  let (vars, inner) = peel src value in
+  kindCoreTerm src inner != CoreTermKind.Lam and not (bindsOver src inner vars)
+
+-- Whether a type mentions one of `vars`.
+fun mentionsOf (t : Type) (vars : [Int]) : Bool =
+  match t with
+  | Var v -> V.elem v vars
+  | Con _ args -> V.any (\x -> mentionsOf x vars) args
+  | Fun params result eff -> V.any (\x -> mentionsOf x vars) params or mentionsOf result vars
+  | Tuple items -> V.any (\x -> mentionsOf x vars) items
+  | Record row -> mentionsOf row vars
+  | RowExtend _ field rest -> mentionsOf field vars or mentionsOf rest vars
+  | _ -> False
+
+fun patBindsOver src p (vars : [Int]) : Bool =
+  match viewCorePat src p with
+  | CorePatView.PVar r -> mentionsOf r.ty vars
+  | CorePatView.PAs r -> mentionsOf r.ty vars or patBindsOver src r.pat vars
+  | CorePatView.PTuple r -> V.any (\q -> patBindsOver src q vars) r.items
+  | CorePatView.PArray r -> V.any (\q -> patBindsOver src q vars) r.items
+  | CorePatView.PCtor r -> V.any (\q -> patBindsOver src q vars) r.args
+  | CorePatView.PRecord r -> V.any (\f -> patBindsOver src (corePFieldPat src f) vars) r.fields
+  | _ -> False
+
+-- Whether `t` binds a name whose type mentions one of `vars`, anywhere in it.
+fun bindsOver src t (vars : [Int]) : Bool =
+  let any = \ts -> V.any (\u -> bindsOver src u vars) ts in
+  match viewCoreTerm src t with
+  | CoreTermView.Lam r -> mentionsOf r.paramTy vars or bindsOver src r.body vars
+  | CoreTermView.TyLam r -> bindsOver src r.body vars
+  | CoreTermView.TyApp r -> bindsOver src r.func vars
+  | CoreTermView.App r -> any [r.func, r.arg]
+  | CoreTermView.Let r -> mentionsOf (tyCoreTerm src r.value) vars or any [r.value, r.body]
+  | CoreTermView.LetRec r ->
+      V.any
+        (\b ->
+          mentionsOf (tyCoreTerm src (coreBindValue src b)) vars
+            or bindsOver src (coreBindValue src b) vars)
+        r.binds
+        or bindsOver src r.body vars
+  | CoreTermView.If r -> any [r.cond, r.yes, r.no]
+  | CoreTermView.Tuple r -> any r.items
+  | CoreTermView.Array r -> any r.items
+  | CoreTermView.Proj r -> bindsOver src r.tuple vars
+  | CoreTermView.Record r -> any (V.map (\f -> coreFieldValue src f) r.fields)
+  | CoreTermView.Sel r -> bindsOver src r.target vars
+  | CoreTermView.Extend r -> any [r.target, r.value]
+  | CoreTermView.Ctor r -> any r.args
+  | CoreTermView.Prim r -> any r.args
+  | CoreTermView.Perform r -> bindsOver src r.arg vars
+  | CoreTermView.Case r ->
+      bindsOver src r.scrutinee vars
+        or V.any
+          (\arm ->
+            patBindsOver src (coreArmPat src arm) vars
+              or (match coreArmGuard src arm with
+               | Just g -> bindsOver src g vars
+               | None -> False)
+              or bindsOver src (coreArmBody src arm) vars)
+          r.arms
+  -- A handler, a join point: left generic, which is always right.
+  | CoreTermView.Handle _ -> True
+  | CoreTermView.Join _ -> True
+  | CoreTermView.Jump r -> any r.args
+  | _ -> False
+
 -- `let x = v in body`, `v` generic in its type: a definition at the top, of
 -- a descriptor for each variable in scope and each of its own, and of what
 -- it mentions from around it -- asked for at each mention, with the types
@@ -891,10 +966,65 @@ fun armsFrom src out cx (m : Meta) (s : String) (sr : String) arms (i : Int) =
                      group)
                   (C.arm out m "_" [] rest)))
       in
+      let seen = viewed src arms i [] None in
+      -- Arms written with one view of the value -- a pattern synonym each,
+      -- as a tree's nodes are matched -- ask the view once and are a `case`
+      -- of what it answers; written out an arm at a time, each asked it
+      -- again, twice.
+      if not (V.isEmpty seen) then
+        (match V.getOr (arm, 0, 0, 0, 0) seen 0 with
+         | (_, x0, look, _, _) ->
+             let w = "w${show arm}" in
+             C.give
+               out
+               m
+               (C.var out m s)
+               (C.binding
+                  out
+                  m
+                  "v${show x0}"
+                  sr
+                  (named
+                     src
+                     out
+                     cx
+                     m
+                     w
+                     look
+                     (C.give
+                        out
+                        m
+                        (C.var out m w)
+                        (C.caseOf
+                           out
+                           m
+                           (V.pushBack
+                              (V.map
+                                 (\one ->
+                                   match one with
+                                   | (_, x, _, q, b) ->
+                                       taken src out cx m q "#never" (\() ->
+                                         C.give
+                                           out
+                                           m
+                                           (C.var out m s)
+                                           (C.binding
+                                              out
+                                              m
+                                              "v${show x}"
+                                              sr
+                                              (lowerTerm src out cx b))))
+                                 seen)
+                              (C.arm
+                                 out
+                                 m
+                                 "_"
+                                 []
+                                 (armsFrom src out cx m s sr arms (i + V.len seen)))))))))
       -- Arms that cannot give up -- a constructor over names, and no guard --
       -- need nowhere to give up to: what comes after them is what the `case`
       -- does with any other constructor, written there.
-      if V.all (\a -> plain src a) group then
+      else if V.all (\a -> plain src a) group then
         cased cx "#never" (armsFrom src out cx m s sr arms after)
       else if sure src (coreArmPat src arm) and M.isNone (coreArmGuard src arm) then
         matched src out cx m s (coreArmPat src arm) "#never" (\() ->
@@ -958,6 +1088,82 @@ fun gaveUp out cx (m : Meta) (fail : String) =
       else
         C.invoke out m symbol (V.pushBack (leading out cx m cx.tvars around) (C.var out m s)) [cx.k]
   | None -> C.gaveUp out m fail
+
+-- The arms from `i` on that each see the value through one view -- what
+-- `Elab` makes of a pattern that is a synonym: the value named, a guard that
+-- asks the view and matches what it answers, and a body that asks it again
+-- -- for as long as they ask the same view (`asked`, once one has), take apart a constructor of its
+-- answer no arm before took, over names, and have no guard of their own.
+-- Of each: the arm, the name it gives the value, the asking, the pattern
+-- for what is answered, and the body under it.
+fun viewed src arms (i : Int) (taken : [String]) (asked : Maybe Int) =
+  match V.get arms i with
+  | None -> []
+  | Just arm ->
+      (match (viewCorePat src (coreArmPat src arm), coreArmGuard src arm) with
+       | (CorePatView.PVar pv, Just g) ->
+           (match (viewCoreTerm src g, viewCoreTerm src (coreArmBody src arm)) with
+            | (CoreTermView.Case held, CoreTermView.Case under) ->
+                (match (V.get held.arms 0, V.get under.arms 0) with
+                 | (Just first, Just only) ->
+                     let q = coreArmPat src only in
+                     let name =
+                       (match viewCorePat src q with
+                        | CorePatView.PCtor r ->
+                            if V.all (\a -> sure src a) r.args then r.name else ""
+                        | _ -> "")
+                     in if S.isEmpty name
+                          or V.elem name taken
+                          or V.len held.arms != 2
+                          or V.len under.arms != 1
+                          or not (truth src (coreArmBody src first))
+                          or viewOf src held.scrutinee != Just pv.id
+                          or viewOf src under.scrutinee != Just pv.id
+                          or M.isNone (viewFunction src held.scrutinee)
+                          or (M.isSome asked and asked != viewFunction src held.scrutinee) then []
+                        else
+                          V.pushFront
+                            (viewed
+                               src
+                               arms
+                               (i + 1)
+                               (V.pushBack taken name)
+                               (viewFunction src held.scrutinee))
+                            (arm, pv.id, held.scrutinee, q, coreArmBody src only)
+                 | _ -> [])
+            | _ -> [])
+       | _ -> [])
+
+-- The name a view is asked of, if `t` is a function given a name.
+fun viewOf src t : Maybe Int =
+  match viewCoreTerm src t with
+  | CoreTermView.App r ->
+      (match viewCoreTerm src r.arg with
+       | CoreTermView.Var v -> Just v.id
+       | _ -> None)
+  | _ -> None
+
+-- The function a view asks, by its binder, if it is a definition named.
+fun viewFunction src t : Maybe Int =
+  match viewCoreTerm src t with
+  | CoreTermView.App r ->
+      (match viewCoreTerm src r.func with
+       | CoreTermView.Var v -> Just v.id
+       | CoreTermView.TyApp ta ->
+           (match viewCoreTerm src ta.func with
+            | CoreTermView.Var v -> Just v.id
+            | _ -> None)
+       | _ -> None)
+  | _ -> None
+
+-- Whether `t` is `True` written out.
+fun truth src t : Bool =
+  match viewCoreTerm src t with
+  | CoreTermView.Const r ->
+      (match viewCoreLit src r.lit with
+       | CoreLitView.LBool b -> b.value
+       | _ -> False)
+  | _ -> False
 
 -- Whether a pattern matches whatever it is given: a name, or names put
 -- together as a tuple or a record is.

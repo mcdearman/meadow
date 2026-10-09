@@ -197,6 +197,7 @@ pub unsafe extern "C" fn meadow_run_test(
         .name("main".into())
         .stack_size(1 << 30)
         .spawn(move || {
+            allocator();
             let (c, _) = run_main(entry);
             drop(c);
             use std::io::Write;
@@ -205,6 +206,35 @@ pub unsafe extern "C" fn meadow_run_test(
         .expect("the test's thread starts")
         .join();
     i32::from(ran.is_err())
+}
+
+/// Tell the C allocator, which every heap's chunks and every region's come
+/// from, to give memory back when it is freed.
+///
+/// glibc's keeps an arena for every thread that allocates, and raises the
+/// size from which it asks the system directly each time a block that big is
+/// freed -- so after a while a megabyte freed is a megabyte kept, in the
+/// arena of whichever thread freed it. A program of many threads that each
+/// build something large and let it go, as a compiler's units are, was at
+/// its end holding a third more than anything in it was using. With the
+/// size fixed, a heap's chunks are always the system's and go back to it;
+/// with two arenas, what is smaller is at least kept in one of two places.
+fn allocator() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        use std::ffi::c_int;
+        unsafe extern "C" {
+            fn mallopt(param: c_int, value: c_int) -> c_int;
+        }
+        const M_MMAP_THRESHOLD: c_int = -3;
+        const M_ARENA_MAX: c_int = -8;
+        // Safety: two settings of the allocator, made before the program
+        // has a second thread.
+        unsafe {
+            mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+            mallopt(M_ARENA_MAX, 2);
+        }
+    }
 }
 
 /// Run the program: its entry point, on a stack deep enough for the
@@ -224,6 +254,7 @@ pub unsafe extern "C" fn meadow_run(
     let d = unsafe { meadow_result_desc };
     let run = move || {
         // What `main` answers is in its heap, which stays current here.
+        allocator();
         profile::start();
         let (mut main_ctx, v) = run_main(entry);
         profile::finish();

@@ -16,6 +16,8 @@ pub mod interp;
 pub mod lower;
 pub mod parse;
 pub mod print;
+pub mod pure;
+pub mod specialize;
 
 pub use parse::parse;
 

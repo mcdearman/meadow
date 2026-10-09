@@ -183,6 +183,16 @@ impl Lowered {
 }
 
 fn lowered(p: &Program, prints: bool) -> R<Lowered> {
+    // A program to run is first copied for the representations its generic
+    // definitions are called at -- see [`crate::specialize`].
+    // `MEADOW_CUT_GENERIC=1` leaves them generic, to measure the copies by.
+    let copied;
+    let p = if prints && std::env::var_os("MEADOW_CUT_GENERIC").is_none() {
+        copied = crate::specialize::program(p);
+        &copied
+    } else {
+        p
+    };
     let lazy = lazily(p);
     let whole = p;
     let p = &lazy;
@@ -226,6 +236,13 @@ fn lowered(p: &Program, prints: bool) -> R<Lowered> {
             )
         {
             l.literals.insert(v.symbol.clone(), x.clone());
+        }
+    }
+    // `MEADOW_CUT_IMPURE=1` says of no definition that it is pure, to
+    // measure what saying so is worth.
+    if std::env::var_os("MEADOW_CUT_IMPURE").is_none() {
+        for i in crate::pure::defs(p) {
+            l.out.pure.insert(Label(i as u32));
         }
     }
     for (i, d) in p.defs.iter().enumerate() {

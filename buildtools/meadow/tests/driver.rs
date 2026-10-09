@@ -42,6 +42,60 @@ fn meadow(dir: &Path, args: &[&str]) -> (bool, String, String) {
     )
 }
 
+/// Fifty threads, each keeping a compact in a table in a `Ref` that is written
+/// under a handler -- what a query's thread keeps its answers in -- and
+/// ending. Found by Lingua's session, reduced from a database whose answers
+/// were never let go.
+const KEPT_IN_A_REF: &str = r#"use Std.Collections.Vector as V
+use Std.Collections.HashMap as HashMap
+use Std.Collections.HashMap (HashMap)
+use Std.Compact as Compact
+use Std.Thread as Thread
+
+data Box = Box (Ref (HashMap Int (Compact [Int])))
+
+effect Ask { ask : Int -> Int }
+
+fun through (b : Box) (n : Int) : Int ! { Mut | e } =
+  handle (ask n + 1) with {
+    ask k resume ->
+      (match b with
+       | Box r ->
+           let c = Compact.make (V.range 0 k) in
+           let u = setRef r (HashMap.insert k c (getRef r)) in
+           resume (V.len (Compact.get c))),
+    return x -> x
+  }
+
+fun inBox (n : Int) = through (Box (newRef HashMap.empty)) n
+
+fun main () =
+  let tasks = V.map (\i -> Thread.spawn (\() -> inBox (1000 + i))) (V.range 0 50) in
+  println (show (V.foldl (\a b -> a + b) 0 (Thread.awaitAll tasks)))
+"#;
+
+/// A `Ref` that has been written is a candidate for Silo's cycle collector,
+/// and one that dies while it is a candidate is only marked, for the
+/// collector to free when it next runs. A thread that ended first never ran
+/// it: the `Ref`, the table in it and every region the table held stayed for
+/// the rest of the program.
+#[test]
+fn what_a_thread_kept_in_a_ref_goes_when_the_thread_does() {
+    let dir = scratch("kept-in-a-ref");
+    let root = package(&dir, "kept-in-a-ref", KEPT_IN_A_REF);
+    let out = Command::new(env!("CARGO_BIN_EXE_meadow"))
+        .current_dir(&root)
+        .env("MEADOW_SILO_LEAKS", "1")
+        .args(["run", "--runtime", "silo", "."])
+        .output()
+        .expect("the meadow binary runs");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert_eq!(answer(&String::from_utf8_lossy(&out.stdout)), "51275");
+    assert!(err.contains("aot: 0 regions live at exit"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The last line a run printed.
 fn answer(stdout: &str) -> &str {
     stdout.lines().last().unwrap_or("")

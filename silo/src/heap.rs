@@ -958,11 +958,18 @@ pub fn settle() {
     with(|h| crate::cycles::collect_all(h));
 }
 
-/// Erase everything pending on this thread, which is ending: its heap goes
-/// all at once, but what the blocks waiting to be erased hold outside it --
-/// a reference into a compact's region -- is given up only by erasing them.
-/// Left waiting, each such region outlived the program.
+/// Erase everything this thread has let go of, which is ending: its heap
+/// goes all at once, but what its dead blocks hold outside it -- a reference
+/// into a compact's region -- is given up only by erasing them. Left, each
+/// such region outlived the program.
+///
+/// That is the blocks waiting to be erased, and also the ones that died
+/// while the cycle collector had them down as candidates: those are only
+/// marked, for the collector to free when it next runs -- which, for a
+/// thread that ends first, was never. A `Ref` written under a handler is
+/// one, and what a query's thread keeps its answers in.
 pub fn finish() {
+    settle();
     with(|h| {
         while !h.pending.is_empty() {
             h.step();

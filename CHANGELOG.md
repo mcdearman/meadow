@@ -129,6 +129,11 @@ St s }`), and `! Reading r` where a method's type says what it performs. A
 
 ### Fixed
 
+- A natively compiled program frees what a thread kept in a `Ref` when the
+  thread ends. A `Ref` that had been written and then let go of was left for
+  the cycle collector, which a thread that ends does not run again: the
+  `Ref` and everything it held -- compact regions among it -- stayed for the
+  rest of the program.
 - A natively compiled program frees a compact's region once a thread that
   held the compact has ended. What the thread had let go of but not yet
   erased went with its heap, and the region was kept for good.

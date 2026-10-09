@@ -715,16 +715,20 @@ fun lifted src out cx (m : Meta) binds body =
      lowerTerm src out within body)
 
 -- Whether a value generic in its type is the same value at every type, and
--- so is made once where it is bound: it is no function, and nothing in it
--- binds a name whose type mentions a variable it is generic in. Such a
--- value holds nothing of those types -- an empty map, `None`, a record of
--- them -- and no code that would be handed something of them, so no
--- descriptor says anything about it. Made a definition and asked for at
--- each mention, as a generic function is, it is worked out again each time:
--- a table built once in the source, built once for every use of it.
+-- so is made once where it is bound. It is no function. Where it is worked
+-- out there is nothing of the types it is generic in to work on -- a pure
+-- value of every type holds none: an empty map, `None`, a record of them --
+-- so what a descriptor would say there is never asked, as long as no name
+-- is bound at such a type itself. A function *inside* it is another matter:
+-- it runs later, on what its caller has, and has to know what that is. So
+-- nothing under a function in it may mention those types at all.
+--
+-- Made a definition and asked for at each mention, as a generic function
+-- is, a value is worked out again each time: a table built once in the
+-- source, built once for every use of it.
 fun once src value : Bool =
   let (vars, inner) = peel src value in
-  kindCoreTerm src inner != CoreTermKind.Lam and not (bindsOver src inner vars)
+  kindCoreTerm src inner != CoreTermKind.Lam and not (depends src inner vars False)
 
 -- Whether a type mentions one of `vars`.
 fun mentionsOf (t : Type) (vars : [Int]) : Bool =
@@ -737,53 +741,56 @@ fun mentionsOf (t : Type) (vars : [Int]) : Bool =
   | RowExtend _ field rest -> mentionsOf field vars or mentionsOf rest vars
   | _ -> False
 
-fun patBindsOver src p (vars : [Int]) : Bool =
+-- Whether a name of type `t` is one a descriptor of `vars` says something
+-- of: one of them itself where the value is worked out, and anything that
+-- mentions one `under` a function.
+fun described (t : Type) (vars : [Int]) (under : Bool) : Bool =
+  if under then mentionsOf t vars else (match t with | Var v -> V.elem v vars | _ -> False)
+
+fun patDepends src p (vars : [Int]) (under : Bool) : Bool =
   match viewCorePat src p with
-  | CorePatView.PVar r -> mentionsOf r.ty vars
-  | CorePatView.PAs r -> mentionsOf r.ty vars or patBindsOver src r.pat vars
-  | CorePatView.PTuple r -> V.any (\q -> patBindsOver src q vars) r.items
-  | CorePatView.PArray r -> V.any (\q -> patBindsOver src q vars) r.items
-  | CorePatView.PCtor r -> V.any (\q -> patBindsOver src q vars) r.args
-  | CorePatView.PRecord r -> V.any (\f -> patBindsOver src (corePFieldPat src f) vars) r.fields
+  | CorePatView.PVar r -> described r.ty vars under
+  | CorePatView.PAs r -> described r.ty vars under or patDepends src r.pat vars under
+  | CorePatView.PTuple r -> V.any (\q -> patDepends src q vars under) r.items
+  | CorePatView.PArray r -> V.any (\q -> patDepends src q vars under) r.items
+  | CorePatView.PCtor r -> V.any (\q -> patDepends src q vars under) r.args
+  | CorePatView.PRecord r -> V.any (\f -> patDepends src (corePFieldPat src f) vars under) r.fields
   | _ -> False
 
--- Whether `t` binds a name whose type mentions one of `vars`, anywhere in it.
-fun bindsOver src t (vars : [Int]) : Bool =
-  let any = \ts -> V.any (\u -> bindsOver src u vars) ts in
+-- Whether what `t` does depends on a descriptor of `vars`: `under` is
+-- whether `t` is inside a function of the value.
+fun depends src t (vars : [Int]) (under : Bool) : Bool =
+  let any = \ts -> V.any (\u -> depends src u vars under) ts in
   match viewCoreTerm src t with
-  | CoreTermView.Lam r -> mentionsOf r.paramTy vars or bindsOver src r.body vars
-  | CoreTermView.TyLam r -> bindsOver src r.body vars
-  | CoreTermView.TyApp r -> bindsOver src r.func vars
+  | CoreTermView.Lam r -> mentionsOf r.paramTy vars or depends src r.body vars True
+  | CoreTermView.TyLam r -> depends src r.body vars under
+  | CoreTermView.TyApp r ->
+      (under and V.any (\x -> mentionsOf x vars) r.tys) or depends src r.func vars under
   | CoreTermView.App r -> any [r.func, r.arg]
-  | CoreTermView.Let r -> mentionsOf (tyCoreTerm src r.value) vars or any [r.value, r.body]
-  | CoreTermView.LetRec r ->
-      V.any
-        (\b ->
-          mentionsOf (tyCoreTerm src (coreBindValue src b)) vars
-            or bindsOver src (coreBindValue src b) vars)
-        r.binds
-        or bindsOver src r.body vars
+  | CoreTermView.Let r -> described (tyCoreTerm src r.value) vars under or any [r.value, r.body]
+  | CoreTermView.LetRec _ -> True
   | CoreTermView.If r -> any [r.cond, r.yes, r.no]
   | CoreTermView.Tuple r -> any r.items
   | CoreTermView.Array r -> any r.items
-  | CoreTermView.Proj r -> bindsOver src r.tuple vars
+  | CoreTermView.Proj r -> depends src r.tuple vars under
   | CoreTermView.Record r -> any (V.map (\f -> coreFieldValue src f) r.fields)
-  | CoreTermView.Sel r -> bindsOver src r.target vars
+  | CoreTermView.Sel r -> depends src r.target vars under
   | CoreTermView.Extend r -> any [r.target, r.value]
   | CoreTermView.Ctor r -> any r.args
   | CoreTermView.Prim r -> any r.args
-  | CoreTermView.Perform r -> bindsOver src r.arg vars
+  | CoreTermView.Perform r -> depends src r.arg vars under
   | CoreTermView.Case r ->
-      bindsOver src r.scrutinee vars
+      depends src r.scrutinee vars under
         or V.any
           (\arm ->
-            patBindsOver src (coreArmPat src arm) vars
+            patDepends src (coreArmPat src arm) vars under
               or (match coreArmGuard src arm with
-               | Just g -> bindsOver src g vars
+               | Just g -> depends src g vars under
                | None -> False)
-              or bindsOver src (coreArmBody src arm) vars)
+              or depends src (coreArmBody src arm) vars under)
           r.arms
-  -- A handler, a join point: left generic, which is always right.
+  -- A handler, a join point, a function that names itself: left generic,
+  -- which is always right.
   | CoreTermView.Handle _ -> True
   | CoreTermView.Join _ -> True
   | CoreTermView.Jump r -> any r.args

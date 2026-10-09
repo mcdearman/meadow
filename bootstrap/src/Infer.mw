@@ -2413,7 +2413,12 @@ fun inferImpl
   evidence : HashMap String [Evidence],
   -- Each generalized binding with its scheme and the variable behind each
   -- of its quantifiers, as the typed tree's types have it.
-  generics : HashMap Int Generalized
+  generics : HashMap Int Generalized,
+  -- What is wrong with the unit's `main`, if it has one: a unit is not
+  -- compiled with a `main` that is not `() -> () ! Eff`. Everything else
+  -- inference says is in the dumps; it still says of some of the standard
+  -- library what the Rust compiler does not, so it cannot stop a build yet.
+  problems : [String]
 }
 
 -- Infer unit `r`, whose dependencies exported `deps` -- their values' schemes
@@ -2515,7 +2520,10 @@ fun inferImpl
     let u9 =
       V.foldl (\w k -> inferTraits i outs done (hereOf i k) (rootDecls r k) dicts) () order
     in
+    let before = V.len (stGetRef i.errors) in
     let u9b = checkMain i r in
+    -- What is wrong with `main`: what a unit is not compiled for.
+    let ofMain = V.drop (stGetRef i.errors) before in
     -- The unit is done.
     let u10 = solveOverloads i True in
     let quantified =
@@ -2561,6 +2569,7 @@ fun inferImpl
            (H.toVec (stGetRef i.generalized)))
         (H.values (stGetRef i.impls))
     in Inferred {
+         problems = ofMain,
          dumps,
          schemes = exported,
          types = ownTypes i,
@@ -2682,7 +2691,8 @@ fun checkMain (i : Inf s) (r : Renamed) : () ! { St s | e } =
               -- One that fits is `() -> () ! Eff` from then on: nothing runs
               -- `main` at another row.
               if mainFits i g.scheme then
-                (let fixed =
+                (let closed = closeRow i g in
+                 let fixed =
                    Scheme {
                      quant = [],
                      preds = [],
@@ -2707,18 +2717,51 @@ fun checkMain (i : Inf s) (r : Renamed) : () ! { St s | e } =
               else ()
           | None -> ())
 
+-- The row `main` was inferred at, closed to `Eff`: the variable it ended in
+-- is the effects of `Eff` it did not perform, so that each node's type in
+-- it says so too.
+fun closeRow (i : Inf s) (g : Generalized) : () ! { St s | e } =
+  match g.scheme.ty with
+  | Fun _ _ row ->
+      (match rowEnd row with
+       | Bound k ->
+           (match V.get g.vars k with
+            | Just v ->
+                (let present = V.map fst (labelsOf row) in
+                 let others =
+                   V.foldr
+                     (\l rest -> if V.elem l present then rest else RowExtend l (Tuple []) rest)
+                     RowEmpty
+                     runtimeEffects
+                 in
+                 let u = unify i.ar (Var v) others in
+                 ())
+            | None -> ())
+       | _ -> ())
+  | _ -> ()
+
 -- Whether `main`, of scheme `sc`, is what a `main` may be; what is wrong
 -- with it is said if not.
 fun mainFits (i : Inf s) (sc : Scheme) : Bool ! { St s | e } =
   let wrong =
     \u -> (let r = report i "`main` is `${showScheme sc}`, and has to be `() -> () ! Eff`" in False)
-  in match zonk i.ar (instantiate i sc) with
-     | Fun params ret eff ->
-         if V.len params == 1
-           and fits i (V.getOr (unitT ()) params 0) (unitT ())
-           and fits i ret (unitT ()) then unanswered i (zonk i.ar eff)
-         else wrong ()
-     | _ -> wrong ()
+  in
+  -- A number of any type is not `()`, whatever unifying a variable says.
+  let numeric =
+    (match sc.ty with
+     | Fun _ (Bound k) _ ->
+         (let kind = V.getOr VarKind.Plain sc.quant k in
+          kind == VarKind.Num or kind == VarKind.Frac)
+     | _ -> False)
+  in if numeric then wrong ()
+     else
+       match zonk i.ar (instantiate i sc) with
+       | Fun params ret eff ->
+           if V.len params == 1
+             and fits i (V.getOr (unitT ()) params 0) (unitT ())
+             and fits i ret (unitT ()) then unanswered i (zonk i.ar eff)
+           else wrong ()
+       | _ -> wrong ()
 
 fun fits (i : Inf s) (a : Type) (b : Type) : Bool ! { St s | e } =
   match unify i.ar a b with | Ok _ -> True | Err _ -> False

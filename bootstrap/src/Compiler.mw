@@ -224,7 +224,7 @@ fun checkedOf
     (inlines : Bool)
     (naming : Bool)
     (mark : String -> () ! e)
-    : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, Object)) ! e =
+    : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, Object), [String]) ! e =
   let m0 = mark "start" in
   match unitOf dir imported fx files with
   | (sources, r) ->
@@ -386,7 +386,8 @@ fun checkedOf
                            (V.map (\(e : Entry [String]) -> (e.key, e.value)) labelled)
                            (V.filter (\p -> p != "Std") (V.pushBack packages pkg))
                        )))
-             cored
+             cored,
+           done.problems
          )
 
 -- Declared types as the lowering takes them.
@@ -587,9 +588,9 @@ fun indexIn (out : String) (pkg : String) : String = Path.join out "${pkg}.idx"
 
 fun fst3 (t : (a, b, c)) : a = match t with | (x, _, _) -> x
 
-fun coreIn (c : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, Object)))
+fun coreIn (c : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, Object), [String]))
     : Maybe CoreProgram =
-  match c with | (_, _, _, made) -> M.map fst3 made
+  match c with | (_, _, _, made, _) -> M.map fst3 made
 
 -- The unit at `dir` renamed: its modules, each with its path, and what
 -- renaming made of them.
@@ -800,7 +801,12 @@ fun compiling (u : Given Interface) =
               (not (M.isSome (getEnv "MEADOWBOOT_KEEP_CALLS")))
               (M.isSome (getEnv "MEADOWBOOT_NAMES"))
               mark with
-            | (exports, anyVis, types, made) ->
+            -- A unit whose `main` is not one is not compiled, as the Rust
+            -- compiler does not compile it: a `main` that answers a number
+            -- would hand the runtime the number as the program's answer.
+            | (_, _, _, _, problems) if not (V.isEmpty problems) ->
+                Err (S.join "" (V.map (\p -> "${unitDir u}: ${p}\n") problems))
+            | (exports, anyVis, types, made, _) ->
                 let m9 = mark "cut" in
                 let manifest =
                   M.unwrapOr

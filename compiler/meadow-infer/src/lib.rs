@@ -1268,6 +1268,31 @@ impl Infer {
                     // in what else it might perform -- nothing runs it at
                     // another row -- and whatever `Eff` names may be
                     // performed where it is called from.
+                    // The row it was inferred at is closed to the same: what
+                    // an editor reads of `main` and of what is in it is each
+                    // node's type, and those are written with the variable
+                    // the row ended in, which is `Eff`'s other effects now.
+                    if let Some(g) = self.generalized.get(&main).cloned()
+                        && let Type::Fun(_, _, row) = &g.scheme.ty
+                    {
+                        let (present, tail) = row_parts(row);
+                        if let Some(Type::Bound(i)) = tail
+                            && let Some(var) = g.vars.get(i as usize)
+                        {
+                            let others = THREAD_EFFECTS
+                                .iter()
+                                .rev()
+                                .filter(|e| !present.iter().any(|(l, _)| &**l == **e))
+                                .fold(Type::RowEmpty, |rest, e| {
+                                    Type::RowExtend(
+                                        InternedString::from(*e),
+                                        Box::new(Type::Tuple(vec![])),
+                                        Box::new(rest),
+                                    )
+                                });
+                            let _ = self.arena.unify(Type::Var(*var), others);
+                        }
+                    }
                     let fixed = Scheme::mono(Type::Fun(
                         vec![Type::unit()],
                         Box::new(Type::unit()),

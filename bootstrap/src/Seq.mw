@@ -1685,13 +1685,20 @@ fun entered out sh (pkg : String) (entry : Int) (answerTy : Type) (types : Int) 
        (match mainOf answerTy with
         -- A `main` is run for what it does: what it answers is the
         -- program's, and nothing is shown of it.
-        | Just _ ->
+        | Just result ->
             C.applied
               out
               C.nowhere
               (C.sym out C.nowhere (topSymbol pkg entry))
               (C.unit out C.nowhere)
-              (C.cont out C.nowhere "k")
+              -- Whatever it answers is let go, and the program's answer is
+              -- `unit`.
+              (C.binding
+                 out
+                 C.nowhere
+                 "r"
+                 (repOf result)
+                 (C.give out C.nowhere (C.unit out C.nowhere) (C.cont out C.nowhere "k")))
         | None ->
             shownTo
               sh

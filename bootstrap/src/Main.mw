@@ -200,17 +200,20 @@ fun cutFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits r) roots in
-  V.foldl (\ok f -> cutFile f and ok) True files
+  -- A package that did not build has no program: what an earlier build of
+  -- it linked is not this one's, and the command says it failed.
+  let failed = V.concatMap (\r -> if buildUnits r then [] else [r]) roots in
+  V.foldl (\ok f -> cutFile failed f and ok) True files
 
-fun cutFile (path : String) =
+fun cutFile (failed : [String]) (path : String) =
   let file = absolute path in
+  let root = packageOf file in
+  let broken = M.unwrapOr False (M.map (\r -> V.elem r failed) root) in
   let program =
-    M.andThen
-      (\r -> Res.toMaybe (readToString (Path.join (linkDir r) "program.cut")))
-      (packageOf file)
+    if broken then None
+    else M.andThen (\r -> Res.toMaybe (readToString (Path.join (linkDir r) "program.cut"))) root
   in match program with
-     | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in True)
+     | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in not broken)
      | Just text -> (let u = writeOutput "== ${path}\n${text}" in True)
 
 fun runFile (path : String) =

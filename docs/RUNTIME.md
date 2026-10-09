@@ -1276,6 +1276,15 @@ does more than the other: MeadowBoot built by itself made half as many
 arrays again as MeadowBoot built by the Rust compiler, and the line that
 differed was the function that reads a tree's node off its children.
 
+`MEADOW_SILO_MEMORY=1` says four times a second, on stderr, what the
+program holds: how much its threads' heaps have from the system, how much of
+that is in blocks still in use, and how much its compact regions hold and
+how many there are -- each line with the milliseconds since it started, to
+set against whatever else the program prints of where it has got to. A
+process's resident memory says how much; this says of what. It is how a
+compiler was found to keep every file's tree to the end of the run: the
+regions' line never fell.
+
 To measure what a pass or a rule is worth, leave it out and time what is
 built: `MEADOW_SKIP_PASSES=simplify,joins` (of `release`, `inline`, `joins`,
 `simplify`, `lift`, `trmc`) for the core passes, `MEADOW_NO_REUSE` and

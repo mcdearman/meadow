@@ -264,6 +264,9 @@ pub struct Heap {
     /// what dropping it gives back.
     chunks: Vec<(*mut Word, usize)>,
     large: crate::ctx::ByAddress<usize>,
+    /// Under `MEADOW_SILO_MEMORY`: the words in this heap's blocks that are
+    /// in use.
+    held: usize,
     /// Under `MEADOW_SILO_PRIMS`: how many blocks of each kind this heap has
     /// erased, by what makes them -- a constructor, a closure's code.
     erased: Option<std::collections::HashMap<(u64, u32), u64>>,
@@ -287,6 +290,7 @@ impl Heap {
             freed: 0,
             chunks: Vec::new(),
             large: crate::ctx::ByAddress::default(),
+            held: 0,
             erased: crate::prims::counting().then(std::collections::HashMap::new),
         }
     }
@@ -403,12 +407,16 @@ impl Heap {
 impl Drop for Heap {
     fn drop(&mut self) {
         self.tell();
+        // What this heap still held goes with it.
+        crate::memory::LIVE.fetch_sub(self.held, std::sync::atomic::Ordering::Relaxed);
         let words = |n: usize| std::alloc::Layout::array::<Word>(n).expect("a block fits memory");
         for (p, n) in self.chunks.drain(..) {
+            crate::memory::HEAPS.fetch_sub(n, std::sync::atomic::Ordering::Relaxed);
             // Safety: allocated with this layout in `take`.
             unsafe { std::alloc::dealloc(p as *mut u8, words(n)) };
         }
         for (p, n) in self.large.drain() {
+            crate::memory::HEAPS.fetch_sub(n, std::sync::atomic::Ordering::Relaxed);
             // Safety: likewise.
             unsafe { std::alloc::dealloc(p as *mut u8, words(n)) };
         }
@@ -653,6 +661,10 @@ pub fn tracking() -> bool {
 impl Heap {
     fn take(&mut self, words: usize) -> Word {
         let h = self;
+        if crate::memory::on() {
+            h.held += words;
+            crate::memory::LIVE.fetch_add(words, std::sync::atomic::Ordering::Relaxed);
+        }
         let want = words < CLASSES;
         if !want {
             let layout = std::alloc::Layout::array::<Word>(words).expect("a block fits memory");
@@ -661,6 +673,7 @@ impl Heap {
             if p.is_null() {
                 std::alloc::handle_alloc_error(layout);
             }
+            crate::memory::HEAPS.fetch_add(words, std::sync::atomic::Ordering::Relaxed);
             h.large.insert(p as usize, words);
             return p as Word;
         }
@@ -681,6 +694,7 @@ impl Heap {
             if p.is_null() {
                 std::alloc::handle_alloc_error(layout);
             }
+            crate::memory::HEAPS.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
             h.chunks.push((p, size));
             h.chunk = p;
             h.left = size;
@@ -851,12 +865,17 @@ impl Heap {
 
     fn clean_block(&mut self, p: *mut Word, words: usize) {
         self.live -= 1;
+        if crate::memory::on() {
+            self.held = self.held.saturating_sub(words);
+            crate::memory::LIVE.fetch_sub(words, std::sync::atomic::Ordering::Relaxed);
+        }
         if let Some(b) = &mut self.blocks {
             b.remove(&(p as usize));
         }
         if words >= CLASSES {
             let layout = std::alloc::Layout::array::<Word>(words).expect("a block fits memory");
             self.large.remove(&(p as usize));
+            crate::memory::HEAPS.fetch_sub(words, std::sync::atomic::Ordering::Relaxed);
             // Safety: allocated alone, with this layout, in `acquire`.
             unsafe { std::alloc::dealloc(p as *mut u8, layout) };
             return;

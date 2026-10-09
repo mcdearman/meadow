@@ -21,6 +21,7 @@
 pub mod ctx;
 pub mod cycles;
 pub mod heap;
+pub mod memory;
 pub mod native;
 pub mod parcel;
 pub mod prims;
@@ -255,6 +256,7 @@ pub unsafe extern "C" fn meadow_run(
     let run = move || {
         // What `main` answers is in its heap, which stays current here.
         allocator();
+        memory::start();
         profile::start();
         let (mut main_ctx, v) = run_main(entry);
         profile::finish();

@@ -361,6 +361,7 @@ unsafe fn released(r: *const Region, n: usize) {
         return;
     }
     for (p, n, _) in inside.chunks.drain(..) {
+        crate::memory::REGIONS.fetch_sub(n, Ordering::Relaxed);
         let layout = std::alloc::Layout::array::<Word>(n).expect("a chunk fits memory");
         // Safety: allocated with this layout in `room`.
         unsafe { std::alloc::dealloc(p as *mut u8, layout) };
@@ -394,6 +395,7 @@ fn room(inside: &mut Inside, need: usize) -> *mut Word {
         .is_some_and(|&(_, n, used)| n - used >= need);
     if !fits {
         let n = need.max(CHUNK);
+        crate::memory::REGIONS.fetch_add(n, Ordering::Relaxed);
         let layout = std::alloc::Layout::array::<Word>(n).expect("a chunk fits memory");
         // Safety: a non-zero size.
         let p = unsafe { std::alloc::alloc(layout) } as *mut Word;

@@ -325,91 +325,97 @@ fun checkedOf
             ()
             (V.range 0 (V.len r.binders))
         else ()
-      in (
-           exports,
-           r.anyVis,
-           done.types,
-           M.map
-             (\made ->
-               match made with
-               | (plain, dicts, defaults, aliases) ->
-                   (let traits =
-                      Inline.traitsOf
-                        (V.append
-                           (V.map (\(e : Entry [String]) -> e.key) labelled)
-                           (V.map fst (Seq.namedOf plain)))
-                    in
-                    let core =
-                      if keep and not inlines then plain
-                      else
-                        Inline.program
-                          plain
-                          (V.map (\(l : Linked) -> l.bodies) linked)
-                          (V.map (\(l : Linked) -> l.summary) linked)
-                          (V.concatMap (\(l : Linked) -> l.arities) linked)
-                          traits
-                          labelled
-                          (not keep)
-                          inlines
-                    in
-                    let m4 = mark "optimised" in
-                    let ownDatas =
-                      V.concatMap
-                        (\d ->
-                          match d with
-                          | (name, arity, ctors) ->
-                              if V.any (\(x : DataSig) -> x.name == name) known then []
-                              else
-                                [DataSig {
-                                   name,
-                                   arity,
-                                   ctors = V.map (\c -> Entry { key = fst c, value = snd c }) ctors
-                                 }])
-                        (Seq.datasOf core)
-                    in (
-                         core,
-                         Linked {
-                           package = pkg,
-                           packages = V.pushBack packages pkg,
-                           datas = V.append known ownDatas,
-                           named =
-                             V.append
-                               labelled
-                               (V.map
-                                  (\n -> Entry { key = fst n, value = snd n })
-                                  (Seq.namedOf core)),
-                           dicts,
-                           defaults,
-                           aliases,
-                           arities =
-                             V.append
-                               (V.map
-                                  (\x -> Entry { key = fst x, value = snd x })
-                                  (Seq.aritiesOf core))
-                               (V.concatMap
-                                  (\(al : Entry String) ->
-                                    V.concatMap
-                                      (\(l : Linked) ->
-                                        V.filter (\(x : Entry Int) -> x.key == al.value) l.arities)
-                                      linked)
-                                  aliases),
-                           summary = Dictionaries.summary plain labelled,
-                           -- Kept for the units that import this one,
-                           -- and nothing imports a program: its bodies were
-                           -- most of what was written of it.
-                           bodies =
-                             if (keep and not inlines) or isProgram r.exports then Inline.nothing ()
-                             else Inline.exports core traits
-                         },
-                         Seq.declarations
-                           core
-                           (sigsOf known)
-                           (V.map (\(e : Entry [String]) -> (e.key, e.value)) labelled)
-                           (V.filter (\p -> p != "Std") (V.pushBack packages pkg))
-                       )))
-             cored,
-           done.problems
-         )
+      in
+      -- What is still wanted of the unit renamed and of its types inferred
+      -- is taken out here, so that neither is held while its core is made
+      -- better and written out: the two are most of what a unit is.
+      let anyVis = r.anyVis in
+      let types = done.types in
+      let problems = done.problems in
+      let program = isProgram r.exports in
+      (
+        exports,
+        anyVis,
+        types,
+        M.map
+          (\made ->
+            match made with
+            | (plain, dicts, defaults, aliases) ->
+                (let traits =
+                   Inline.traitsOf
+                     (V.append
+                        (V.map (\(e : Entry [String]) -> e.key) labelled)
+                        (V.map fst (Seq.namedOf plain)))
+                 in
+                 let core =
+                   if keep and not inlines then plain
+                   else
+                     Inline.program
+                       plain
+                       (V.map (\(l : Linked) -> l.bodies) linked)
+                       (V.map (\(l : Linked) -> l.summary) linked)
+                       (V.concatMap (\(l : Linked) -> l.arities) linked)
+                       traits
+                       labelled
+                       (not keep)
+                       inlines
+                 in
+                 let m4 = mark "optimised" in
+                 let ownDatas =
+                   V.concatMap
+                     (\d ->
+                       match d with
+                       | (name, arity, ctors) ->
+                           if V.any (\(x : DataSig) -> x.name == name) known then []
+                           else
+                             [DataSig {
+                                name,
+                                arity,
+                                ctors = V.map (\c -> Entry { key = fst c, value = snd c }) ctors
+                              }])
+                     (Seq.datasOf core)
+                 in (
+                      core,
+                      Linked {
+                        package = pkg,
+                        packages = V.pushBack packages pkg,
+                        datas = V.append known ownDatas,
+                        named =
+                          V.append
+                            labelled
+                            (V.map (\n -> Entry { key = fst n, value = snd n }) (Seq.namedOf core)),
+                        dicts,
+                        defaults,
+                        aliases,
+                        arities =
+                          V.append
+                            (V.map
+                               (\x -> Entry { key = fst x, value = snd x })
+                               (Seq.aritiesOf core))
+                            (V.concatMap
+                               (\(al : Entry String) ->
+                                 V.concatMap
+                                   (\(l : Linked) ->
+                                     V.filter (\(x : Entry Int) -> x.key == al.value) l.arities)
+                                   linked)
+                               aliases),
+                        summary = Dictionaries.summary plain labelled,
+                        -- Kept for the units that import this one,
+                        -- and nothing imports a program: its bodies were
+                        -- most of what was written of it.
+                        bodies =
+                          if (keep and not inlines) or program then Inline.nothing ()
+                          else Inline.exports core traits
+                      },
+                      Seq.declarations
+                        core
+                        (sigsOf known)
+                        (V.map (\(e : Entry [String]) -> (e.key, e.value)) labelled)
+                        (V.filter (\p -> p != "Std") (V.pushBack packages pkg))
+                    )))
+          cored,
+        problems
+      )
 
 -- Declared types as the lowering takes them.
 fun sigsOf (datas : [DataSig]) : [(String, Int, [(String, [Type])])] =
@@ -634,8 +640,11 @@ fun unitOf
   let made = H.fromVec asts in
   -- Only for a file whose syntax was not handed over: reading them is work.
   let expanded =
-    if V.len asts >= V.len (V.filter (\x -> match x with | (_, _, g) -> M.isSome g) files) then
-      H.empty
+    if V.all
+      (\x ->
+        match x with
+        | (p, _, g) -> M.isNone g or M.isSome (H.lookup p made))
+      files then H.empty
     else
       expansionsIn
         (V.concatMap
@@ -655,20 +664,14 @@ fun unitOf
     V.concatMap
       (\x ->
         match x with
-        | (path, text, Just (g, _)) ->
+        | (path, text, tree) ->
             let file = "${pkg}/${relativeTo dir path}" in
-            [(
-              path,
-              Source {
-                path = modulePath isStd src path,
-                file,
-                ast =
-                  (match H.lookup path made with
-                   | Just ast -> ast
-                   | None -> lowered pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx)
-              }
-            )]
-        | _ -> [])
+            let from = \ast -> [(path, Source { path = modulePath isStd src path, file, ast })] in
+            (match (H.lookup path made, tree) with
+             | (Just ast, _) -> from ast
+             | (None, Just (g, _)) ->
+                 from (lowered pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx)
+             | (None, None) -> []))
       files
   in
   let deps =
@@ -856,18 +859,25 @@ fun compiling (u : Given Interface) =
                  (V.range 0 (V.len files)))
             in
             let m3 = mark "lowered" in
+            -- The last the unit's database is asked: what it holds -- every
+            -- file's tree as parsed, and as grouped -- goes when it does,
+            -- which is now and not when the unit is done.
+            let fixities = compilerFixities db 0 in
+            let made = H.fromVec (V.map (\a -> (fst a, True)) asts) in
             -- Its types inferred once, and lowered: its declarations of Cut
             -- are its object, written where the link reads them.
             match checkedOf
               (unitDir u)
               (V.map snd (unitImports u))
-              (tableOf (compilerFixities db 0))
+              (tableOf fixities)
               (V.map
                  (\s ->
                    (
                      fst s,
                      snd s,
-                     if S.endsWith ".mw" (fst s) then
+                     -- A file's tree goes on only where its syntax was not
+                     -- made of it already.
+                     if S.endsWith ".mw" (fst s) and M.isNone (H.lookup (fst s) made) then
                        M.unwrapOr None (V.get groups (indexOf files (fst s)))
                      else None
                    ))
@@ -931,15 +941,7 @@ fun compiling (u : Given Interface) =
                         let m8 = mark "written" in
                         l)
                    | None -> emptyLinked ())
-                in Ok
-                     (Interface {
-                        fixities = compilerFixities db 0,
-                        package = pkg,
-                        exports,
-                        anyVis,
-                        types,
-                        linked
-                      })
+                in Ok (Interface { fixities, package = pkg, exports, anyVis, types, linked })
 
 fun indexOf (xs : [String]) (x : String) : Int =
   M.unwrapOr (0 - 1) (V.find (\k -> V.get xs k == Just x) (V.range 0 (V.len xs)))

@@ -394,8 +394,11 @@ fun checkedOf
                                       linked)
                                   aliases),
                            summary = Dictionaries.summary plain labelled,
+                           -- Kept for the units that import this one,
+                           -- and nothing imports a program: its bodies were
+                           -- most of what was written of it.
                            bodies =
-                             if keep and not inlines then Inline.nothing ()
+                             if (keep and not inlines) or isProgram r.exports then Inline.nothing ()
                              else Inline.exports core traits
                          },
                          Seq.declarations
@@ -609,6 +612,14 @@ fun fst3 (t : (a, b, c)) : a = match t with | (x, _, _) -> x
 fun coreIn (c : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, Object), [String]))
     : Maybe CoreProgram =
   match c with | (_, _, _, made, _) -> M.map fst3 made
+
+-- Whether a unit that exports these is a program: it has a `main` at its
+-- root.
+fun isProgram (exports : [Export]) : Bool =
+  V.any
+    (\(e : Export) ->
+      e.kind == "v" and e.name == "main" and S.isEmpty e.owner and V.isEmpty e.module)
+    exports
 
 -- The unit at `dir` renamed: its modules, each with its path, and what
 -- renaming made of them.

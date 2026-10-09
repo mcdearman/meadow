@@ -146,9 +146,20 @@ fun size (a : CoreArena) (t : CoreTerm) (cap : Int) (n : Int) : Int =
 
 -- The names `t` mentions, after `seen`.
 fun mentions (a : CoreArena) (t : CoreTerm) (seen : [Int]) : [Int] =
+  snd (mentionsIn a t (H.fromVec (V.map (\id -> (id, True)) seen), seen))
+
+-- The same, of a term after others: each name once, in the order first met,
+-- and which have been met so far -- a list alone is searched for every name,
+-- and a unit's functions mention thousands.
+fun mentionsIn (a : CoreArena) (t : CoreTerm) (seen : (HashMap Int Bool, [Int]))
+    : (HashMap Int Bool, [Int]) =
   match viewCoreTerm a t with
-  | CoreTermView.Var r -> if V.elem r.id seen then seen else V.pushBack seen r.id
-  | _ -> V.foldl (\acc k -> mentions a k acc) seen (kids a t)
+  | CoreTermView.Var r ->
+      (match seen with
+       | (met, order) ->
+           if M.isSome (H.lookup r.id met) then seen
+           else (H.insert r.id True met, V.pushBack order r.id))
+  | _ -> V.foldl (\acc k -> mentionsIn a k acc) seen (kids a t)
 
 -- A definition under the type variables it is generic in.
 fun peel (a : CoreArena) (t : CoreTerm) : ([Int], CoreTerm) =
@@ -619,10 +630,11 @@ pass! {
       (coreFileExterns a file)
   in
   let mentioned =
-    V.foldl
-      (\seen kv -> mentions a (match snd kv with | (b : Body) -> b.body) seen)
-      []
-      (H.toVec bodies)
+    snd
+      (V.foldl
+         (\seen kv -> mentionsIn a (match snd kv with | (b : Body) -> b.body) seen)
+         (H.empty, [])
+         (H.toVec bodies))
   in runSt (\() ->
        let out = newCoreBuilder () in
        let defs =

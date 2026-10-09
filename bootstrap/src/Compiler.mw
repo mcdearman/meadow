@@ -27,6 +27,7 @@ use MeadowBoot.Parse (checkedTree)
 use MeadowBoot.Fixity (Fixity, Grouped, declare, grouped)
 use MeadowBoot.Unit (dependenciesOf, unitFilesOf, manifestOf, packageName, dependencyNames)
 use MeadowBoot.Lower (lowered)
+use MeadowBoot.Ast (AstProgram)
 use MeadowBoot.Rename (mentionsOf, Binder)
 use MeadowBoot.Scopes (Source, Export, Renamed, DepExports, renameUnit)
 use MeadowBoot.Infer (inferUnit, Inferred)
@@ -87,6 +88,21 @@ database! {
              (modulesOf (queryFiles unit)))
     | query grouped (file : String) : Maybe (Green Grouped, [Diagnostic]) =
         groupedOf (queryFixities 0) (queryParsed file)
+    | query package (unit : Int) : String =
+        (match V.find (\f -> S.endsWith "Meadow.toml" f) (queryFiles unit) with
+         | Just f -> packageName (querySource f)
+         | None -> "")
+    | query expansions (unit : Int) : HashMap String (HashMap String Json) =
+        expansionsIn (V.map querySource (V.filter (\f -> S.endsWith ".json" f) (queryFiles unit)))
+    | query lowered (file : String) : Maybe AstProgram =
+        loweredOf
+          (queryPackage 0)
+          (queryHome 0)
+          file
+          (querySource file)
+          (queryGrouped file)
+          (queryExpansions 0)
+          (tableOf (queryFixities 0))
     | query renamed (unit : Int) : ([(String, [String])], [Export], Bool) =
         renamedOf
           (queryHome unit)
@@ -112,6 +128,7 @@ database! {
              (V.map
                 (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None))
                 (queryFiles unit))
+             []
              (Just "result")
              True
              False
@@ -156,7 +173,7 @@ fun renamedOf
     (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
     : ([(String, [String])], [Export], Bool) =
-  match unitOf dir imported fx files with
+  match unitOf dir imported fx files [] with
   | (sources, r) ->
       let mentions = mentionsOf r.binders in
       (
@@ -174,7 +191,7 @@ fun inferredOf
     (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
     : ([(String, [String])], [Export], Bool, TypeEnv) =
-  match unitOf dir imported fx files with
+  match unitOf dir imported fx files [] with
   | (sources, r) ->
       let deps =
         V.map
@@ -219,6 +236,7 @@ fun checkedOf
     (imported : [Interface])
     (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
+    (asts : [(String, AstProgram)])
     (entry : Maybe String)
     (keep : Bool)
     (inlines : Bool)
@@ -226,7 +244,7 @@ fun checkedOf
     (mark : String -> () ! e)
     : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, Object), [String]) ! e =
   let m0 = mark "start" in
-  match unitOf dir imported fx files with
+  match unitOf dir imported fx files asts with
   | (sources, r) ->
       let m1 = mark "renamed" in
       let deps =
@@ -599,15 +617,21 @@ fun unitOf
     (imported : [Interface])
     (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
+    (asts : [(String, AstProgram)])
     : ([(String, Source)], Renamed) =
   let manifest = V.find (\x -> match x with | (p, _, _) -> S.endsWith "Meadow.toml" p) files in
+  let made = H.fromVec asts in
+  -- Only for a file whose syntax was not handed over: reading them is work.
   let expanded =
-    expansionsIn
-      (V.concatMap
-         (\x ->
-           match x with
-           | (p, text, _) -> (if S.endsWith ".json" p then [text] else []))
-         files)
+    if V.len asts >= V.len (V.filter (\x -> match x with | (_, _, g) -> M.isSome g) files) then
+      H.empty
+    else
+      expansionsIn
+        (V.concatMap
+           (\x ->
+             match x with
+             | (p, text, _) -> (if S.endsWith ".json" p then [text] else []))
+           files)
   in
   let pkg =
     (match manifest with
@@ -627,7 +651,10 @@ fun unitOf
               Source {
                 path = modulePath isStd src path,
                 file,
-                ast = lowered pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx
+                ast =
+                  (match H.lookup path made with
+                   | Just ast -> ast
+                   | None -> lowered pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx)
               }
             )]
         | _ -> [])
@@ -640,6 +667,29 @@ fun unitOf
         | (name, (i : Interface)) -> DepExports { name, exports = i.exports, anyVis = i.anyVis })
       (namedDeps files imported)
   in (sources, renameUnit pkg isStd (V.map snd sources) deps)
+
+-- The file at `path` of the unit at `dir`, package `pkg`, as abstract syntax:
+-- what `unitOf` makes of each, made of one alone -- so of each on a thread of
+-- its own.
+fun loweredOf
+    (pkg : String)
+    (dir : String)
+    (path : String)
+    (text : String)
+    (grouped : Maybe (Green Grouped, [Diagnostic]))
+    (expanded : HashMap String (HashMap String Json))
+    (fx : HashMap String Fixity)
+    : Maybe AstProgram =
+  match grouped with
+  | Just (g, _) ->
+      Just
+        (lowered
+           pkg
+           text
+           g
+           (M.unwrapOr H.empty (H.lookup "${pkg}/${relativeTo dir path}" expanded))
+           fx)
+  | None -> None
 
 -- Each unit a unit imports with the name its manifest gives it, which a
 -- `use` knows it by: the manifest's dependencies in the order it lists
@@ -780,6 +830,21 @@ fun compiling (u : Given Interface) =
            (V.range 0 (V.len sources))
        in if not (V.isEmpty wrong) then Err (S.join "" wrong)
           else
+            -- Each file's abstract syntax, on a thread of its own as well.
+            -- What every file's is made with is asked for here first, so no
+            -- thread waits on another's answer to it.
+            let asts =
+              (let pkg = compilerPackage db 0 in
+               let expanded = compilerExpansions db 0 in
+               let made = compilerLoweredEach db files in
+               V.concatMap
+                 (\i ->
+                   match (V.get files i, V.get made i) with
+                   | (Just f, Just (Just ast)) -> [(f, ast)]
+                   | _ -> [])
+                 (V.range 0 (V.len files)))
+            in
+            let m3 = mark "lowered" in
             -- Its types inferred once, and lowered: its declarations of Cut
             -- are its object, written where the link reads them.
             match checkedOf
@@ -796,6 +861,7 @@ fun compiling (u : Given Interface) =
                      else None
                    ))
                  (unitSources u))
+              asts
               None
               (M.isSome (getEnv "MEADOWBOOT_KEEP_DICTIONARIES"))
               (not (M.isSome (getEnv "MEADOWBOOT_KEEP_CALLS")))

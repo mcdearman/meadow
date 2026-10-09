@@ -863,6 +863,7 @@ fun compiling (u : Given Interface) =
             -- file's tree as parsed, and as grouped -- goes when it does,
             -- which is now and not when the unit is done.
             let fixities = compilerFixities db 0 in
+            let closed = closeCompiler db in
             let made = H.fromVec (V.map (\a -> (fst a, True)) asts) in
             -- Its types inferred once, and lowered: its declarations of Cut
             -- are its object, written where the link reads them.

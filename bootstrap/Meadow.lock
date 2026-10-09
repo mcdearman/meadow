@@ -34,8 +34,8 @@ tree = "8f685240f4d853d8a0db9e04a30ca408d925d62c"
 [[package]]
 name = "Lingua"
 source = "git+https://github.com/meadow-lang/Lingua.git?branch=master"
-rev = "4e46b1078738b77d6372a8c82bd1eb1777ebaa27"
-tree = "eb230a171cdc35fdb0095f0fea3275fd4ccfe64f"
+rev = "726715fd75e209056420058e214794a0dc8e958c"
+tree = "0253b3b5a0b4d1f3e41547d2ab6790f0b44d0af1"
 
 [[package]]
 name = "Nettle"

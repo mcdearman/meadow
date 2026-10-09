@@ -1209,21 +1209,127 @@ fun armBody src out cx (m : Meta) arm (fail : String) =
   match coreArmGuard src arm with
   | None -> lowerTerm src out cx (coreArmBody src arm)
   | Just g ->
-      (let name = "g${show arm}" in
+      (match asks src g (coreArmBody src arm) [] with
+       | Just (views, rest, body) -> asked src out cx m arm views 0 rest body fail
+       | None -> guarded src out cx m arm g (coreArmBody src arm) fail)
+
+-- `body` if `g` holds, and giving up to `fail` if it does not.
+fun guarded src out cx (m : Meta) arm g body (fail : String) =
+  let name = "g${show arm}" in
+  named
+    src
+    out
+    cx
+    m
+    name
+    g
+    (C.branch
+       out
+       m
+       "u${show arm}"
+       (C.var out m name)
+       (gaveUp out cx m fail)
+       (lowerTerm src out cx body))
+
+-- An arm with views in its pattern, as `Elab` writes it: a guard that asks
+-- each view and matches what it answers, one under another, and a body that
+-- asks them all again for what the patterns bind. Written out so, every view
+-- of the arm that matched was asked twice -- a node of a tree read off its
+-- children twice, for each node a pass looked at. If `g` and `b` are those
+-- two, the views they ask, outermost first, each with the pattern for what
+-- it answers; the guard the arm was written with, if it has one; and its
+-- body. The two must ask the same function of the same name and match the
+-- same pattern, binder for binder, all the way down.
+fun asks src g b seen =
+  match (viewCoreTerm src g, viewCoreTerm src b) with
+  | (CoreTermView.Case held, CoreTermView.Case under) ->
+      (match (V.get held.arms 0, V.get held.arms 1, V.get under.arms 0) with
+       | (Just first, Just other, Just only) ->
+           if V.len held.arms == 2
+             and V.len under.arms == 1
+             and M.isNone (coreArmGuard src first)
+             and M.isNone (coreArmGuard src other)
+             and M.isNone (coreArmGuard src only)
+             and isWild src (coreArmPat src other)
+             and falsehood src (coreArmBody src other)
+             and M.isSome (viewOf src held.scrutinee)
+             and viewOf src held.scrutinee == viewOf src under.scrutinee
+             and (sameView src held.scrutinee under.scrutinee
+                or not (V.isEmpty (bindersOf src (coreArmPat src only))))
+             and samePat src (coreArmPat src first) (coreArmPat src only) then
+             asks
+               src
+               (coreArmBody src first)
+               (coreArmBody src only)
+               (V.pushBack seen (under.scrutinee, coreArmPat src only))
+           else settledAsks src g b seen
+       | _ -> settledAsks src g b seen)
+  | _ -> settledAsks src g b seen
+
+-- Whether two askings name the same function to ask. Where the function is
+-- written out instead -- a synonym's own, in the function that matches it
+-- -- the patterns say: one that binds a name binds it in the guard and in
+-- the body, which only the two halves of one view do.
+fun sameView src g b : Bool =
+  M.isSome (viewFunction src g) and viewFunction src g == viewFunction src b
+
+-- What `asks` answers where the guard and the body stop asking alike: the
+-- views so far, if there are any, with what is left of each.
+fun settledAsks src g b seen =
+  if V.isEmpty seen then None else Just (seen, if truth src g then None else Just g, b)
+
+-- The views from `k` on asked once each, what each answers matched against
+-- its pattern -- giving up to `fail` where it does not match -- and under
+-- them all the arm's own guard, if it has one, and its body.
+fun asked src out cx (m : Meta) arm views (k : Int) rest body (fail : String) =
+  match V.get views k with
+  | None ->
+      (match rest with
+       | Just g -> guarded src out cx m arm g body fail
+       | None -> lowerTerm src out cx body)
+  | Just (look, q) ->
+      (let w = "w${show arm}_${show k}" in
        named
          src
          out
          cx
          m
-         name
-         g
-         (C.branch
-            out
-            m
-            "u${show arm}"
-            (C.var out m name)
-            (gaveUp out cx m fail)
-            (lowerTerm src out cx (coreArmBody src arm))))
+         w
+         look
+         (matched src out cx m w q fail (\() ->
+            asked src out cx m arm views (k + 1) rest body fail)))
+
+-- Whether a pattern is the one that matches anything and binds nothing.
+fun isWild src p : Bool =
+  match viewCorePat src p with
+  | CorePatView.PWild _ -> True
+  | _ -> False
+
+-- Whether `t` is `False` written out.
+fun falsehood src t : Bool =
+  match viewCoreTerm src t with
+  | CoreTermView.Const r ->
+      (match viewCoreLit src r.lit with
+       | CoreLitView.LBool b -> not b.value
+       | _ -> False)
+  | _ -> False
+
+-- Whether two patterns are the same pattern: the same shape, binding the
+-- same names. One with a literal in it is taken for different, unless the
+-- literal is `()`: nothing here tells two numbers apart.
+fun samePat src p q : Bool =
+  let all =
+    \ps qs -> V.len ps == V.len qs and V.all (\x -> samePat src (fst x) (snd x)) (V.zip ps qs)
+  in match (viewCorePat src p, viewCorePat src q) with
+     | (CorePatView.PWild _, CorePatView.PWild _) -> True
+     | (CorePatView.PVar a, CorePatView.PVar b) -> a.id == b.id
+     | (CorePatView.PAs a, CorePatView.PAs b) -> a.id == b.id and samePat src a.pat b.pat
+     | (CorePatView.PTuple a, CorePatView.PTuple b) -> all a.items b.items
+     | (CorePatView.PArray a, CorePatView.PArray b) -> all a.items b.items
+     | (CorePatView.PCtor a, CorePatView.PCtor b) -> a.name == b.name and all a.args b.args
+     | (CorePatView.PLit a, CorePatView.PLit b) ->
+         kindCoreLit src a.lit == CoreLitKind.LUnit and kindCoreLit src b.lit == CoreLitKind.LUnit
+     | _ -> False
 
 -- The arm of a `case` that takes apart the constructor `p` is a pattern
 -- of: its fields named, and matched in turn.

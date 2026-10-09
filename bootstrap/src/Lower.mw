@@ -98,23 +98,30 @@ fun expansion (c : Lc) (kind : String) (m : Meta) : Maybe Json =
 
 type GTree = Syntax Grouped
 
-fun kids (s : GTree) : [GTree] = V.filter (\x -> R.kindOf x != Unknown) (R.children s)
+-- A node's children are found by stepping from slot to slot (`Lingua.Red`):
+-- every form asks for a child or two of each node it reads, and a list of all
+-- of them made and filtered for each question was most of what lowering did.
+fun kids (s : GTree) : [GTree] = R.childrenWhere (\g c -> G.kindAt g c != Unknown) s
 
-fun nodeKids (s : GTree) : [GTree] = V.filter (\x -> not (R.isTokenOf x)) (kids s)
+fun nodeKids (s : GTree) : [GTree] =
+  R.childrenWhere (\g c -> not (G.isTokenAt g c) and G.kindAt g c != Unknown) s
 
-fun tokenKids (s : GTree) : [GTree] = V.filter R.isTokenOf (kids s)
+fun tokenKids (s : GTree) : [GTree] =
+  R.childrenWhere (\g c -> G.isTokenAt g c and G.kindAt g c != Unknown) s
 
-fun childOf (k : Grouped) (s : GTree) : Maybe GTree = V.find (\x -> R.kindOf x == k) (kids s)
+fun childOf (k : Grouped) (s : GTree) : Maybe GTree = R.childWhere (\g c -> G.kindAt g c == k) s
 
-fun childrenOf (k : Grouped) (s : GTree) : [GTree] = V.filter (\x -> R.kindOf x == k) (kids s)
+fun childrenOf (k : Grouped) (s : GTree) : [GTree] = R.childrenWhere (\g c -> G.kindAt g c == k) s
 
 fun has (k : Grouped) (s : GTree) : Bool = M.isSome (childOf k s)
 
-fun firstNode (s : GTree) : Maybe GTree = V.get (nodeKids s) 0
+fun firstNode (s : GTree) : Maybe GTree =
+  R.childWhere (\g c -> not (G.isTokenAt g c) and G.kindAt g c != Unknown) s
 
 fun must (k : Grouped) (s : GTree) : GTree = M.unwrapOr s (childOf k s)
 
-fun tokenIs (k : Grouped) (s : GTree) : Bool = V.any (\t -> R.kindOf t == k) (tokenKids s)
+fun tokenIs (k : Grouped) (s : GTree) : Bool =
+  M.isSome (R.childWhere (\g c -> G.isTokenAt g c and G.kindAt g c == k) s)
 
 -- The bytes `s` spans: its first token's start to its last's end -- where
 -- they stand, for a tree a macro wrote (`Lingua.Green`).
@@ -167,7 +174,8 @@ fun firstName (s : GTree) : Nm =
        | None -> named "" (spanOf s))
 
 fun lastName (s : GTree) : Nm =
-  match V.get (tokenKids s) (V.len (tokenKids s) - 1) with
+  let tokens = tokenKids s in
+  match V.get tokens (V.len tokens - 1) with
   | Just t -> nameOf t
   | None -> firstName s
 

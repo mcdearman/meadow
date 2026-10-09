@@ -994,6 +994,27 @@ pub extern "C" fn meadow_equal(a: Word, ad: i64, b: Word, bd: i64) -> Word {
     Word::from(equal(val(a, ad), val(b, bd)))
 }
 
+/// Whether top-level value `i` has been evaluated on this thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn meadow_global_ready(i: Word) -> Word {
+    Word::from(globals(|g| matches!(g.get(i as usize), Some(Some(_)))))
+}
+
+/// Top-level value `i`, shared with whoever reads it.
+#[unsafe(no_mangle)]
+pub extern "C" fn meadow_global_get(i: Word) -> Word {
+    match globals(|g| g.get(i as usize).copied().flatten()) {
+        Some((w, wd)) => {
+            if counting() {
+                read(i as usize);
+            }
+            heap::share(w, wd);
+            w
+        }
+        None => fail("a definition read before it was evaluated"),
+    }
+}
+
 /// `stringIndexOf s sub from`: where `sub` next appears in `s`, or -1.
 #[unsafe(no_mangle)]
 pub extern "C" fn meadow_string_index_of(s: Word, sub: Word, from: Word) -> Word {

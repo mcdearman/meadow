@@ -2813,6 +2813,8 @@ declare void @meadow_candidate(i64)
 declare void @meadow_region_shared(i64)
 declare void @meadow_region_erased(i64)
 declare i64 @meadow_hash(i64, i64)
+declare i64 @meadow_global_ready(i64)
+declare i64 @meadow_global_get(i64)
 declare i64 @meadow_equal(i64, i64, i64, i64)
 declare i64 @meadow_string_index_of(i64, i64, i64)
 declare i64 @meadow_string_slice(i64, i64, i64)
@@ -3434,6 +3436,11 @@ fn direct(p: Prim) -> Option<(&'static str, Descs)> {
         Prim::StSetArray => ("meadow_st_set", Descs::Last),
         // These two consume the array they grow, which is what lets them grow
         // it in place: see [`consumes`].
+        // A top-level value is asked whether it is there, and read, at
+        // every mention of it: a program that passes dictionaries does
+        // little else.
+        Prim::GlobalReady => ("meadow_global_ready", Descs::None),
+        Prim::GlobalGet => ("meadow_global_get", Descs::None),
         Prim::ArrayPush => ("meadow_array_push", Descs::Last),
         Prim::ArrayConcat => ("meadow_array_concat", Descs::None),
         _ => return None,

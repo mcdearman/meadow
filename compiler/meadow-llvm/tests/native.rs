@@ -551,6 +551,42 @@ fn a_thread_waits_inside_a_handler() {
     );
 }
 
+/// A thread that waits under two handlers and then performs the outer one's
+/// operation: each handler's frame parks the segment it was driving while the
+/// thread waits, and the outer one resumes before the inner one has taken
+/// its own back. It counted that one as beneath it, and the operation that
+/// followed cut the list of parked segments past its end.
+#[test]
+fn a_thread_waits_inside_two_handlers() {
+    // The thread says it has started, and `main` works a while before it
+    // sends, so that the thread is waiting by then.
+    assert_eq!(
+        run_checked(
+            "wait_in_two_handlers",
+            "effect Ask { ask : () -> Int }
+             effect Tell { tell : () -> Int }
+             fun fib (n : Int) : Int = if n < 2 then n else fib (n - 1) + fib (n - 2)
+             def result =
+               let ch = channelNew () in
+               let started = channelNew () in
+               let t = threadSpawn (\\() ->
+                 handle
+                   (let x =
+                      handle
+                        (let _ = channelSend started (toInt 0) in channelReceive ch + tell ())
+                      with { tell u k -> k 1 + 1000 } in
+                    x + ask () + ask ())
+                 with { ask u k -> k 1 + 100 }) in
+               let _ = channelReceive started in
+               let _ = fib 27 in
+               let _ = channelSend ch (toInt 40) in
+               threadAwait t",
+            false
+        ),
+        "1243"
+    );
+}
+
 // --- cycles ------------------------------------------------------------------
 //
 // Counting alone leaves a cycle behind, so the runtime collects them by trial

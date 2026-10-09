@@ -123,6 +123,10 @@ St s }`), and `! Reading r` where a method's type says what it performs. A
 
 ### Fixed
 
+- A natively compiled program no longer aborts when a thread waits, or is
+  made to give way, under two handlers that keep their continuations and then
+  performs the outer one's operation. The runtime lost count of which
+  suspended stack segments belonged to which handler.
 - A build keeps the release its lock names when a newer one has been tagged
   since. On a machine that had not fetched the dependency yet, a dependency
   taken by `version` was resolved to the newest release before the lock was

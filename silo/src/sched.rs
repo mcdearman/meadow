@@ -675,6 +675,7 @@ pub fn prim(p: Prim, args: &[Val]) -> Word {
                 let v = unsafe { meadow_apply(f, 0, no_evidence()) };
                 let out = Parcel::of(v, answer);
                 heap::erase(v, answer);
+                heap::finish();
                 Box::into_raw(Box::new(out)) as Word
             });
             let mut w = world();

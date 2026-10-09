@@ -826,6 +826,18 @@ pub fn settle() {
     with(|h| crate::cycles::collect_all(h));
 }
 
+/// Erase everything pending on this thread, which is ending: its heap goes
+/// all at once, but what the blocks waiting to be erased hold outside it --
+/// a reference into a compact's region -- is given up only by erasing them.
+/// Left waiting, each such region outlived the program.
+pub fn finish() {
+    with(|h| {
+        while !h.pending.is_empty() {
+            h.step();
+        }
+    });
+}
+
 /// Blocks acquired on this thread so far.
 pub fn acquired() -> u64 {
     with(|h| h.acquired)

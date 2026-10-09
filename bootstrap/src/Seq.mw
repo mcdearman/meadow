@@ -1527,7 +1527,7 @@ fun bare (canon : String) : String =
     (labelled : [(String, [String])])
     (packages : [String])
     : CutProgram =
-  match lowered p known labelled packages with
+  match lowered p known labelled packages False with
   | (cut, _, _) -> cut
 
 -- The same, and its declarations in parts: what it declares of types and
@@ -1538,7 +1538,8 @@ fun lowered
     (p : CoreProgram)
     (known : [(String, Int, [(String, [Type])])])
     (labelled : [(String, [String])])
-    (packages : [String]) =
+    (packages : [String])
+    (texts : Bool) =
   let a = coreArena p in
   let file = coreRoot p in
   let defs = coreFileDefs a file in
@@ -1673,10 +1674,17 @@ fun lowered
     let parts =
       V.map
         (\d ->
-          (let (vars, inner) = peel a (coreDefBody a d) in
-           let before = V.len (stGetRef lifted) in
+          -- Where each definition's text is all that is wanted, it is
+          -- lowered into a place of its own and written out at once, and the
+          -- place let go: a unit's Cut held whole until all of it was made
+          -- was the most a compile ever held.
+          (let mine = if texts then C.builder () else out in
+           let stop = if texts then C.halt mine C.nowhere else halt in
+           let kept = if texts then stNewRef [] else lifted in
+           let (vars, inner) = peel a (coreDefBody a d) in
+           let before = V.len (stGetRef kept) in
            let symbol = topSymbol pkg (coreDefId a d) in
-           let within = { cx | tvars = vars } in
+           let within = { cx | tvars = vars, k = stop, lifted = kept } in
            let (params, body) = lams a inner [] in
            -- A function of parameters is a definition of them all at once,
            -- and the value that takes them one at a time is a call of it.
@@ -1684,54 +1692,58 @@ fun lowered
              if V.isEmpty params then []
              else
                [C.genericDecl
-                  out
+                  mine
                   C.nowhere
                   (directly symbol)
                   (V.map tname vars)
                   (V.map
-                     (\p -> C.param out C.nowhere "v${show (fst p)}" (repIn within (snd p)))
+                     (\p -> C.param mine C.nowhere "v${show (fst p)}" (repIn within (snd p)))
                      params)
-                  [C.param out C.nowhere "k" "ptr"]
-                  (lowerTerm a out { within | k = C.cont out C.nowhere "k" } body)]
+                  [C.param mine C.nowhere "k" "ptr"]
+                  (lowerTerm a mine { within | k = C.cont mine C.nowhere "k" } body)]
            in
            let value =
              \k ->
-               if V.isEmpty params then lowerTerm a out { within | k = k } inner
+               if V.isEmpty params then lowerTerm a mine { within | k = k } inner
                else
                  curried
-                   out
+                   mine
                    within
                    symbol
-                   (descsOf out within C.nowhere (V.map (\v -> Var v) vars))
+                   (descsOf mine within C.nowhere (V.map (\v -> Var v) vars))
                    params
                    0
                    k
            in
            let made =
              if V.isEmpty vars then
-               C.valDecl out C.nowhere symbol (repOf (tyCoreTerm a inner)) (value halt)
+               C.valDecl mine C.nowhere symbol (repOf (tyCoreTerm a inner)) (value stop)
              else
                C.genericDecl
-                 out
+                 mine
                  C.nowhere
                  symbol
                  (V.map tname vars)
                  []
-                 [C.param out C.nowhere "k" "ptr"]
-                 (value (C.cont out C.nowhere "k"))
-           in (
-                symbol,
-                V.concat [V.drop (stGetRef lifted) before, whole, [made]],
-                V.map
-                  (\id ->
-                    match H.lookup id ext with
-                    | Just (symbol, _) -> symbol
-                    | None -> topSymbol pkg id)
-                  (M.unwrapOr [] (H.lookup (coreDefId a d) mentions))
-              )))
+                 [C.param mine C.nowhere "k" "ptr"]
+                 (value (C.cont mine C.nowhere "k"))
+           in
+           let ds = V.concat [V.drop (stGetRef kept) before, whole, [made]] in
+           (
+             symbol,
+             if texts then [] else ds,
+             V.map
+               (\id ->
+                 match H.lookup id ext with
+                 | Just (symbol, _) -> symbol
+                 | None -> topSymbol pkg id)
+               (M.unwrapOr [] (H.lookup (coreDefId a d) mentions)),
+             if texts then C.textOf (C.finished mine (C.file mine C.nowhere "" "none" [])) ds
+             else ""
+           )))
         ordered
     in
-    let vals = V.concatMap (\x -> match x with | (_, ds, _) -> ds) parts in
+    let vals = V.concatMap (\x -> match x with | (_, ds, _, _) -> ds) parts in
     let entry = coreFileEntry a file in
     let answerTy =
       M.unwrapOr
@@ -2530,14 +2542,14 @@ fun roles (datas : [(String, Int, [(String, [Type])])]) : String =
     (labelled : [(String, [String])])
     (packages : [String])
     : (String, [(String, String, [String])]) =
-  match lowered p known labelled packages with
+  match lowered p known labelled packages True with
   | (cut, always, parts) ->
       (
         natives p ++ C.textOf cut always,
         V.map
           (\x ->
             match x with
-            | (symbol, ds, refs) -> (symbol, C.textOf cut ds, refs))
+            | (symbol, _, refs, text) -> (symbol, text, refs))
           parts
       )
 

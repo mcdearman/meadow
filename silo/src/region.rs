@@ -116,8 +116,17 @@ struct Inside {
 unsafe impl Send for Region {}
 unsafe impl Sync for Region {}
 
+/// Regions made and not yet freed: what the leak check reports.
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+/// How many regions are live: see [`LIVE`].
+pub fn live() -> usize {
+    LIVE.load(Ordering::Relaxed)
+}
+
 /// A region with one reference, empty.
 fn new() -> *const Region {
+    LIVE.fetch_add(1, Ordering::Relaxed);
     Box::into_raw(Box::new(Region {
         inside: Mutex::new(Inside {
             chunks: Vec::new(),
@@ -148,7 +157,7 @@ unsafe fn owner(v: Word) -> *const Region {
 /// `v` must be a block inside a region.
 pub unsafe fn shared(v: Word) {
     // Safety: the caller's.
-    unsafe { retain(owner(v)) };
+    unsafe { counted(owner(v), 1) };
 }
 
 /// One fewer, and the memory with it if that was the last.
@@ -159,7 +168,119 @@ pub unsafe fn shared(v: Word) {
 pub unsafe fn erased(v: Word) {
     // Safety: the caller's -- and the region cannot be freed under us, since
     // the reference being given up is one of its own.
-    unsafe { release(owner(v)) };
+    unsafe { counted(owner(v), -1) };
+}
+
+/// How many regions a thread keeps a tally for at a time.
+const TALLIED: usize = 4;
+
+/// A thread's own count of the references into the regions it last touched.
+///
+/// A region's count is one number that every thread sharing it writes, and a
+/// value read out of a region is shared and erased as often as any other: ten
+/// threads walking trees whose nodes' kinds lay in one region spent half
+/// their time passing that number's cache line between them, and parsing a
+/// unit's files side by side took as long as one after another. So a thread
+/// counts for itself. The first time it touches a region it takes one
+/// reference, which keeps the region while the tally stands, and from then on
+/// adds and subtracts in its own context; when the tally makes way for
+/// another region's, or the thread ends, what it came to goes into the
+/// region's count at once, less the one taken.
+///
+/// The region's count is then short by what the tallies hold, and may be
+/// over by what they owe -- but never zero while a tally stands, and a tally
+/// stands only where a reference was live when it was made. A region
+/// therefore lives a little longer than its last reference, until the
+/// threads that touched it have touched [`TALLIED`] others or ended.
+pub struct Tallies {
+    of: [*const Region; TALLIED],
+    by: [isize; TALLIED],
+    next: usize,
+}
+
+impl Tallies {
+    pub const fn new() -> Tallies {
+        Tallies {
+            of: [std::ptr::null(); TALLIED],
+            by: [0; TALLIED],
+            next: 0,
+        }
+    }
+
+    /// Every tally into its region's count: the thread is ending.
+    pub fn settle(&mut self) {
+        for i in 0..TALLIED {
+            let (r, by) = (self.of[i], self.by[i]);
+            self.of[i] = std::ptr::null();
+            self.by[i] = 0;
+            if !r.is_null() {
+                // Safety: a tally holds a reference to its region.
+                unsafe { settled(r, by) };
+            }
+        }
+    }
+}
+
+impl Default for Tallies {
+    fn default() -> Tallies {
+        Tallies::new()
+    }
+}
+
+/// `by` references more into `r`, or fewer, counted by the running thread.
+///
+/// # Safety
+///
+/// `r` must be a region the caller holds a reference into.
+unsafe fn counted(r: *const Region, by: isize) {
+    let c = crate::ctx::peek();
+    if c.is_null() {
+        // No thread is running here -- the runtime letting go of what a
+        // finished one left: straight to the region's own count.
+        // Safety: the caller's.
+        unsafe { settled(r, by + 1) };
+        return;
+    }
+    // Safety: the running thread's context, used by this OS thread alone.
+    let t = unsafe { &mut (*c).regions };
+    for i in 0..TALLIED {
+        if t.of[i] == r {
+            t.by[i] += by;
+            return;
+        }
+    }
+    // Safety: the caller holds a reference, so the region is there to take
+    // another of -- before the tally it replaces is settled, which may free
+    // a region but not this one.
+    unsafe { retain(r) };
+    let i = t.next;
+    t.next = (i + 1) % TALLIED;
+    let (old, was) = (t.of[i], t.by[i]);
+    t.of[i] = r;
+    t.by[i] = by;
+    if !old.is_null() {
+        // Safety: the tally held a reference to it.
+        unsafe { settled(old, was) };
+    }
+}
+
+/// A tally of `by` goes into `r`'s count, and the reference the tally held
+/// is given up.
+///
+/// # Safety
+///
+/// `r` must be a region a tally holds a reference to.
+unsafe fn settled(r: *const Region, by: isize) {
+    let net = by - 1;
+    if net > 0 {
+        // Safety: the caller's.
+        let region = unsafe { &*r };
+        used_after_free(region);
+        region.refs.fetch_add(net as usize, Ordering::Relaxed);
+    } else if net < 0 {
+        // Safety: the caller's; the tally's own reference is among them.
+        unsafe { released(r, (-net) as usize) };
+    }
 }
 
 /// What the emitted counting helpers call, having found a count that says the
@@ -203,11 +324,22 @@ fn used_after_free(region: &Region) {
 /// `r` must be a region with a reference the caller is giving up.
 pub unsafe fn release(r: *const Region) {
     // Safety: the caller's.
+    unsafe { released(r, 1) };
+}
+
+/// `n` fewer, all at once.
+///
+/// # Safety
+///
+/// `r` must be a region with `n` references the caller is giving up.
+unsafe fn released(r: *const Region, n: usize) {
+    // Safety: the caller's.
     let shared = unsafe { &*r };
     used_after_free(shared);
-    if shared.refs.fetch_sub(1, Ordering::Release) != 1 {
+    if shared.refs.fetch_sub(n, Ordering::Release) != n {
         return;
     }
+    LIVE.fetch_sub(1, Ordering::Relaxed);
     // Safety: the last reference is gone, so nobody can be reading it, and
     // this is the only thread that will free it.
     let region = unsafe { Box::from_raw(r as *mut Region) };

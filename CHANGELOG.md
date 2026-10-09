@@ -123,6 +123,14 @@ St s }`), and `! Reading r` where a method's type says what it performs. A
 
 ### Fixed
 
+- A natively compiled program frees a compact's region once a thread that
+  held the compact has ended. What the thread had let go of but not yet
+  erased went with its heap, and the region was kept for good.
+- Threads that read values out of one compact region no longer slow each
+  other down on Silo. Each share and erase of such a value wrote the region's
+  one count; a thread now counts for itself and tells the region when it
+  moves on. Parsing the standard library's files on ten threads took as long
+  as on one, and takes a fifth of that now.
 - A natively compiled program no longer aborts when a thread waits, or is
   made to give way, under two handlers that keep their continuations and then
   performs the outer one's operation. The runtime lost count of which

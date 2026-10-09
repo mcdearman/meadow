@@ -54,6 +54,9 @@ pub struct Ctx {
     /// Here for a program with threads; one without keeps it in a global.
     pub shadow: Word,
     pub heap: Heap,
+    /// This thread's own counts of references into the regions it last
+    /// touched: see `crate::region::Tallies`.
+    pub regions: crate::region::Tallies,
     /// The segments running, innermost last: see `crate::segments`.
     pub running: Vec<*const ()>,
     /// Suspended segments, by the number their stack objects hold, with the
@@ -94,6 +97,7 @@ impl Ctx {
             spill_at: std::ptr::null_mut(),
             shadow: 0,
             heap: Heap::new(),
+            regions: crate::region::Tallies::new(),
             running: Vec::new(),
             suspended: Vec::new(),
             parked: Vec::new(),
@@ -116,6 +120,7 @@ impl Ctx {
 
 impl Drop for Ctx {
     fn drop(&mut self) {
+        self.regions.settle();
         // Dropping a suspended segment unwinds it, which a runtime that aborts
         // on a panic cannot do: they are let go, and their memory with them.
         for s in self.suspended.drain(..).flatten() {
@@ -185,6 +190,22 @@ pub extern "C" fn meadow_ctx() -> *mut Ctx {
 #[inline(always)]
 pub fn given(c: *mut Ctx) -> *mut Ctx {
     if c.is_null() { get() } else { c }
+}
+
+/// The running thread's context, or null where none is running on this OS
+/// thread. Never inlined when threads move, as `current` is not.
+#[inline(always)]
+pub fn peek() -> *mut Ctx {
+    if !threaded() {
+        // Safety: as `get`.
+        return unsafe { ONLY };
+    }
+    current_or_none()
+}
+
+#[inline(never)]
+fn current_or_none() -> *mut Ctx {
+    CURRENT.with(Cell::get)
 }
 
 /// Whether there is a running thread's context on this OS thread.

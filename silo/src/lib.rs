@@ -223,7 +223,7 @@ pub unsafe extern "C" fn meadow_run(
     let d = unsafe { meadow_result_desc };
     let run = move || {
         // What `main` answers is in its heap, which stays current here.
-        let (_main_ctx, v) = run_main(entry);
+        let (mut main_ctx, v) = run_main(entry);
         let text = show::show(v, d);
         prims::report();
         cycles::report();
@@ -236,6 +236,10 @@ pub unsafe extern "C" fn meadow_run(
             eprintln!("aot: {left} blocks live at exit");
             eprintln!("aot: {} blocks acquired", heap::acquired());
             eprintln!("aot: {} segments live at exit", segments::live());
+            // What `main` counted for itself goes into the regions' counts
+            // first, as it would when its context goes.
+            main_ctx.regions.settle();
+            eprintln!("aot: {} regions live at exit", region::live());
             if left > 0 {
                 for (n, k, m) in kinds.iter().take(12) {
                     let what = match *k {

@@ -1268,6 +1268,53 @@ fn reading_a_compact_in_a_loop_leaves_nothing_behind() {
          def result = loop 500 0"
     );
     both("compact_loop", &src, "105000");
+    assert_eq!(
+        run_regions("compact_loop_regions", &src, true),
+        ("105000".into(), 0)
+    );
+}
+
+/// [`run`], and how many compact regions were still live at exit.
+#[track_caller]
+fn run_regions(name: &str, src: &str, check: bool) -> (String, usize) {
+    let (got, stderr) = run_full(name, src, check, meadow_core::OptLevel::O2);
+    let live = stderr
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("aot: ")?
+                .strip_suffix(" regions live at exit")?
+                .parse()
+                .ok()
+        })
+        .expect("the run says how many regions are live");
+    (got, live)
+}
+
+/// A thread counts the references it takes into a region for itself, and the
+/// region's own count hears of them when the thread has touched other
+/// regions or ends (`silo/src/region.rs`). Threads that read one compact side
+/// by side, and a `main` that reads several, leave none behind.
+#[test]
+fn regions_read_by_several_threads_are_all_freed() {
+    let src = format!(
+        "{COMPACTED}data Ts = Done | More (Task Int) Ts
+         use Ts.*
+         fun reads (c : Compact L) (n : Int) (acc : Int) : Int =
+           if n == 0 then acc else reads c (n - 1) (acc + sum (getCompact c))
+         fun spawned (c : Compact L) (n : Int) acc =
+           if n == 0 then acc else spawned c (n - 1) (More (threadSpawn (\\() -> reads c 200 0)) acc)
+         fun awaited ts (acc : Int) =
+           match ts with | Done -> acc | More t rest -> awaited rest (acc + threadAwait t)
+         fun several (i : Int) (acc : Int) : Int =
+           if i == 0 then acc else several (i - 1) (acc + sum (getCompact (compact (build i))))
+         def result =
+           let c = compact (build 20) in
+           awaited (spawned c 8 Done) 0 + several 12 0"
+    );
+    assert_eq!(
+        run_regions("regions_by_threads", &src, false),
+        ("336364".into(), 0)
+    );
 }
 
 // --- what an abandoned continuation's frames held -----------------------------

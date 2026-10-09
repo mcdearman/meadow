@@ -1317,6 +1317,30 @@ fn regions_read_by_several_threads_are_all_freed() {
     );
 }
 
+/// What a thread answers is kept for `await` -- for as long as there is a
+/// `Task` of the thread to await it with, and no longer. Kept for good, a
+/// compact a thread answered with held its region to the end of the program.
+#[test]
+fn what_a_thread_answered_goes_when_nothing_can_await_it() {
+    let src = format!(
+        "{COMPACTED}data Ts = Done | More (Task (Compact L)) Ts
+         use Ts.*
+         fun spawned (n : Int) acc =
+           if n == 0 then acc else spawned (n - 1) (More (threadSpawn (\\() -> compact (build n))) acc)
+         fun awaited ts (acc : Int) =
+           match ts with
+           | Done -> acc
+           | More t rest ->
+               -- Awaited twice: the answer is there for as long as the `Task` is.
+               awaited rest (acc + sum (getCompact (threadAwait t)) + sum (getCompact (threadAwait t)))
+         def result = awaited (spawned 12 Done) 0"
+    );
+    assert_eq!(
+        run_regions("answers_let_go", &src, false),
+        ("728".into(), 0)
+    );
+}
+
 // --- what an abandoned continuation's frames held -----------------------------
 //
 // A frame waiting on a call holds what it will need when the call returns. If

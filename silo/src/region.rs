@@ -124,9 +124,47 @@ pub fn live() -> usize {
     LIVE.load(Ordering::Relaxed)
 }
 
+/// Under the leak check: every region made, so that the ones still there at
+/// the end can be asked how many references they think they have.
+static MADE: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// Of the regions still live, how many have each count of references, and
+/// the words they hold: what the leak check prints. A count of one is a
+/// single holder that never let go; more is something that counted and did
+/// not count back.
+pub fn census() -> Vec<(usize, usize, usize)> {
+    let made = MADE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut by: HashMap<usize, (usize, usize)> = HashMap::new();
+    for r in made.iter() {
+        // Safety: under the leak check a region is kept when it is freed,
+        // and marked.
+        let region = unsafe { &*(*r as *const Region) };
+        if region.dead.load(Ordering::Relaxed) {
+            continue;
+        }
+        let words = region.inside.lock().map(|i| i.words).unwrap_or(0);
+        let e = by.entry(region.refs.load(Ordering::Relaxed)).or_default();
+        e.0 += 1;
+        e.1 += words;
+    }
+    let mut out: Vec<(usize, usize, usize)> = by.into_iter().map(|(k, (n, w))| (k, n, w)).collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out
+}
+
 /// A region with one reference, empty.
 fn new() -> *const Region {
     LIVE.fetch_add(1, Ordering::Relaxed);
+    let r = new_region();
+    if heap::tracking() {
+        MADE.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(r as usize);
+    }
+    r
+}
+
+fn new_region() -> *const Region {
     Box::into_raw(Box::new(Region {
         inside: Mutex::new(Inside {
             chunks: Vec::new(),
@@ -351,6 +389,14 @@ unsafe fn released(r: *const Region, n: usize) {
             // Safety: written by `copy`, which retained it.
             unsafe { release(handle(v)) };
         }
+        // A handle inside the region was a way to its thread's answer, or
+        // to its `TVar`'s value: see `crate::sched::held`.
+        if heap::kind(v) == heap::TASK {
+            crate::sched::let_go(heap::meta(v));
+        }
+        if heap::kind(v) == heap::TVAR {
+            crate::sched::let_go_var(heap::field(v, 0) as usize);
+        }
     }
     if heap::tracking() {
         // Kept, and marked, for [`used_after_free`] -- its memory too, which a
@@ -515,6 +561,12 @@ fn copy(inside: &mut Inside, r: *const Region, v: Word, d: i64) -> Result<Word, 
         if heap::kind(new) == heap::COMPACT {
             // Safety: the block being copied holds a reference to it.
             unsafe { retain(handle(new)) };
+        }
+        if heap::kind(new) == heap::TASK {
+            crate::sched::held(heap::meta(new));
+        }
+        if heap::kind(new) == heap::TVAR {
+            crate::sched::held_var(heap::field(new, 0) as usize);
         }
         made.insert(b, new);
         at += size + 1;

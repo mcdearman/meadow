@@ -96,6 +96,46 @@ fn what_a_thread_kept_in_a_ref_goes_when_the_thread_does() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A hundred `TVar`s, made and read and let go of on five threads, each
+/// holding a vector.
+const VARS_LET_GO: &str = r#"use Std.Stm as T
+use Std.Collections.Vector as V
+use Std.Thread as Thread
+
+fun round (i : Int) =
+  let tv = T.newTVarIO (V.range 0 (100 + i)) in
+  let u = T.atomically (\() -> T.modifyTVar tv (\xs -> V.pushBack xs i)) in
+  V.len (T.readTVarIO tv)
+
+fun go (i : Int) (acc : Int) = if i == 0 then acc else go (i - 1) (acc + round i)
+
+fun main () =
+  let tasks = V.map (\k -> Thread.spawn (\() -> go 20 0)) (V.range 0 4) in
+  println (show (go 20 0 + V.foldl (\a b -> a + b) 0 (Thread.awaitAll tasks)))
+"#;
+
+/// A `TVar` keeps its value in a region of its own, and was kept for the
+/// whole run: nothing said when the last handle to one had gone. A program
+/// that made them as it went -- a database with one for each answer -- kept
+/// every value it had ever put in one. Handles are counted now, wherever
+/// they are, and a `TVar` nothing can reach lets its value go.
+#[test]
+fn a_tvar_nothing_can_reach_lets_its_value_go() {
+    let dir = scratch("vars-let-go");
+    let root = package(&dir, "vars-let-go", VARS_LET_GO);
+    let out = Command::new(env!("CARGO_BIN_EXE_meadow"))
+        .current_dir(&root)
+        .env("MEADOW_SILO_LEAKS", "1")
+        .args(["run", "--runtime", "silo", "."])
+        .output()
+        .expect("the meadow binary runs");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert_eq!(answer(&String::from_utf8_lossy(&out.stdout)), "11150");
+    assert!(err.contains("aot: 0 regions live at exit"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The last line a run printed.
 fn answer(stdout: &str) -> &str {
     stdout.lines().last().unwrap_or("")

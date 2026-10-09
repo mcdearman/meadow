@@ -129,6 +129,11 @@ St s }`), and `! Reading r` where a method's type says what it performs. A
 
 ### Fixed
 
+- A natively compiled program lets go of what a finished thread answered,
+  and of a `TVar`'s value, once nothing can reach them. Both were kept for
+  the whole run -- "nothing says when the last handle is gone" -- and with
+  them every compact region they held. Handles are counted now, in heaps, in
+  values on their way between threads, and inside regions.
 - A natively compiled program frees what a thread kept in a `Ref` when the
   thread ends. A `Ref` that had been written and then let go of was left for
   the cycle collector, which a thread that ends does not run again: the

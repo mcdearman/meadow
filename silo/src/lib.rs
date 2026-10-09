@@ -275,7 +275,36 @@ pub unsafe extern "C" fn meadow_run(
             // What `main` counted for itself goes into the regions' counts
             // first, as it would when its context goes.
             main_ctx.regions.settle();
+            // And the answers of threads nobody can await any more, which
+            // the scheduler lets go of when it next looks.
+            sched::forget();
             eprintln!("aot: {} regions live at exit", region::live());
+            for (refs, n, words) in region::census().iter().take(12) {
+                eprintln!(
+                    "aot: {n:>8}  regions with {refs} references, {} KB",
+                    words / 128
+                );
+            }
+            // What threads ended without erasing: their heaps went whole, and
+            // these with them, still holding whatever they held outside.
+            let ended = heap::ended_with();
+            let total: u64 = ended.iter().map(|(_, n)| n).sum();
+            if total > 0 {
+                eprintln!("aot: {total} blocks held by threads when they ended");
+                for ((k, m), n) in ended.iter().take(24) {
+                    let what = match *k {
+                        heap::DATA => show::ctor_name(*m as usize),
+                        heap::CLOSURE => format!("closure, methods from {m}"),
+                        heap::COMPACT => "a compact".to_string(),
+                        heap::ARRAY => "array".to_string(),
+                        heap::STRING => "string".to_string(),
+                        heap::RECORD => "record".to_string(),
+                        heap::CELL => "ref".to_string(),
+                        k => format!("kind {k}"),
+                    };
+                    eprintln!("aot: {n:>8}  ended holding: {what}");
+                }
+            }
             if left > 0 {
                 for (n, k, m) in kinds.iter().take(12) {
                     let what = match *k {

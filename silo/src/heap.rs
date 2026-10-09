@@ -377,6 +377,19 @@ pub fn dropped_by() -> Vec<((u64, u32, String), u64)> {
     out
 }
 
+/// Under `MEADOW_SILO_LEAKS`: the blocks threads ended still holding, by
+/// kind and what made them, over every thread that has ended.
+static ENDED_WITH: std::sync::Mutex<Option<std::collections::HashMap<(u64, u32), u64>>> =
+    std::sync::Mutex::new(None);
+
+/// What threads that have ended were still holding, most first.
+pub fn ended_with() -> Vec<((u64, u32), u64)> {
+    let all = ENDED_WITH.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out: Vec<((u64, u32), u64)> = all.iter().flatten().map(|(k, n)| (*k, *n)).collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    out
+}
+
 /// What every heap that has gone erased, by kind: see [`Heap::erased`].
 static ERASED: std::sync::Mutex<Option<std::collections::HashMap<(u64, u32), u64>>> =
     std::sync::Mutex::new(None);
@@ -407,6 +420,27 @@ impl Heap {
 impl Drop for Heap {
     fn drop(&mut self) {
         self.tell();
+        // Under the leak check: what this heap's thread ended still holding,
+        // by kind -- blocks that go with the heap unerased, and so without
+        // giving up what they held outside it.
+        if let Some(blocks) = &self.blocks {
+            if !blocks.is_empty() {
+                let mut all = ENDED_WITH.lock().unwrap_or_else(|e| e.into_inner());
+                let all = all.get_or_insert_with(std::collections::HashMap::new);
+                for b in blocks {
+                    let v = *b as Word;
+                    let key = (
+                        kind(v),
+                        if kind(v) == DATA || kind(v) == CLOSURE {
+                            meta(v)
+                        } else {
+                            0
+                        },
+                    );
+                    *all.entry(key).or_default() += 1;
+                }
+            }
+        }
         // What this heap still held goes with it.
         crate::memory::LIVE.fetch_sub(self.held, std::sync::atomic::Ordering::Relaxed);
         let words = |n: usize| std::alloc::Layout::array::<Word>(n).expect("a block fits memory");
@@ -684,6 +718,10 @@ impl Heap {
             return p as Word;
         }
         if h.left < words {
+            // Before more is asked of the system: what can be given back.
+            if crate::sched::vars_waiting() {
+                crate::sched::forget_vars();
+            }
             let size = h
                 .chunks
                 .last()
@@ -928,6 +966,13 @@ impl Heap {
             // A continuation nobody can resume now: its segments go.
             if kind(v) == STACK {
                 crate::segments::discard(meta(v));
+            }
+            // One fewer that could await the thread: see `crate::sched::held`.
+            if kind(v) == TASK {
+                crate::sched::let_go(meta(v));
+            }
+            if kind(v) == TVAR {
+                crate::sched::let_go_var(field(v, 0) as usize);
             }
             // The last reference to a compact: its region loses the one this
             // block held, and goes with it if that was the last. Everything

@@ -42,6 +42,35 @@ pub enum Wake {
     Fail(String),
 }
 
+/// A table keyed by an address. An address is spread over the table by one
+/// multiplication: the standard hasher is made to withstand keys chosen to
+/// collide, which these are not, and a program's every mention of a string
+/// literal looks one up -- a tenth of a compiler's time, hashing addresses.
+pub type ByAddress<V> = HashMap<usize, V, std::hash::BuildHasherDefault<AddressHasher>>;
+
+#[derive(Default)]
+pub struct AddressHasher(u64);
+
+impl std::hash::Hasher for AddressHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = (self.0 ^ u64::from(*b)).wrapping_mul(0x0100_0000_01B3);
+        }
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        // The high bits are the well-mixed ones, and a table takes its
+        // place from the low: turned round.
+        self.0 = (n as u64)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .rotate_left(32);
+    }
+}
+
 /// Laid out as C would, for the first two words' sake: emitted code reads
 /// them off the context it is handed (`meadow_llvm::emit`'s `CTX`), so they
 /// must be where it looks.
@@ -67,7 +96,7 @@ pub struct Ctx {
     pub(crate) parked: Vec<Parked>,
     pub next_handler: u32,
     /// String literals, made once per thread, by their bytes' address.
-    pub literals: HashMap<usize, Word>,
+    pub literals: ByAddress<Word>,
     /// Top-level values, once computed on this thread: see `GlobalGet`.
     pub globals: Vec<Option<(Word, i64)>>,
     /// What the leak check does not count: see `crate::prims::roots`.
@@ -102,7 +131,7 @@ impl Ctx {
             suspended: Vec::new(),
             parked: Vec::new(),
             next_handler: 1,
-            literals: HashMap::new(),
+            literals: ByAddress::default(),
             globals: Vec::new(),
             kept: Vec::new(),
             txn: None,

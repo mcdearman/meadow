@@ -1309,7 +1309,7 @@ pub unsafe extern "C" fn meadow_array(n: i64, args: *const Word, descs: *const i
 // `MEADOW_SILO_PRIMS=1`: at exit, how many times each primitive was called
 // through `meadow_prim` rather than done inline -- what to inline next.
 
-fn counting() -> bool {
+pub(crate) fn counting() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("MEADOW_SILO_PRIMS").is_some())
 }
@@ -1366,5 +1366,39 @@ pub fn report() {
     all.sort_by(|a, b| b.0.cmp(&a.0));
     for (n, p) in all.iter().take(20) {
         eprintln!("aot: {n:>12}  {p:?}");
+    }
+    // What was made and let go of most, on every thread.
+    let erased = heap::erased();
+    let total: u64 = erased.iter().map(|(_, n)| n).sum();
+    eprintln!("aot: {total:>12}  blocks erased");
+    let named = |kind: u64, meta: u32| match kind {
+        heap::DATA => crate::show::ctor_name(meta as usize),
+        heap::CLOSURE => format!("closure, methods from {meta}"),
+        heap::STRING => "string".to_string(),
+        heap::ARRAY => "array".to_string(),
+        heap::RECORD => "record".to_string(),
+        heap::CELL => "ref".to_string(),
+        heap::MUT_ARRAY => "mutable array".to_string(),
+        heap::ONCE => "continuation, once".to_string(),
+        heap::STACK => "continuation, a stack".to_string(),
+        k => format!("kind {k}"),
+    };
+    for ((kind, meta), n) in erased.iter().take(40) {
+        eprintln!("aot: {n:>12}  erased: {}", named(*kind, *meta));
+    }
+    // And of those, the ones dropped whole: by which function of the
+    // program.
+    for ((kind, meta, who), n) in heap::dropped_by().iter().take(120) {
+        eprintln!("aot: {n:>12}  dropped: {} by {who}", named(*kind, *meta));
+    }
+    let (arrays, by) = heap::made_by();
+    eprintln!("aot: {arrays:>12}  arrays made");
+    for ((len, who), n) in by.iter().take(120) {
+        let len = if *len > 8 {
+            "more".to_string()
+        } else {
+            len.to_string()
+        };
+        eprintln!("aot: {n:>12}  made: array of {len} by {who}");
     }
 }

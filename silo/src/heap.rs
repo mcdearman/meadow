@@ -263,7 +263,10 @@ pub struct Heap {
     /// The memory it has: chunks, and blocks too big for a size class --
     /// what dropping it gives back.
     chunks: Vec<(*mut Word, usize)>,
-    large: std::collections::HashMap<usize, usize>,
+    large: crate::ctx::ByAddress<usize>,
+    /// Under `MEADOW_SILO_PRIMS`: how many blocks of each kind this heap has
+    /// erased, by what makes them -- a constructor, a closure's code.
+    erased: Option<std::collections::HashMap<(u64, u32), u64>>,
 }
 
 impl Heap {
@@ -283,7 +286,8 @@ impl Heap {
             draining: false,
             freed: 0,
             chunks: Vec::new(),
-            large: std::collections::HashMap::new(),
+            large: crate::ctx::ByAddress::default(),
+            erased: crate::prims::counting().then(std::collections::HashMap::new),
         }
     }
 }
@@ -294,8 +298,111 @@ impl Default for Heap {
     }
 }
 
+/// Under `MEADOW_SILO_PRIMS`: of the blocks let go of whole -- the last
+/// reference dropped by code that had not taken the block apart -- one in
+/// every [`EVERY`], by what the block was and which function of the program
+/// dropped it.
+static DROPPED: std::sync::Mutex<Option<std::collections::HashMap<(u64, u32, String), u64>>> =
+    std::sync::Mutex::new(None);
+static DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const EVERY: u64 = 1024;
+
+#[cold]
+fn dropped(v: Word) {
+    let n = DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if n % EVERY != 0 {
+        return;
+    }
+    // The innermost frame that is the program's own code: emitted functions
+    // are named `mw.` and then what they are.
+    let trace = std::backtrace::Backtrace::force_capture().to_string();
+    let who = trace
+        .lines()
+        .filter_map(|l| l.trim().split_once(": ").map(|(_, name)| name))
+        .find(|name| name.starts_with("mw."))
+        .unwrap_or("the runtime")
+        .to_string();
+    let mut all = DROPPED.lock().unwrap_or_else(|e| e.into_inner());
+    *all.get_or_insert_with(std::collections::HashMap::new)
+        .entry((kind(v), meta(v), who))
+        .or_default() += EVERY;
+}
+
+/// Under `MEADOW_SILO_PRIMS`: of the arrays made, one in every [`EVERY`], by
+/// how long it was made (up to eight, then "more") and which function of the
+/// program made it.
+static MADE: std::sync::Mutex<Option<std::collections::HashMap<(usize, String), u64>>> =
+    std::sync::Mutex::new(None);
+static MAKES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cold]
+fn made(n: usize) {
+    let k = MAKES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if k % EVERY != 0 {
+        return;
+    }
+    let trace = std::backtrace::Backtrace::force_capture().to_string();
+    let who = trace
+        .lines()
+        .filter_map(|l| l.trim().split_once(": ").map(|(_, name)| name))
+        .find(|name| name.starts_with("mw."))
+        .unwrap_or("the runtime")
+        .to_string();
+    let mut all = MADE.lock().unwrap_or_else(|e| e.into_inner());
+    *all.get_or_insert_with(std::collections::HashMap::new)
+        .entry((n.min(9), who))
+        .or_default() += EVERY;
+}
+
+/// The arrays made, as sampled: how long, by whom, and about how many.
+pub fn made_by() -> (u64, Vec<((usize, String), u64)>) {
+    let all = MADE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out: Vec<((usize, String), u64)> =
+        all.iter().flatten().map(|(k, n)| (k.clone(), *n)).collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    (MAKES.load(std::sync::atomic::Ordering::Relaxed), out)
+}
+
+/// The blocks dropped whole, as sampled: what each was, who dropped it, and
+/// about how many, most first.
+pub fn dropped_by() -> Vec<((u64, u32, String), u64)> {
+    let all = DROPPED.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out: Vec<((u64, u32, String), u64)> =
+        all.iter().flatten().map(|(k, n)| (k.clone(), *n)).collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    out
+}
+
+/// What every heap that has gone erased, by kind: see [`Heap::erased`].
+static ERASED: std::sync::Mutex<Option<std::collections::HashMap<(u64, u32), u64>>> =
+    std::sync::Mutex::new(None);
+
+/// The blocks erased so far, by kind and what made them, most first: the
+/// running thread's and every finished one's.
+pub fn erased() -> Vec<((u64, u32), u64)> {
+    with(|h| h.tell());
+    let all = ERASED.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out: Vec<((u64, u32), u64)> = all.iter().flatten().map(|(k, n)| (*k, *n)).collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    out
+}
+
+impl Heap {
+    /// This heap's counts into the program's.
+    fn tell(&mut self) {
+        if let Some(mine) = &mut self.erased {
+            let mut all = ERASED.lock().unwrap_or_else(|e| e.into_inner());
+            let all = all.get_or_insert_with(std::collections::HashMap::new);
+            for (k, n) in mine.drain() {
+                *all.entry(k).or_default() += n;
+            }
+        }
+    }
+}
+
 impl Drop for Heap {
     fn drop(&mut self) {
+        self.tell();
         let words = |n: usize| std::alloc::Layout::array::<Word>(n).expect("a block fits memory");
         for (p, n) in self.chunks.drain(..) {
             // Safety: allocated with this layout in `take`.
@@ -489,6 +596,9 @@ fn died(v: Word) {
 /// [`died`], in context `c`'s heap.
 #[inline]
 pub fn died_in(c: *mut crate::ctx::Ctx, v: Word) {
+    if crate::prims::counting() {
+        dropped(v);
+    }
     if crate::cycles::possible() && buffered(v) {
         // Black and dead: what the collector must not mistake for a
         // candidate with a reference left, since the count it reads is the
@@ -807,6 +917,9 @@ impl Heap {
                 // Safety: a `Compact` block whose fields are still in it.
                 unsafe { crate::region::forget(v) };
             }
+            if let Some(erased) = &mut self.erased {
+                *erased.entry((kind(v), meta(v))).or_default() += 1;
+            }
             let words = size(v);
             self.clean_block(p, words);
         }
@@ -883,6 +996,9 @@ pub fn build(kind: u64, meta: u32, fields: &[Word], descs: &[i64]) -> Word {
 /// A uniform block of `kind` and `meta` of `n` words, every one described by
 /// `d`, the words for the caller to write.
 pub fn build_uniform(kind: u64, meta: u32, n: usize, d: i64) -> Word {
+    if kind == ARRAY && crate::prims::counting() {
+        made(n);
+    }
     let v = acquire(2 + if kind == ARRAY { array_room(n) } else { n });
     set_word(v, 0, (n as u64) << 32);
     set_word(

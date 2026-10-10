@@ -448,7 +448,7 @@ fun objectIn (out : String) (pkg : String) : String = Path.join out "${pkg}.cut"
 -- its types play; after them, the definition it is entered at -- the root
 -- unit's `result`, or its `main` -- and what that shows a value with. A
 -- root with neither is a library, and has no program.
-fun linkProgram (l : Linking Interface) : Result String () ! { Fs | e } =
+fun linkProgram (o : UnitsOptions) (l : Linking Interface) : Result String () ! { Fs | e } =
   let units = linkUnits l in
   match V.get units (V.len units - 1) with
   | None -> Ok ()
@@ -800,16 +800,32 @@ make! {
     | files = unitFilesOf
     | compile = compileUnit
     | link = linkProgram
+    | options {
+      opt : O0
+        | O1
+        | O2
+        | O3 = O1 "how hard to optimise: from O2 a small function is copied to where it is called"
+      dictionaries : Bool =
+        True
+          "copy a function for the dictionaries a call names, and read a known dictionary's method out of it"
+    }
+    | profile debug {}
+    | profile release { opt = O2 }
 }
+
+-- Whether a build at these options copies small functions to where they are
+-- called: `meadow_rt`'s `OptLevel::inlines`, which is O2's, and here O3's
+-- too.
+fun inlining (o : UnitsOptions) : Bool = o.opt == UnitsOpt.O2 or o.opt == UnitsOpt.O3
 
 -- Compile unit `u`: every file parsed and grouped by the unit's fixities, and
 -- its interface -- or what is wrong, drawn.
-fun compileUnit (u : Given Interface) =
-  match toResult (\() -> compiling u) with
+fun compileUnit (o : UnitsOptions) (u : Given Interface) =
+  match toResult (\() -> compiling o u) with
   | Ok r -> r
   | Err why -> Err "${show why}\n"
 
-fun compiling (u : Given Interface) =
+fun compiling (o : UnitsOptions) (u : Given Interface) =
   let timed = M.isSome (getEnv "MEADOWBOOT_TIMES") or M.isSome (getEnv "MEADOWBOOT_NAMES") in
   let mark =
     \what -> if timed then writeError "${show (monotonic ())} ${unitDir u} ${what}\n" else ()
@@ -885,8 +901,8 @@ fun compiling (u : Given Interface) =
                  (unitSources u))
               asts
               None
-              (M.isSome (getEnv "MEADOWBOOT_KEEP_DICTIONARIES"))
-              (not (M.isSome (getEnv "MEADOWBOOT_KEEP_CALLS")))
+              (not o.dictionaries)
+              (inlining o)
               (M.isSome (getEnv "MEADOWBOOT_NAMES"))
               mark with
             -- A unit whose `main` is not one is not compiled, as the Rust

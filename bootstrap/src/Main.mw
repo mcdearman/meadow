@@ -35,7 +35,7 @@ use MeadowBoot.Compiler (
   unitDatabase, buildUnits, givenUnits, setCompilerSource, compilerGrouped, compilerRenamed,
   compilerInferred, compilerCore
 )
-use Lingua.Make (linkDir)
+use Lingua.Make (linkDirIn)
 use Std.Path as Path
 use Lingua.Red as R
 use Lingua.Lang (metaStart, metaEnd)
@@ -89,7 +89,12 @@ cli! {
       { files : [String] "the files to read, each in a package" }
     | cut
       "Compile each file's unit to Cut, and write the program that answers its `result` as text"
-      { files : [String] "the files to read, each in a package" }
+      {
+        files : [String] "the files to read, each in a package",
+        profile : Option String "the profile to build with: `debug`, or `release`",
+        opt : Option String "how hard to optimise, over the profile's: `O0` to `O3`",
+        set : Option String "options over the profile's, `name=value` with commas between"
+      }
 }
 
 fun main () = catch failed (\() -> run (argsCli ()))
@@ -112,7 +117,7 @@ fun run (cli : Cli) =
   | Cli.Rename r -> finish (renameFiles r.files)
   | Cli.Infer r -> finish (inferFiles r.files)
   | Cli.Run r -> finish (runFiles r.files)
-  | Cli.Cut r -> finish (cutFiles r.files)
+  | Cli.Cut r -> finish (cutFiles (M.unwrapOr "debug" r.profile) (pairsOf r.opt r.set) r.files)
 
 -- Each of `files`, its names resolved with every other of its unit's -- a
 -- package, built with the units it depends on first -- under a line naming
@@ -129,7 +134,7 @@ fun renameFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits r) roots in
+  let built = V.map (\r -> buildUnits "debug" [] r) roots in
   let named =
     V.map
       (\r ->
@@ -137,7 +142,7 @@ fun renameFiles (files : [String]) =
           r,
           M.map
             (\u -> (let db = unitDatabase u in fst3 (compilerRenamed db 0)))
-            (Res.toMaybe (givenUnits r r))
+            (Res.toMaybe (givenUnits "debug" r r))
         ))
       roots
   in V.foldl (\ok f -> renameFile named f and ok) True files
@@ -157,7 +162,7 @@ fun inferFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits r) roots in
+  let built = V.map (\r -> buildUnits "debug" [] r) roots in
   let named =
     V.map
       (\r ->
@@ -165,7 +170,7 @@ fun inferFiles (files : [String]) =
           r,
           M.map
             (\u -> (let db = unitDatabase u in fst4 (compilerInferred db 0)))
-            (Res.toMaybe (givenUnits r r))
+            (Res.toMaybe (givenUnits "debug" r r))
         ))
       roots
   in V.foldl (\ok f -> renameFile named f and ok) True files
@@ -185,12 +190,24 @@ fun runFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits r) roots in
+  let built = V.map (\r -> buildUnits "debug" [] r) roots in
   V.foldl (\ok f -> runFile f and ok) True files
 
 -- Each of `files`, its unit lowered to Cut, under a line naming it: the
 -- program, as `meadow_cut` reads one, or `not compiled`.
-fun cutFiles (files : [String]) =
+-- The options a command line gives over its profile's: `--opt`, and each
+-- `name=value` of `--set`.
+fun pairsOf (opt : Maybe String) (set : Maybe String) : [(String, String)] =
+  V.append
+    (match opt with | Just level -> [("opt", level)] | None -> [])
+    (V.concatMap
+       (\pair ->
+         match S.indexOf "=" pair with
+         | Just k -> [(S.take pair k, S.drop pair (k + 1))]
+         | None -> if S.isEmpty pair then [] else [(pair, "true")])
+       (S.split "," (M.unwrapOr "" set)))
+
+fun cutFiles (profile : String) (pairs : [(String, String)]) (files : [String]) =
   let roots =
     V.foldl
       (\acc f ->
@@ -202,16 +219,19 @@ fun cutFiles (files : [String]) =
   in
   -- A package that did not build has no program: what an earlier build of
   -- it linked is not this one's, and the command says it failed.
-  let failed = V.concatMap (\r -> if buildUnits r then [] else [r]) roots in
-  V.foldl (\ok f -> cutFile failed f and ok) True files
+  let failed = V.concatMap (\r -> if buildUnits profile pairs r then [] else [r]) roots in
+  V.foldl (\ok f -> cutFile profile failed f and ok) True files
 
-fun cutFile (failed : [String]) (path : String) =
+fun cutFile (profile : String) (failed : [String]) (path : String) =
   let file = absolute path in
   let root = packageOf file in
   let broken = M.unwrapOr False (M.map (\r -> V.elem r failed) root) in
   let program =
     if broken then None
-    else M.andThen (\r -> Res.toMaybe (readToString (Path.join (linkDir r) "program.cut"))) root
+    else
+      M.andThen
+        (\r -> Res.toMaybe (readToString (Path.join (linkDirIn r profile) "program.cut")))
+        root
   in match program with
      | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in not broken)
      | Just text -> (let u = writeOutput "== ${path}\n${text}" in True)
@@ -220,7 +240,8 @@ fun runFile (path : String) =
   let file = absolute path in
   let core =
     M.andThen
-      (\r -> M.andThen (\u -> compilerCore (unitDatabase u) 0) (Res.toMaybe (givenUnits r r)))
+      (\r ->
+        M.andThen (\u -> compilerCore (unitDatabase u) 0) (Res.toMaybe (givenUnits "debug" r r)))
       (packageOf file)
   in match core with
      | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in True)
@@ -264,9 +285,9 @@ fun fixityFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits r) roots in
+  let built = V.map (\r -> buildUnits "debug" [] r) roots in
   -- One database a unit, which each of its files is asked of.
-  let dbs = V.map (\r -> (r, M.map unitDatabase (Res.toMaybe (givenUnits r r)))) roots in
+  let dbs = V.map (\r -> (r, M.map unitDatabase (Res.toMaybe (givenUnits "debug" r r)))) roots in
   V.foldl (\ok f -> fixityFile dbs f and ok) True files
 
 fun fixityFile dbs (path : String) =

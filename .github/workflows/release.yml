@@ -256,8 +256,8 @@ jobs:
             meadowup-*.exe
           if-no-files-found: error
 
-  # The VS Code extension. Platform-independent, so it is built once rather than
-  # per target, and attached alongside the binaries.
+  # The VS Code extension and the colour theme. Platform-independent, so they
+  # are built once rather than per target, and attached alongside the binaries.
   extension:
     name: vsix
     needs: checks
@@ -268,11 +268,15 @@ jobs:
         with:
           node-version: "20"
       - name: Build
-        run: editors/vscode/build.sh
+        run: |
+          editors/vscode/build.sh
+          editors/vscode-theme/build.sh
       - uses: actions/upload-artifact@v4
         with:
           name: vsix
-          path: editors/vscode/*.vsix
+          path: |
+            editors/vscode/*.vsix
+            editors/vscode-theme/*.vsix
           if-no-files-found: error
 
   release:
@@ -325,13 +329,14 @@ jobs:
             a package, while `meadowup update` brings the toolchain forward --
             the two split the way `cargo` and `rustup` do.
 
-            **VS Code** — download **`meadow-*.vsix`** below and install it with
-            *Extensions: Install from VSIX…*, or:
+            **VS Code** — download **`meadow-<version>.vsix`** below and install it
+            with *Extensions: Install from VSIX…*, or:
 
             ```sh
-            code --install-extension meadow-*.vsix
+            code --install-extension meadow-[0-9]*.vsix
             ```
 
             It gives you syntax highlighting on its own, and diagnostics, hover,
             go-to-definition and inlay hints once `meadow` is on your `PATH` —
-            the extension runs `meadow lsp`.
+            the extension runs `meadow lsp`. **`meadow-theme-<version>.vsix`** is
+            the Meadow colour theme, dark and light, installed the same way.

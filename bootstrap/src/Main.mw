@@ -158,7 +158,7 @@ fun renameFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits "debug" [] r) roots in
+  let built = V.map (\r -> buildUnits "debug" (told ()) r) roots in
   let named =
     V.map
       (\r ->
@@ -186,7 +186,7 @@ fun inferFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits "debug" [] r) roots in
+  let built = V.map (\r -> buildUnits "debug" (told ()) r) roots in
   let named =
     V.map
       (\r ->
@@ -214,11 +214,15 @@ fun runFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits "debug" [] r) roots in
+  let built = V.map (\r -> buildUnits "debug" (told ()) r) roots in
   V.foldl (\ok f -> runFile f and ok) True files
 
 -- Each of `files`, its unit lowered to Cut, under a line naming it: the
 -- program, as `meadow_cut` reads one, or `not compiled`.
+-- What the commands that have no flags for it build with, over the debug
+-- profile's: `MEADOWBOOT_SET`, written as `--set` is.
+fun told () = pairsOf None (getEnv "MEADOWBOOT_SET") None
+
 -- The options a command line gives over its profile's: `--opt`, each
 -- `name=value` of `--set`, and `--cfg`'s flags, which are one option.
 fun pairsOf (opt : Maybe String) (set : Maybe String) (cfg : Maybe String) : [(String, String)] =
@@ -313,7 +317,7 @@ fun fixityFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits "debug" [] r) roots in
+  let built = V.map (\r -> buildUnits "debug" (told ()) r) roots in
   -- One database a unit, which each of its files is asked of.
   let dbs = V.map (\r -> (r, M.map unitDatabase (Res.toMaybe (givenUnits "debug" r r)))) roots in
   V.foldl (\ok f -> fixityFile dbs f and ok) True files
@@ -437,7 +441,7 @@ fun cekRound (settled : Bool) (modules : [(String, [(String, String)], [Call])])
 -- The unit at `root`, built, and it and every unit it is made with as one
 -- program of core.
 fun loadCek (root : String) =
-  if not (buildUnits "debug" [] root) then Err "${root} did not build"
+  if not (buildUnits "debug" [("macros", "Cek")] root) then Err "${root} did not build"
   else
     let made =
       V.concatMap

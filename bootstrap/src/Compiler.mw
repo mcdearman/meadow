@@ -31,7 +31,8 @@ use MeadowBoot.Expand (
   Binding, MacroFun, Dep, Batch, scopeOf, procFor, visOf, writeRound, readAnswers
 )
 use MeadowBoot.Macros as Mc
-use MeadowBoot.Macros (Answer)
+use MeadowBoot.Macros (Answer, Wire)
+use Std.Result as Res
 use MeadowBoot.Rules as Ru
 use MeadowBoot.Rules (Tok)
 use Std.Process as Proc
@@ -92,6 +93,9 @@ database! {
     | input files (unit : Int) : [String]
     | input imported (unit : Int) : [Interface]
     | input home (unit : Int) : String
+    -- What the unit's procedural macros answered when it was last built:
+    -- each call's file and key, where it stands, and what its macro wrote.
+    | input answers (unit : Int) : [(String, String, Int, Int, String)]
     | query parsed (file : String) : Result [(Int, String)] (Green Surface) =
         checkedTree (querySource file)
     | query fixities (unit : Int) : [Declared] =
@@ -117,6 +121,7 @@ database! {
           (queryGrouped file)
           (queryExpansions 0)
           (tableOf (queryFixities 0))
+          (answeredIn file (queryAnswers 0))
     | query renamed (unit : Int) : ([(String, [String])], [Export], Bool) =
         renamedOf
           (queryHome unit)
@@ -125,6 +130,12 @@ database! {
           (V.map
              (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None))
              (queryFiles unit))
+          (V.concatMap
+             (\f ->
+               match queryLowered f with
+               | Just made -> [(f, fst made)]
+               | None -> [])
+             (modulesOf (queryFiles unit)))
     | query inferred (unit : Int) : ([(String, [String])], [Export], Bool, TypeEnv) =
         inferredOf
           (queryHome unit)
@@ -133,6 +144,12 @@ database! {
           (V.map
              (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None))
              (queryFiles unit))
+          (V.concatMap
+             (\f ->
+               match queryLowered f with
+               | Just made -> [(f, fst made)]
+               | None -> [])
+             (modulesOf (queryFiles unit)))
     | query core (unit : Int) : Maybe CoreProgram =
         coreIn
           (checkedOf
@@ -143,7 +160,12 @@ database! {
              (V.map
                 (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None))
                 (queryFiles unit))
-             []
+             (V.concatMap
+                (\f ->
+                  match queryLowered f with
+                  | Just made -> [(f, fst made)]
+                  | None -> [])
+                (modulesOf (queryFiles unit)))
              (Just "result")
              True
              False
@@ -161,7 +183,12 @@ database! {
              (V.map
                 (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None))
                 (queryFiles unit))
-             []
+             (V.concatMap
+                (\f ->
+                  match queryLowered f with
+                  | Just made -> [(f, fst made)]
+                  | None -> [])
+                (modulesOf (queryFiles unit)))
              None
              True
              False
@@ -205,8 +232,9 @@ fun renamedOf
     (imported : [Interface])
     (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
+    (asts : [(String, AstProgram)])
     : ([(String, [String])], [Export], Bool) =
-  match unitOf shownCfg dir imported fx files [] with
+  match unitOf shownCfg dir imported fx files asts with
   | (sources, r) ->
       let mentions = mentionsOf r.binders in
       (
@@ -223,8 +251,9 @@ fun inferredOf
     (imported : [Interface])
     (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
+    (asts : [(String, AstProgram)])
     : ([(String, [String])], [Export], Bool, TypeEnv) =
-  match unitOf shownCfg dir imported fx files [] with
+  match unitOf shownCfg dir imported fx files asts with
   | (sources, r) ->
       let deps =
         V.map
@@ -731,6 +760,7 @@ fun loweredOf
     (grouped : Maybe (Green Grouped, [Diagnostic]))
     (expanded : HashMap String (HashMap String Json))
     (fx : HashMap String Fixity)
+    (answered : HashMap String [Tok])
     : Maybe (AstProgram, [Request]) =
   match grouped with
   | Just (g, _) ->
@@ -741,7 +771,7 @@ fun loweredOf
            g
            (M.unwrapOr H.empty (H.lookup "${pkg}/${relativeTo dir path}" expanded))
            fx
-           H.empty)
+           answered)
   | None -> None
 
 -- Each unit a unit imports with the name its manifest gives it, which a
@@ -822,14 +852,67 @@ fun modulePath (isStd : Bool) (src : String) (path : String) : [String] =
 
 -- A database for unit `u`: its files' texts, where it is, and what it
 -- imports, set.
+-- With what its procedural macros answered when it was built, which is
+-- where it kept it: a query of the unit sees the unit as it was compiled.
 @pub fun unitDatabase (u : Given Interface) =
+  unitDatabaseWith
+    u
+    (readKept (M.unwrapOr "" (Res.toMaybe (readToString (Path.join (unitOut u) "macros.kept")))))
+
+-- The same, with `kept` for what its macros answered.
+fun unitDatabaseWith (u : Given Interface) (kept : [(String, String, Int, Int, String)]) =
   let db = newCompiler () in
   let sources = unitSources u in
   let a = setCompilerFiles db 0 (V.map fst sources) in
   let b = setCompilerImported db 0 (V.map snd (unitImports u)) in
   let h = setCompilerHome db 0 (unitDir u) in
+  let k = setCompilerAnswers db 0 kept in
   let c = V.foldl (\acc s -> setCompilerSource db (fst s) (snd s)) () sources in
   db
+
+-- What a unit's macros answered, as it is kept: each call's file, key and
+-- place, and its answer as its macro wrote it, one `Wire` after another.
+fun writeKept (kept : [(String, String, Int, Int, String)]) : String =
+  S.join
+    ""
+    (V.map
+       (\x ->
+         match x with
+         | (file, key, from, to, said) ->
+             Mc.writeWire
+               (Wire.Node file [Wire.Text key, Wire.Whole from, Wire.Whole to, Wire.Text said]))
+       kept)
+
+fun readKept (text : String) : [(String, String, Int, Int, String)] =
+  V.concatMap
+    (\w ->
+      match w with
+      | Wire.Node file parts ->
+          (match (V.get parts 0, V.get parts 1, V.get parts 2, V.get parts 3) with
+           | (
+             Just (Wire.Text key),
+             Just (Wire.Whole from),
+             Just (Wire.Whole to),
+             Just (Wire.Text said)
+           ) -> [(file, key, from, to, said)]
+           | _ -> [])
+      | _ -> [])
+    (Mc.readWires text)
+
+-- The answers kept for `file`, each as the tokens it is, by key.
+fun answeredIn (file : String) (kept : [(String, String, Int, Int, String)])
+    : HashMap String [Tok] =
+  V.foldl
+    (\h x ->
+      match x with
+      | (f, key, from, to, said) ->
+          if f != file then h
+          else
+            match M.map (\w -> Mc.answerOf (fst w) (from, to)) (Mc.readWire said 0) with
+            | Just (Answer.Answered trees _) -> H.insert key (Ru.flatten trees) h
+            | _ -> h)
+    H.empty
+    kept
 
 -- --- the build ---------------------------------------------------------------
 
@@ -936,7 +1019,7 @@ fun compiling (o : UnitsOptions) (u : Given Interface) =
   let m0 = mark "given" in
   -- A unit's files are parsed, and their operators grouped, each on a thread
   -- of its own: neither needs what another file's comes to.
-  let db = parallelCompiler (unitDatabase u) in
+  let db = parallelCompiler (unitDatabaseWith u []) in
   let sources = V.filter (\s -> S.endsWith ".mw" (fst s)) (unitSources u) in
   let files = V.map fst sources in
   let parsed = compilerParsedEach db files in
@@ -1011,14 +1094,17 @@ fun compiling (o : UnitsOptions) (u : Given Interface) =
                         answers = H.empty,
                         bindings = [],
                         wrong = [],
-                        settled = False
+                        settled = False,
+                        kept = []
                       })
                      0
-                 in (
-                      V.map (\x -> match x with | (f, ast, _) -> (f, ast)) done.files,
-                      done.bindings,
-                      done.wrong
-                    ))
+                 in
+                 let w = writeString (Path.join (unitOut u) "macros.kept", writeKept done.kept) in
+                 (
+                   V.map (\x -> match x with | (f, ast, _) -> (f, ast)) done.files,
+                   done.bindings,
+                   done.wrong
+                 ))
             in
             let m3b = mark "expanded" in
             let made = H.fromVec (V.map (\a -> (fst a, True)) asts) in
@@ -1124,7 +1210,9 @@ record Rounds = {
   answers : HashMap String (HashMap String [Tok]),
   bindings : [Binding],
   wrong : [String],
-  settled : Bool
+  settled : Bool,
+  -- Each answer as it came, to be kept where the unit's build is.
+  kept : [(String, String, Int, Int, String)]
 }
 
 -- A file of the unit at `dir`, package `pkg`, as a module: for what its
@@ -1259,6 +1347,14 @@ fun rounds
                                                      file
                                                      (H.insert key (Ru.flatten trees) had)
                                                      (fst acc).answers,
+                                               kept =
+                                                 V.pushBack (fst acc).kept (
+                                                   file,
+                                                   key,
+                                                   r.from,
+                                                   r.to,
+                                                   wire
+                                                 ),
                                                bindings =
                                                  V.append
                                                    (fst acc).bindings

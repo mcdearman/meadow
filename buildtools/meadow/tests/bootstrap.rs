@@ -91,9 +91,19 @@ fn meadowboot(args: &[String]) -> String {
     if !matches!(args.first().map(String::as_str), Some("run" | "cut")) {
         c.env("MEADOWBOOT_STD", repo().join("lib").join("Std"));
     }
-    // And what the Rust compiler's macros expanded to, where the rename test
-    // wrote it.
-    c.env("MEADOWBOOT_EXPANSIONS", expansions_dir());
+    // MeadowBoot runs the procedural macros itself, as a program it compiles
+    // and the back end runs on Glade, so what it makes of them is part of
+    // what is compared. `MEADOWBOOT_RECORDED` goes back to handing it what
+    // the Rust compiler's macros expanded to, where the rename test wrote
+    // it: what there was before MeadowBoot could run one, and what tells a
+    // fault in running them from one in what is done with what they wrote.
+    if std::env::var_os("MEADOWBOOT_RECORDED").is_some() {
+        c.env("MEADOWBOOT_EXPANSIONS", expansions_dir());
+    } else {
+        c.env_remove("MEADOWBOOT_EXPANSIONS");
+        c.env("MEADOWBOOT_SET", "macros=Glade");
+        c.env("MEADOW", meadow());
+    }
     let out = c.output().expect("MeadowBoot runs");
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
@@ -2710,6 +2720,106 @@ fn a_cfg_is_decided_by_the_options_meadowboot_builds_with() {
         cfg_answer("entry", &["--set", "entry=speed", "--cfg", "fast"]),
         r#""fast""#
     );
+}
+
+/// A package of procedural macros: one that writes its argument twice, one
+/// that leaves a number at compile time under the name it is given, and one
+/// that reads it back.
+const MACROS_LIB: &str = r#"use Std.Macro (TokenTree, Loc, Expand, Datum, lookup, define)
+use Std.Macro.TokenTree.*
+use Std.Macro.Loc.*
+use Std.Macro.Delim.*
+use Std.Collections.Vector as V
+use Std.Maybe.Maybe.*
+
+@macro
+@pub fun twice (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
+  V.concat [[Group Paren ts Nowhere], [Punct "+" Nowhere], [Group Paren ts Nowhere]]
+
+@macro
+@pub fun remember (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
+  match V.get ts 0 with
+  | Just (Word name _) -> (let u = define (name, Datum.Int 20) in [])
+  | _ -> [Fail "remember! takes a name" Nowhere]
+
+@macro
+@pub fun recalled (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
+  match V.get ts 0 with
+  | Just (Word name _) ->
+      (match lookup name with
+       | Just (Datum.Int n) -> [Num (n + 1) Nowhere]
+       | _ -> [Num 0 Nowhere])
+  | _ -> [Fail "recalled! takes a name" Nowhere]
+"#;
+
+/// A program that calls them: `first` looks up what a call written after it
+/// defines, so it waits a round.
+const MACROS_APP: &str = r#"use Mac (twice!, remember!, recalled!)
+
+def first = recalled!(kept)
+
+remember!(kept)
+
+def result = (twice!(first), twice!(1 + 2))
+"#;
+
+/// What [`MACROS_APP`] answers, compiled by MeadowBoot with its macros run
+/// on `engine`.
+fn macros_answer(engine: &str) -> String {
+    let dir =
+        std::env::temp_dir().join(format!("meadowboot-macros-{engine}-{}", std::process::id()));
+    for (pkg, manifest, file, text) in [
+        (
+            "Mac",
+            "[package]\nname = \"Mac\"\nversion = \"0.1.0\"\n",
+            "Lib.mw",
+            MACROS_LIB,
+        ),
+        (
+            "App",
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nMac = { path = \"../Mac\" }\n",
+            "Main.mw",
+            MACROS_APP,
+        ),
+    ] {
+        std::fs::create_dir_all(dir.join(pkg).join("src")).expect("a package directory");
+        std::fs::write(dir.join(pkg).join("Meadow.toml"), manifest).expect("a manifest");
+        std::fs::write(dir.join(pkg).join("src").join(file), text).expect("a source file");
+    }
+    let out = Command::new(meadowboot_exe())
+        .arg("cut")
+        .arg("--set")
+        .arg(format!("macros={engine}"))
+        .arg(dir.join("App").join("src").join("Main.mw"))
+        .env("MEADOWBOOT_STD", repo().join("lib").join("Std"))
+        .env("MEADOW", meadow())
+        // Nothing recorded: what the macros write is what MeadowBoot runs
+        // them to find out.
+        .env_remove("MEADOWBOOT_EXPANSIONS")
+        .output()
+        .expect("MeadowBoot runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = stdout
+        .split_once("\ncut 0\n")
+        .map(|(_, rest)| format!("cut 0\n{rest}"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no program:\n{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+    axcut_answer(&text)
+}
+
+/// MeadowBoot runs a procedural macro itself -- a function of a package the
+/// program depends on -- on its CEK machine, and as a program it compiles
+/// and the back end runs on Glade: each answers what the Rust compiler does,
+/// a call that waits for a compile-time binding among them.
+#[test]
+fn a_procedural_macro_is_run_by_meadowboot_on_either_engine() {
+    assert_eq!(macros_answer("Cek"), "(42, 6)");
+    assert_eq!(macros_answer("Glade"), "(42, 6)");
 }
 
 /// How many glade cases MeadowBoot has to lower to Cut so that the reference

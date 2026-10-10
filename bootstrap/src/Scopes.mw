@@ -139,39 +139,58 @@ fun visOf (a : AstArena) (attrs : [AstAttr]) : Maybe Vis =
     None
     attrs
 
--- Whether a declaration's `@cfg`s hold here: on Windows, x86-64, a debug
--- build that is not a test's.
-fun enabled (a : AstArena) (attrs : [AstAttr]) : Bool =
-  V.all (\at -> nameText a (astAttrName a at) != "cfg" or V.all (holds a) (astAttrMetas a at)) attrs
-
-fun holds (a : AstArena) (m : AstAttrMeta) : Bool =
-  let k = kindAstAttrMeta a m in
-  if k == AstAttrMetaKind.Word then
-    (let w = nameText a (astAttrMetaWordName a m) in w == "windows" or w == "debug")
-  else if k == AstAttrMetaKind.Value then
-    (let key = nameText a (astAttrMetaValueName a m) in
-     let v = nameText a (astAttrMetaValueValue a m) in
-     (key == "os" and v == "windows")
-       or (key == "family" and v == "windows")
-       or (key == "arch" and v == "x86_64")
-       or (key == "profile" and v == "debug")
-       or (key == "opt_level" and v == "0"))
-  else if k == AstAttrMetaKind.List then
-    (let n = nameText a (astAttrMetaListName a m) in
-     let args = astAttrMetaListMetas a m in
-     if n == "all" then V.all (holds a) args
-     else if n == "any" then V.any (holds a) args
-     else if n == "not" then not (V.all (holds a) args)
-     else False)
-  else False
-
--- Whether declaration `d` is there at all: every `@cfg` on it holds here.
-@pub fun declHolds (a : AstArena) (d : AstDecl) : Bool = enabled a (fst (peel a d))
-
--- The declarations of a module that hold here, each with its attributes.
+-- The declarations of a module, each with its attributes. What a `@cfg`
+-- switches off is not among them: lowering left it out (`Lower`).
 @pub fun declsOf (src : Source) : [([AstAttr], AstDecl)] =
   match src.ast with
-  | AstProgram a root -> V.filter (\x -> enabled a (fst x)) (V.map (peel a) (astModuleDecls a root))
+  | AstProgram a root -> V.map (peel a) (astModuleDecls a root)
+
+-- What a `use` says, as far as macros go: the module it names, whether it
+-- picks values out -- by name, or all of them with `.*` -- the macros it
+-- picks, each `name!`, and what it calls the module.
+@pub record Using = {
+  path : [String],
+  selects : Bool,
+  macros : [String],
+  alias : Maybe String
+}
+
+-- Each `use` of a module that holds here.
+@pub fun usesOf (src : Source) : [Using] =
+  match src.ast with
+  | AstProgram a root ->
+      V.concatMap
+        (\x ->
+          let d = snd x in
+          if kindAstDecl a d == AstDeclKind.Use then
+            [Using {
+               path = V.map (nameText a) (astDeclUsePath a d),
+               selects = astDeclUseGlob a d or not (V.isEmpty (astDeclUseNames a d)),
+               macros = V.map (nameText a) (astDeclUseMacros a d),
+               alias = M.map (nameText a) (astDeclUseAlias a d)
+             }]
+          else [])
+        (declsOf src)
+
+-- The functions a module marks `@macro`: what a unit that depends on its
+-- package may call as macros.
+@pub fun macroFuns (src : Source) : [String] =
+  match src.ast with
+  | AstProgram a root ->
+      V.concatMap
+        (\x ->
+          let d = snd x in
+          if V.any (\at -> nameText a (astAttrName a at) == "macro") (fst x)
+            and kindAstDecl a d == AstDeclKind.Bind
+            and kindAstBind a (astDeclBindBind a d) == AstBindKind.Fun then
+            [nameText a (astBindFunName a (astDeclBindBind a d))]
+          else [])
+        (declsOf src)
+
+-- Whether a module says how far anything of its is seen.
+@pub fun saysVis (src : Source) : Bool =
+  match src.ast with
+  | AstProgram a root -> V.any (\x -> M.isSome (visOf a (fst x))) (declsOf src)
 
 fun siteIn (src : Source) (m : Meta) : String = "${src.file}@${show (metaStart m)}"
 
@@ -442,6 +461,28 @@ fun withType (items : [Item]) (t : Item) : [Item] =
      else [])
   ]
 
+-- A module's items by kind and owner -- `c:Shape` the constructors of
+-- `Shape` -- each kept in the order it is among them: what `withTypeIn`
+-- finds a type's own by, where `withType` reads every item for each.
+fun owned (items : [Item]) : HashMap String [Item] =
+  V.foldl
+    (\h (i : Item) ->
+      (let key = "${i.kind}:${i.owner}" in
+       H.insert key (V.pushBack (M.unwrapOr [] (H.lookup key h)) i) h))
+    H.empty
+    items
+
+-- `withType`, of a module whose items are `by` kind and owner.
+fun withTypeIn (by : HashMap String [Item]) (t : Item) : [Item] =
+  let of = \key -> M.unwrapOr [] (H.lookup key by) in
+  V.concat [
+    [t],
+    V.filter (\(i : Item) -> i.name == t.name) (of "c:${t.name}"),
+    (if t.owner == "trait" then of "v:${t.name}" else []),
+    (if t.owner == "effect" then of "v:op:${t.name}" else []),
+    (if t.owner == "trait" then of "t:assoc:${t.name}" else [])
+  ]
+
 -- `use Ty`, `use Ty (C, D)`, `use Ty.*` for a type among `items`: the type
 -- alone, the constructors named, or all of them. A dependency's type comes
 -- with its constructors named (`dep`) as naming it would.
@@ -501,9 +542,10 @@ fun valuesMap (items : [Item]) : HashMap String Int =
 -- with what each brings, and -- at a package's root -- the constructors it
 -- re-exports.
 fun bareUse (items : [Item]) (root : Bool) : [Item] =
+  let by = owned items in
   V.concat [
     V.filter (\(i : Item) -> i.kind == "v") items,
-    V.concatMap (withType items) (V.filter (\(i : Item) -> i.kind == "t") items),
+    V.concatMap (withTypeIn by) (V.filter (\(i : Item) -> i.kind == "t") items),
     (if root then V.filter (\(i : Item) -> i.kind == "c" and i.flat) items else [])
   ]
 

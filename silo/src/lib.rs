@@ -21,9 +21,11 @@
 pub mod ctx;
 pub mod cycles;
 pub mod heap;
+pub mod memory;
 pub mod native;
 pub mod parcel;
 pub mod prims;
+pub mod profile;
 pub mod region;
 pub mod sched;
 pub mod segments;
@@ -196,6 +198,7 @@ pub unsafe extern "C" fn meadow_run_test(
         .name("main".into())
         .stack_size(1 << 30)
         .spawn(move || {
+            allocator();
             let (c, _) = run_main(entry);
             drop(c);
             use std::io::Write;
@@ -204,6 +207,35 @@ pub unsafe extern "C" fn meadow_run_test(
         .expect("the test's thread starts")
         .join();
     i32::from(ran.is_err())
+}
+
+/// Tell the C allocator, which every heap's chunks and every region's come
+/// from, to give memory back when it is freed.
+///
+/// glibc's keeps an arena for every thread that allocates, and raises the
+/// size from which it asks the system directly each time a block that big is
+/// freed -- so after a while a megabyte freed is a megabyte kept, in the
+/// arena of whichever thread freed it. A program of many threads that each
+/// build something large and let it go, as a compiler's units are, was at
+/// its end holding a third more than anything in it was using. With the
+/// size fixed, a heap's chunks are always the system's and go back to it;
+/// with two arenas, what is smaller is at least kept in one of two places.
+fn allocator() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        use std::ffi::c_int;
+        unsafe extern "C" {
+            fn mallopt(param: c_int, value: c_int) -> c_int;
+        }
+        const M_MMAP_THRESHOLD: c_int = -3;
+        const M_ARENA_MAX: c_int = -8;
+        // Safety: two settings of the allocator, made before the program
+        // has a second thread.
+        unsafe {
+            mallopt(M_MMAP_THRESHOLD, 128 * 1024);
+            mallopt(M_ARENA_MAX, 2);
+        }
+    }
 }
 
 /// Run the program: its entry point, on a stack deep enough for the
@@ -223,7 +255,11 @@ pub unsafe extern "C" fn meadow_run(
     let d = unsafe { meadow_result_desc };
     let run = move || {
         // What `main` answers is in its heap, which stays current here.
-        let (_main_ctx, v) = run_main(entry);
+        allocator();
+        memory::start();
+        profile::start();
+        let (mut main_ctx, v) = run_main(entry);
+        profile::finish();
         let text = show::show(v, d);
         prims::report();
         cycles::report();
@@ -236,6 +272,39 @@ pub unsafe extern "C" fn meadow_run(
             eprintln!("aot: {left} blocks live at exit");
             eprintln!("aot: {} blocks acquired", heap::acquired());
             eprintln!("aot: {} segments live at exit", segments::live());
+            // What `main` counted for itself goes into the regions' counts
+            // first, as it would when its context goes.
+            main_ctx.regions.settle();
+            // And the answers of threads nobody can await any more, which
+            // the scheduler lets go of when it next looks.
+            sched::forget();
+            eprintln!("aot: {} regions live at exit", region::live());
+            for (refs, n, words) in region::census().iter().take(12) {
+                eprintln!(
+                    "aot: {n:>8}  regions with {refs} references, {} KB",
+                    words / 128
+                );
+            }
+            // What threads ended without erasing: their heaps went whole, and
+            // these with them, still holding whatever they held outside.
+            let ended = heap::ended_with();
+            let total: u64 = ended.iter().map(|(_, n)| n).sum();
+            if total > 0 {
+                eprintln!("aot: {total} blocks held by threads when they ended");
+                for ((k, m), n) in ended.iter().take(24) {
+                    let what = match *k {
+                        heap::DATA => show::ctor_name(*m as usize),
+                        heap::CLOSURE => format!("closure, methods from {m}"),
+                        heap::COMPACT => "a compact".to_string(),
+                        heap::ARRAY => "array".to_string(),
+                        heap::STRING => "string".to_string(),
+                        heap::RECORD => "record".to_string(),
+                        heap::CELL => "ref".to_string(),
+                        k => format!("kind {k}"),
+                    };
+                    eprintln!("aot: {n:>8}  ended holding: {what}");
+                }
+            }
             if left > 0 {
                 for (n, k, m) in kinds.iter().take(12) {
                     let what = match *k {

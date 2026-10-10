@@ -42,6 +42,100 @@ fn meadow(dir: &Path, args: &[&str]) -> (bool, String, String) {
     )
 }
 
+/// Fifty threads, each keeping a compact in a table in a `Ref` that is written
+/// under a handler -- what a query's thread keeps its answers in -- and
+/// ending. Found by Lingua's session, reduced from a database whose answers
+/// were never let go.
+const KEPT_IN_A_REF: &str = r#"use Std.Collections.Vector as V
+use Std.Collections.HashMap as HashMap
+use Std.Collections.HashMap (HashMap)
+use Std.Compact as Compact
+use Std.Thread as Thread
+
+data Box = Box (Ref (HashMap Int (Compact [Int])))
+
+effect Ask { ask : Int -> Int }
+
+fun through (b : Box) (n : Int) : Int ! { Mut | e } =
+  handle (ask n + 1) with {
+    ask k resume ->
+      (match b with
+       | Box r ->
+           let c = Compact.make (V.range 0 k) in
+           let u = setRef r (HashMap.insert k c (getRef r)) in
+           resume (V.len (Compact.get c))),
+    return x -> x
+  }
+
+fun inBox (n : Int) = through (Box (newRef HashMap.empty)) n
+
+fun main () =
+  let tasks = V.map (\i -> Thread.spawn (\() -> inBox (1000 + i))) (V.range 0 50) in
+  println (show (V.foldl (\a b -> a + b) 0 (Thread.awaitAll tasks)))
+"#;
+
+/// A `Ref` that has been written is a candidate for Silo's cycle collector,
+/// and one that dies while it is a candidate is only marked, for the
+/// collector to free when it next runs. A thread that ended first never ran
+/// it: the `Ref`, the table in it and every region the table held stayed for
+/// the rest of the program.
+#[test]
+fn what_a_thread_kept_in_a_ref_goes_when_the_thread_does() {
+    let dir = scratch("kept-in-a-ref");
+    let root = package(&dir, "kept-in-a-ref", KEPT_IN_A_REF);
+    let out = Command::new(env!("CARGO_BIN_EXE_meadow"))
+        .current_dir(&root)
+        .env("MEADOW_SILO_LEAKS", "1")
+        .args(["run", "--runtime", "silo", "."])
+        .output()
+        .expect("the meadow binary runs");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert_eq!(answer(&String::from_utf8_lossy(&out.stdout)), "51275");
+    assert!(err.contains("aot: 0 regions live at exit"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A hundred `TVar`s, made and read and let go of on five threads, each
+/// holding a vector.
+const VARS_LET_GO: &str = r#"use Std.Stm as T
+use Std.Collections.Vector as V
+use Std.Thread as Thread
+
+fun round (i : Int) =
+  let tv = T.newTVarIO (V.range 0 (100 + i)) in
+  let u = T.atomically (\() -> T.modifyTVar tv (\xs -> V.pushBack xs i)) in
+  V.len (T.readTVarIO tv)
+
+fun go (i : Int) (acc : Int) = if i == 0 then acc else go (i - 1) (acc + round i)
+
+fun main () =
+  let tasks = V.map (\k -> Thread.spawn (\() -> go 20 0)) (V.range 0 4) in
+  println (show (go 20 0 + V.foldl (\a b -> a + b) 0 (Thread.awaitAll tasks)))
+"#;
+
+/// A `TVar` keeps its value in a region of its own, and was kept for the
+/// whole run: nothing said when the last handle to one had gone. A program
+/// that made them as it went -- a database with one for each answer -- kept
+/// every value it had ever put in one. Handles are counted now, wherever
+/// they are, and a `TVar` nothing can reach lets its value go.
+#[test]
+fn a_tvar_nothing_can_reach_lets_its_value_go() {
+    let dir = scratch("vars-let-go");
+    let root = package(&dir, "vars-let-go", VARS_LET_GO);
+    let out = Command::new(env!("CARGO_BIN_EXE_meadow"))
+        .current_dir(&root)
+        .env("MEADOW_SILO_LEAKS", "1")
+        .args(["run", "--runtime", "silo", "."])
+        .output()
+        .expect("the meadow binary runs");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert_eq!(answer(&String::from_utf8_lossy(&out.stdout)), "11150");
+    assert!(err.contains("aot: 0 regions live at exit"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The last line a run printed.
 fn answer(stdout: &str) -> &str {
     stdout.lines().last().unwrap_or("")
@@ -382,6 +476,23 @@ fn a_program_of_cut_runs_on_glade_and_as_an_executable_of_silos() {
         let (ok, out, err) = meadow(&dir, &args);
         assert!(ok, "{runtime:?}: {err}");
         assert_eq!(out, "generic", "{runtime:?}");
+    }
+    // A program with no answer prints what it writes and nothing after:
+    // on Silo the `unit` it ended with was shown, as `<continuation>`.
+    std::fs::write(
+        dir.join("quiet.cut"),
+        "cut 0\nentry t:Main/main\nanswer none\n\n\
+         native {\n  t:Main/Console.say = Console.writeOutput\n}\n\n\
+         effect t:Main/Console { say(str) -> unit }\n\n\
+         def t:Main/main (; k: ptr) =\n  perform t:Main/Console.say(\"said\\n\"; μ̃ u: unit. <unit | k>)\n",
+    )
+    .unwrap();
+    for runtime in [&[][..], &["--runtime", "silo"]] {
+        let mut args = vec!["cut", "quiet.cut"];
+        args.extend_from_slice(runtime);
+        let (ok, out, err) = meadow(&dir, &args);
+        assert!(ok, "{runtime:?}: {err}");
+        assert_eq!(out, "said\n", "{runtime:?}");
     }
     std::fs::write(
         dir.join("refused.cut"),

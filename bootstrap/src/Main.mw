@@ -5,10 +5,15 @@
 -- prints is what that test compares.
 
 mod Lex
+mod Derive
+mod Macros
+mod Expand
 mod Core
 mod Cut
 mod Seq
 mod Lint
+mod Dictionaries
+mod Inline
 mod Cek
 mod Syntax
 mod Parse
@@ -22,8 +27,13 @@ mod Scopes
 
 use Lingua (cli!)
 use MeadowBoot.Lex (lex, dump)
-use MeadowBoot.Core (program, erase)
+use MeadowBoot.Core (program, erase, linkedUnits, CoreProgram, coreFilePackage)
+use MeadowBoot.Expand (Call, readRound, writeAnswers, callText, seenAfter)
+use MeadowBoot.Scopes (Export)
+use Lingua.Make (unitImports, Given)
+use Std.Result.Result.*
 use MeadowBoot.Cek as Cek
+use MeadowBoot.Cek (Machine)
 use MeadowBoot.Seq as Seq
 use MeadowBoot.Parse (parsed, checked)
 use MeadowBoot.Fixity (chainsOf)
@@ -31,9 +41,9 @@ use MeadowBoot.Unit (packageOf, absolute)
 use Std.Result as Res
 use MeadowBoot.Compiler (
   unitDatabase, buildUnits, givenUnits, setCompilerSource, compilerGrouped, compilerRenamed,
-  compilerInferred, compilerCore
+  compilerInferred, compilerCore, compilerWhole, Interface
 )
-use Lingua.Make (linkDir)
+use Lingua.Make (linkDirIn)
 use Std.Path as Path
 use Lingua.Red as R
 use Lingua.Lang (metaStart, metaEnd)
@@ -44,11 +54,14 @@ use Std.String as S
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
 use Std.Collections.Vector as V
-use Std.Fs (Fs, readToString)
+use Std.Fs (Fs, readToString, writeString, createDirAll)
 use Std.Console (writeOutput)
 use Std.Exn (catch)
 use Lingua.Query (QueryError)
-use Std.Process (exit)
+use Std.Process (exit, getEnv)
+use Std.Process as Proc
+use MeadowBoot.Macros as Mc
+use MeadowBoot.Macros (Wire)
 
 cli! {
   pub Cli "meadowboot" "Meadow's compiler, written in Meadow"
@@ -87,7 +100,23 @@ cli! {
       { files : [String] "the files to read, each in a package" }
     | cut
       "Compile each file's unit to Cut, and write the program that answers its `result` as text"
-      { files : [String] "the files to read, each in a package" }
+      {
+        files : [String] "the files to read, each in a package",
+        profile : Option String "the profile to build with: `debug`, or `release`",
+        opt : Option String "how hard to optimise, over the profile's: `O0` to `O3`",
+        set : Option String "options over the profile's, `name=value` with commas between",
+        cfg
+          : Option
+            String
+            "the flags `@cfg` holds of, each a name or `name=value`, with commas between"
+      }
+    | expand
+      "Run a round of a unit's procedural macro calls, as a build asks it of another run of this program"
+      {
+        files
+          : [String]
+            "what runs them, `cek` or `glade`; the round, written out; and where to write what each call answered"
+      }
 }
 
 fun main () = catch failed (\() -> run (argsCli ()))
@@ -110,7 +139,9 @@ fun run (cli : Cli) =
   | Cli.Rename r -> finish (renameFiles r.files)
   | Cli.Infer r -> finish (inferFiles r.files)
   | Cli.Run r -> finish (runFiles r.files)
-  | Cli.Cut r -> finish (cutFiles r.files)
+  | Cli.Cut r ->
+      finish (cutFiles (M.unwrapOr "debug" r.profile) (pairsOf r.opt r.set r.cfg) r.files)
+  | Cli.Expand r -> finish (expandRound r.files)
 
 -- Each of `files`, its names resolved with every other of its unit's -- a
 -- package, built with the units it depends on first -- under a line naming
@@ -127,7 +158,7 @@ fun renameFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits r) roots in
+  let built = V.map (\r -> buildUnits "debug" (told ()) r) roots in
   let named =
     V.map
       (\r ->
@@ -135,7 +166,7 @@ fun renameFiles (files : [String]) =
           r,
           M.map
             (\u -> (let db = unitDatabase u in fst3 (compilerRenamed db 0)))
-            (Res.toMaybe (givenUnits r r))
+            (Res.toMaybe (givenUnits "debug" r r))
         ))
       roots
   in V.foldl (\ok f -> renameFile named f and ok) True files
@@ -155,7 +186,7 @@ fun inferFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits r) roots in
+  let built = V.map (\r -> buildUnits "debug" (told ()) r) roots in
   let named =
     V.map
       (\r ->
@@ -163,7 +194,7 @@ fun inferFiles (files : [String]) =
           r,
           M.map
             (\u -> (let db = unitDatabase u in fst4 (compilerInferred db 0)))
-            (Res.toMaybe (givenUnits r r))
+            (Res.toMaybe (givenUnits "debug" r r))
         ))
       roots
   in V.foldl (\ok f -> renameFile named f and ok) True files
@@ -183,12 +214,32 @@ fun runFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits r) roots in
+  let built = V.map (\r -> buildUnits "debug" (told ()) r) roots in
   V.foldl (\ok f -> runFile f and ok) True files
 
 -- Each of `files`, its unit lowered to Cut, under a line naming it: the
 -- program, as `meadow_cut` reads one, or `not compiled`.
-fun cutFiles (files : [String]) =
+-- What the commands that have no flags for it build with, over the debug
+-- profile's: `MEADOWBOOT_SET`, written as `--set` is.
+fun told () = pairsOf None (getEnv "MEADOWBOOT_SET") None
+
+-- The options a command line gives over its profile's: `--opt`, each
+-- `name=value` of `--set`, and `--cfg`'s flags, which are one option.
+fun pairsOf (opt : Maybe String) (set : Maybe String) (cfg : Maybe String) : [(String, String)] =
+  V.concat [
+    (match opt with | Just level -> [("opt", level)] | None -> []),
+    (match cfg with
+     | Just flags -> [("flags", flags)]
+     | None -> []),
+    V.concatMap
+      (\pair ->
+        match S.indexOf "=" pair with
+        | Just k -> [(S.take pair k, S.drop pair (k + 1))]
+        | None -> if S.isEmpty pair then [] else [(pair, "true")])
+      (S.split "," (M.unwrapOr "" set))
+  ]
+
+fun cutFiles (profile : String) (pairs : [(String, String)]) (files : [String]) =
   let roots =
     V.foldl
       (\acc f ->
@@ -198,24 +249,31 @@ fun cutFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits r) roots in
-  V.foldl (\ok f -> cutFile f and ok) True files
+  -- A package that did not build has no program: what an earlier build of
+  -- it linked is not this one's, and the command says it failed.
+  let failed = V.concatMap (\r -> if buildUnits profile pairs r then [] else [r]) roots in
+  V.foldl (\ok f -> cutFile profile failed f and ok) True files
 
-fun cutFile (path : String) =
+fun cutFile (profile : String) (failed : [String]) (path : String) =
   let file = absolute path in
+  let root = packageOf file in
+  let broken = M.unwrapOr False (M.map (\r -> V.elem r failed) root) in
   let program =
-    M.andThen
-      (\r -> Res.toMaybe (readToString (Path.join (linkDir r) "program.cut")))
-      (packageOf file)
+    if broken then None
+    else
+      M.andThen
+        (\r -> Res.toMaybe (readToString (Path.join (linkDirIn r profile) "program.cut")))
+        root
   in match program with
-     | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in True)
+     | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in not broken)
      | Just text -> (let u = writeOutput "== ${path}\n${text}" in True)
 
 fun runFile (path : String) =
   let file = absolute path in
   let core =
     M.andThen
-      (\r -> M.andThen (\u -> compilerCore (unitDatabase u) 0) (Res.toMaybe (givenUnits r r)))
+      (\r ->
+        M.andThen (\u -> compilerCore (unitDatabase u) 0) (Res.toMaybe (givenUnits "debug" r r)))
       (packageOf file)
   in match core with
      | None -> (let u = writeOutput "== ${path}\nnot compiled\n" in True)
@@ -259,9 +317,9 @@ fun fixityFiles (files : [String]) =
       []
       files
   in
-  let built = V.map (\r -> buildUnits r) roots in
+  let built = V.map (\r -> buildUnits "debug" (told ()) r) roots in
   -- One database a unit, which each of its files is asked of.
-  let dbs = V.map (\r -> (r, M.map unitDatabase (Res.toMaybe (givenUnits r r)))) roots in
+  let dbs = V.map (\r -> (r, M.map unitDatabase (Res.toMaybe (givenUnits "debug" r r)))) roots in
   V.foldl (\ok f -> fixityFile dbs f and ok) True files
 
 fun fixityFile dbs (path : String) =
@@ -310,3 +368,364 @@ fun lexFile (path : String) : Bool ! { Fs, Console | e } =
   match readToString path with
   | Err why -> (let u = writeOutput "== ${path}\n! cannot read it: ${why}\n" in False)
   | Ok text -> (let u = writeOutput "== ${path}\n${dump (lex text)}" in True)
+
+-- --- running macros ------------------------------------------------------------
+--
+-- A build that meets a procedural macro runs this program again, `expand`,
+-- with a round of calls written out (`Expand`): each module's calls in
+-- order, each naming the unit its macro is in. They are run here, where
+-- that unit can be built and read whole, and what each answered is written
+-- back.
+
+fun expandRound (args : [String]) =
+  match (V.get args 0, V.get args 1, V.get args 2) with
+  | (Just engine, Just given, Just said) ->
+      (match readToString given with
+       | Err why -> (let u = writeOutput "meadowboot: cannot read ${given}: ${why}\n" in False)
+       | Ok text ->
+           (match readRound text with
+            | (settled, modules, macros) ->
+                let answers =
+                  (if engine == "cek" then cekRound settled modules
+                   else gladeRound settled macros said modules [] 0)
+                in
+                let w = writeString (said, writeAnswers answers) in
+                True))
+  | _ ->
+      (let u = writeOutput "meadowboot expand: an engine, a round's file and the answers' file\n" in
+       False)
+
+-- A unit's macros ready to run on the CEK machine: the unit and every unit
+-- it is made with as one program, loaded; where each definition is, by its
+-- symbol; and each unit's package with what it exports.
+record Loaded = {
+  machine : Machine,
+  table : HashMap String Int,
+  units : [(String, [Export])]
+}
+
+-- Every call of a round run on the CEK machine, a module's in order, each
+-- seeing what the ones before it in its module defined.
+fun cekRound (settled : Bool) (modules : [(String, [(String, String)], [Call])]) =
+  fst
+    (V.foldl
+       (\acc m ->
+         match m with
+         | (file, visible, calls) ->
+             (match V.foldl
+                (\inner (c : Call) ->
+                  match inner with
+                  | (answers, loaded, seen) ->
+                      (let l =
+                         (match H.lookup c.dir loaded with
+                          | Just had -> had
+                          | None -> loadCek c.dir)
+                       in
+                       let result =
+                         (match l with
+                          | Err why -> Err why
+                          | Ok ready -> cekCall ready c (callText settled seen c.argument))
+                       in (
+                            V.pushBack answers (file, c.key, result),
+                            H.insert c.dir l loaded,
+                            match result with
+                            | Ok text -> seenAfter seen text (c.from, c.to)
+                            | Err _ -> seen
+                          )))
+                (fst acc, snd acc, visible)
+                calls with
+              | (answers, loaded, _) -> (answers, loaded)))
+       ([], H.empty)
+       modules)
+
+-- The unit at `root`, built, and it and every unit it is made with as one
+-- program of core.
+fun loadCek (root : String) =
+  if not (buildUnits "debug" [("macros", "Cek")] root) then Err "${root} did not build"
+  else
+    let made =
+      V.concatMap
+        (\dir ->
+          match givenUnits "debug" root dir with
+          | Ok u ->
+              (let db = unitDatabase u in
+               match (compilerWhole db 0, compilerInferred db 0) with
+               | (Just core, (_, exports, _, _)) -> [Ok (core, exports)]
+               | _ -> [Err "${dir} has no core"])
+          | Err why -> [Err "${dir}: ${why}"])
+        (unitsUnder root [root] [])
+    in
+    let missing = V.concatMap (\x -> match x with | Err why -> [why] | Ok _ -> []) made in
+    let units = V.concatMap (\x -> match x with | Ok y -> [y] | Err _ -> []) made in
+    if not (V.isEmpty missing) then Err (S.join "; " missing)
+    else
+      match linkedUnits (V.map fst units) with
+      | (whole, table) ->
+          Ok
+            (Loaded {
+               machine = Cek.machine whole,
+               table,
+               units =
+                 V.map
+                   (\x ->
+                     match x with
+                     | (CoreProgram a file, exports) -> (coreFilePackage a file, exports))
+                   units
+             })
+
+-- Every unit the units `todo` of the build at `root` are made with, and
+-- they themselves, each once.
+fun unitsUnder (root : String) (todo : [String]) (seen : [String]) =
+  match V.get todo 0 with
+  | None -> seen
+  | Just dir ->
+      if V.elem dir seen then unitsUnder root (V.drop todo 1) seen
+      else
+        let more =
+          (match givenUnits "debug" root dir with
+           | Ok (u : Given Interface) -> V.map fst (unitImports u)
+           | Err _ -> [])
+        in unitsUnder root (V.append (V.drop todo 1) more) (V.pushBack seen dir)
+
+-- Where the value `name` of module `module` of package `pkg` is in the
+-- program.
+fun placeOf (l : Loaded) (pkg : String) (module : [String]) (name : String) : Maybe Int =
+  M.andThen
+    (\u ->
+      M.andThen
+        (\(e : Export) -> H.lookup "meadow:${pkg}/d${show e.binder}" l.table)
+        (V.find (\(e : Export) -> e.kind == "v" and e.name == name and e.module == module) (snd u)))
+    (V.find (\u -> fst u == pkg) l.units)
+
+-- A call's macro run on what it is handed, written out: `Std.Macro.Serve`'s
+-- `answering` applied to the macro and that text.
+fun cekCall (l : Loaded) (c : Call) (handed : String) =
+  match (placeOf l c.package c.module c.name, placeOf l "Std" ["Macro", "Serve"] "answering") with
+  | (Just f, Just answering) ->
+      (match Cek.call l.machine f [] with
+       | Err why -> Err why
+       | Ok run ->
+           (match Cek.call l.machine answering [run, Cek.text handed] with
+            | Ok v ->
+                (match Cek.textOf v with
+                 | Just said -> Ok said
+                 | None -> Err "the macro did not answer with text")
+            | Err why -> Err why))
+  | (None, _) -> Err "`${c.package}` has no macro `${c.name}`"
+  | (_, None) -> Err "the standard library has no `Std.Macro.Serve.answering`"
+
+-- --- on Glade ------------------------------------------------------------------
+--
+-- A unit's macros as a program: one that depends on the unit, is handed a
+-- file of calls -- each named for its macro -- and writes a file of what
+-- each answered (`Std.Macro.Serve.answeringAll`). MeadowBoot compiles it as
+-- it compiles any program, and the back end runs it: `meadow cut`, on Glade.
+
+-- What names a macro among its unit's: its module and its name.
+fun served (module : [String]) (name : String) : String = "${S.join "." module}/${name}"
+
+-- The program that serves the macros `macros` of package `pkg`, as source.
+fun serverSource (pkg : String) (macros : [([String], String)]) : String =
+  let uses =
+    V.map
+      (\k ->
+        match V.get macros k with
+        | Just (module, _) -> "use ${S.join "." (V.pushFront module pkg)} as M${show k}\n"
+        | None -> "")
+      (V.range 0 (V.len macros))
+  in
+  let entries =
+    V.map
+      (\k ->
+        match V.get macros k with
+        | Just (module, name) -> "(\"${served module name}\", M${show k}.${name})"
+        | None -> "")
+      (V.range 0 (V.len macros))
+  in S.join
+       ""
+       (V.concat [
+          [
+            "use Std.Fs (readToString, writeString)\n",
+            "use Std.Process (argv)\n",
+            "use Std.Macro.Serve (answeringAll)\n",
+            "use Std.Collections.Vector as V\n",
+            "use Std.Maybe.Maybe.*\n",
+            "use Std.Result.Result.*\n"
+          ],
+          uses,
+          [
+            "\nfun main () =\n", "  let args = argv () in\n",
+            "  match (V.get args 0, V.get args 1) with\n", "  | (Just given, Just said) ->\n",
+            "      (match readToString given with\n", "       | Ok text ->\n",
+            "           (let u = writeString (said, answeringAll [${S.join ", " entries}] text) in ())\n",
+            "       | Err _ -> ())\n", "  | _ -> ()\n"
+          ]
+        ])
+
+-- The program serving the macros of the unit at `dir`, built: where its Cut
+-- is. It is kept beside the unit's own build, and built again only when the
+-- unit, or which macros it has, changed.
+fun serverFor (dir : String) (macros : [(String, String, [String], String)]) =
+  let mine = V.filter (\m -> match m with | (d, _, _, _) -> d == dir) macros in
+  match V.get mine 0 with
+  | None -> Err "${dir} has no macros"
+  | Just (_, pkg, _, _) ->
+      let home = Path.join (Path.join dir "target") "macro-server" in
+      let manifest =
+        "[package]\nname = \"MacroServer\"\nversion = \"0.1.0\"\n\n[dependencies]\n${pkg} = { path = \"${dir}\" }\n"
+      in
+      let source =
+        serverSource pkg (V.map (\m -> match m with | (_, _, module, name) -> (module, name)) mine)
+      in
+      let main = Path.join (Path.join home "src") "Main.mw" in
+      let fresh =
+        readToString main == Ok source
+          and readToString (Path.join home "Meadow.toml") == Ok manifest
+      in
+      let w =
+        (if fresh then ()
+         else
+           let d = createDirAll (Path.join home "src") in
+           let a = writeString (Path.join home "Meadow.toml", manifest) in
+           let b = writeString (main, source) in
+           ())
+      in if buildUnits "release" [("macros", "Glade")] home then
+           Ok (Path.join (linkDirIn home "release") "program.cut")
+         else Err "the program that serves `${pkg}`'s macros did not build"
+
+-- A round's calls run on Glade, `wave` runs in. Every call still to run
+-- goes in one run of its unit's program; and since a call sees what the
+-- ones before it in its module defined, the calls after the first of a
+-- module to define anything are run again in the next wave, seeing it.
+fun gladeRound
+    (settled : Bool)
+    (macros : [(String, String, [String], String)])
+    (scratch : String)
+    (modules : [(String, [(String, String)], [Call])])
+    (done : [(String, String, Result String String)])
+    (wave : Int) =
+  let calls =
+    V.concatMap
+      (\m ->
+        match m with
+        | (file, visible, cs) -> V.map (\(c : Call) -> (file, visible, c)) cs)
+      modules
+  in if V.isEmpty calls or wave >= 64 then done
+     else
+       let dirs =
+         V.foldl
+           (\acc x ->
+             match x with
+             | (_, _, (c : Call)) -> if V.elem c.dir acc then acc else V.pushBack acc c.dir)
+           []
+           calls
+       in
+       -- Each unit's calls in one run, and what each answered, by module and key.
+       let ran =
+         V.concatMap
+           (\k ->
+             let dir = V.getOr "" dirs k in
+             let theirs =
+               V.filter (\x -> match x with | (_, _, (c : Call)) -> c.dir == dir) calls
+             in
+             let given = "${scratch}.${show wave}.${show k}.calls" in
+             let said = "${scratch}.${show wave}.${show k}.said" in
+             let failing =
+               \why ->
+                 V.map
+                   (\x ->
+                     match x with
+                     | (file, _, (c : Call)) -> (file, c.key, Err why))
+                   theirs
+             in match serverFor dir macros with
+                | Err why -> failing why
+                | Ok program ->
+                    let text =
+                      S.join
+                        ""
+                        (V.map
+                           (\x ->
+                             match x with
+                             | (_, visible, (c : Call)) ->
+                                 Mc.writeWire
+                                   (Wire.Node
+                                      (served c.module c.name)
+                                      [Wire.Text (callText settled visible c.argument)]))
+                           theirs)
+                    in
+                    let w = writeString (given, text) in
+                    let x = writeString (said, "") in
+                    (match Proc.run (M.unwrapOr "meadow" (getEnv "MEADOW")) [
+                       "cut",
+                       program,
+                       "--",
+                       given,
+                       said
+                     ] with
+                     | Err why -> failing "the back end could not be run: ${why}"
+                     | Ok (code, out, err) ->
+                         let answers =
+                           Mc.readWires (M.unwrapOr "" (Res.toMaybe (readToString said)))
+                         in if V.len answers != V.len theirs then
+                              failing
+                                "the program that serves `${dir}`'s macros answered ${show (V.len answers)} of ${show (V.len theirs)} calls: ${out}${err}"
+                            else
+                              V.map
+                                (\i ->
+                                  match (V.get theirs i, V.get answers i) with
+                                  | (Just (file, _, (c : Call)), Just (Wire.Text t)) ->
+                                      (file, c.key, Ok t)
+                                  | (Just (file, _, (c : Call)), _) ->
+                                      (file, c.key, Err "it did not answer")
+                                  | _ -> ("", "", Err ""))
+                                (V.range 0 (V.len theirs))))
+           (V.range 0 (V.len dirs))
+       in
+       -- Each module's answers up to and with the first to define anything are
+       -- what they are; the calls after it wait for the next wave.
+       let sorted =
+         V.map
+           (\m ->
+             match m with
+             | (file, visible, cs) ->
+                 V.foldl
+                   (\acc (c : Call) ->
+                     match acc with
+                     | (kept, seen, later, stopped) ->
+                         if stopped then (kept, seen, V.pushBack later c, True)
+                         else
+                           let result =
+                             M.unwrapOr
+                               (Err "it was not run")
+                               (M.map
+                                  (\r -> match r with | (_, _, x) -> x)
+                                  (V.find
+                                     (\r -> match r with | (f, k, _) -> f == file and k == c.key)
+                                     ran))
+                           in
+                           let after =
+                             (match result with
+                              | Ok t -> seenAfter seen t (c.from, c.to)
+                              | Err _ -> seen)
+                           in (
+                                V.pushBack kept (file, c.key, result),
+                                after,
+                                later,
+                                V.len after != V.len seen
+                              ))
+                   ([], visible, [], False)
+                   cs)
+           modules
+       in gladeRound
+            settled
+            macros
+            scratch
+            (V.concatMap
+               (\i ->
+                 match (V.get modules i, V.get sorted i) with
+                 | (Just (file, _, _), Just (_, seen, later, _)) ->
+                     if V.isEmpty later then [] else [(file, seen, later)]
+                 | _ -> [])
+               (V.range 0 (V.len modules)))
+            (V.append done (V.concatMap (\x -> match x with | (kept, _, _, _) -> kept) sorted))
+            (wave + 1)

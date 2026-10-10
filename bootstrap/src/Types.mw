@@ -371,7 +371,7 @@ fun undo (ar : Arena s) (to : Int) : () ! { St s | e } =
 
 -- `b` with only its first `n` slots.
 fun truncate (b : Buf s a) (n : Int) : () ! { St s | e } =
-  match b with | Buf _ count -> stSetRef count n
+  match b with | Buf _ count _ -> stSetRef count n
 
 -- Require that `row` has none of `labels`: an error for one it has, and for
 -- its unknown rest a promise, kept by the variable it ends in.
@@ -801,6 +801,10 @@ fun writeEach (nm : Namer) (ts : [Type]) (prec : Int) (hidden : [Int]) (sep : St
 -- ` ! e` after an arrow whose effect is not pure: `Console`, `State Int`,
 -- `{ Console, State Int }`, `{ Console | e }` -- one closed label needs no
 -- braces, and a lone hidden variable is nothing.
+-- The effects the runtime answers itself, which `Std.Eff` names.
+@pub def runtimeRow : [String] =
+  ["Thread", "Console", "Fs", "Process", "Random", "Time", "Test", "Mut"]
+
 fun effectSuffix (nm : Namer) (eff : Type) (hidden : [Int]) : (String, Namer) =
   match rowLabels eff with
   | (labels, tail) ->
@@ -816,6 +820,14 @@ fun effectSuffix (nm : Namer) (eff : Type) (hidden : [Int]) : (String, Namer) =
                   (match named with
                    | Just tn -> (" ! " ++ tn, n2)
                    | None -> ("", n2))
+                -- Every effect the runtime answers, and no other: `Std.Eff`'s
+                -- name for it.
+                else if M.isNone named
+                  and V.len labels == V.len runtimeRow
+                  and V.all
+                    (\(lab : (String, [Type])) ->
+                      V.isEmpty (snd lab) and V.elem (fst lab) runtimeRow)
+                    labels then (" ! Eff", n2)
                 else
                   let braces = V.len labels != 1 or M.isSome named in
                   (let scrutinee =

@@ -91,9 +91,19 @@ fn meadowboot(args: &[String]) -> String {
     if !matches!(args.first().map(String::as_str), Some("run" | "cut")) {
         c.env("MEADOWBOOT_STD", repo().join("lib").join("Std"));
     }
-    // And what the Rust compiler's macros expanded to, where the rename test
-    // wrote it.
-    c.env("MEADOWBOOT_EXPANSIONS", expansions_dir());
+    // MeadowBoot runs the procedural macros itself, as a program it compiles
+    // and the back end runs on Glade, so what it makes of them is part of
+    // what is compared. `MEADOWBOOT_RECORDED` goes back to handing it what
+    // the Rust compiler's macros expanded to, where the rename test wrote
+    // it: what there was before MeadowBoot could run one, and what tells a
+    // fault in running them from one in what is done with what they wrote.
+    if std::env::var_os("MEADOWBOOT_RECORDED").is_some() {
+        c.env("MEADOWBOOT_EXPANSIONS", expansions_dir());
+    } else {
+        c.env_remove("MEADOWBOOT_EXPANSIONS");
+        c.env("MEADOWBOOT_SET", "macros=Glade");
+        c.env("MEADOW", meadow());
+    }
     let out = c.output().expect("MeadowBoot runs");
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
@@ -101,6 +111,15 @@ fn meadowboot(args: &[String]) -> String {
         "MeadowBoot printed nothing:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // A unit that did not build is said so in place of what was asked of it,
+    // and why is on stderr: without it a failure reads only "not compiled".
+    if stdout.contains("\nnot compiled\n") {
+        eprintln!(
+            "MeadowBoot did not compile something of {:?}:\n{}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     stdout
 }
 
@@ -201,7 +220,11 @@ fn per_file_with(args: &[String], files: &[PathBuf]) -> Vec<(PathBuf, String)> {
                             let mut argv = args.to_vec();
                             argv.extend(run.iter().map(|p| p.display().to_string()));
                             let text = meadowboot(&argv);
-                            let _ = std::fs::write(&at, &text);
+                            // What did not build is not kept: the next
+                            // run tries it again, and says why once more.
+                            if !text.contains("\nnot compiled\n") {
+                                let _ = std::fs::write(&at, &text);
+                            }
                             text
                         }
                     };
@@ -2581,6 +2604,316 @@ fn a_program_with_the_standard_library_lowered_by_meadowboot_answers_as_the_rust
     assert_eq!(
         axcut_answer(&text),
         r#"([2, 4, 6], 6, Just(8), "ab", "12", [1; 2], Just(2), "x, y", "3 and True")"#
+    );
+}
+
+const WITH_CFG: &str = r#"@cfg(os = "linux")
+def system = "linux"
+
+@cfg(os = "macos")
+def system = "macos"
+
+@cfg(os = "windows")
+def system = "windows"
+
+@cfg(unix)
+def family = "unix"
+
+@cfg(windows)
+def family = "windows"
+
+@cfg(debug)
+def build = "debug"
+
+@cfg(release)
+def build = "release"
+
+@cfg(any(fast, feature = "quick"))
+def speed = "fast"
+
+@cfg(not(any(fast, feature = "quick")))
+def speed = "slow"
+
+@cfg(all(opt_level = "2", backend = "aot", not(test)))
+def level = "two"
+
+@cfg(not(all(opt_level = "2", backend = "aot", not(test))))
+def level = "other"
+
+-- A field is there or not as a declaration is, and a derive sees the record
+-- that is left.
+@derive(Debug)
+record Shape = {
+  @cfg(unix)
+  round : Int,
+  @cfg(windows)
+  square : Int
+}
+
+@cfg(unix)
+def shape = Shape { round = 1 }
+
+@cfg(windows)
+def shape = Shape { square = 2 }
+
+def result = (system, family, build, speed, level, debug shape)
+"#;
+
+/// What MeadowBoot's `cut` answers of [`WITH_CFG`], told `args`.
+fn cfg_answer(name: &str, args: &[&str]) -> String {
+    let dir = std::env::temp_dir().join(format!("meadowboot-cfg-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("src")).expect("a package directory");
+    std::fs::write(
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"WithCfg\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("a manifest");
+    let main = dir.join("src").join("Main.mw");
+    std::fs::write(&main, WITH_CFG).expect("a source file");
+    let out = Command::new(meadowboot_exe())
+        .arg("cut")
+        .args(args)
+        .arg(&main)
+        .env("MEADOWBOOT_STD", repo().join("lib").join("Std"))
+        .env_remove("MEADOWBOOT_EXPANSIONS")
+        .output()
+        .expect("MeadowBoot runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = stdout
+        .split_once("\ncut 0\n")
+        .map(|(_, rest)| format!("cut 0\n{rest}"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no program:\n{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+    axcut_answer(&text)
+}
+
+/// What a `@cfg` holds of is the build's options: the system and processor
+/// MeadowBoot was itself built for unless it is told another, the profile's
+/// kind and level, and the flags of `--cfg`.
+#[test]
+fn a_cfg_is_decided_by_the_options_meadowboot_builds_with() {
+    let os = std::env::consts::OS;
+    let family = if os == "windows" { "windows" } else { "unix" };
+    assert_eq!(
+        cfg_answer("host", &[]),
+        format!(
+            r#"("{os}", "{family}", "debug", "slow", "other", "Shape({})")"#,
+            if os == "windows" { 2 } else { 1 }
+        )
+    );
+    assert_eq!(
+        cfg_answer(
+            "told",
+            &[
+                "--profile",
+                "release",
+                "--set",
+                "os=windows",
+                "--cfg",
+                "fast"
+            ]
+        ),
+        r#"("windows", "windows", "release", "fast", "two", "Shape(2)")"#
+    );
+    assert_eq!(
+        cfg_answer(
+            "flag",
+            &[
+                "--set",
+                "os=linux,test=true",
+                "--opt",
+                "O2",
+                "--cfg",
+                "feature=quick"
+            ]
+        ),
+        r#"("linux", "unix", "debug", "fast", "other", "Shape(1)")"#
+    );
+    // And the value the program answers is an option of the link's.
+    assert_eq!(
+        cfg_answer("entry", &["--set", "entry=speed", "--cfg", "fast"]),
+        r#""fast""#
+    );
+}
+
+/// A package of procedural macros: one that writes its argument twice, one
+/// that leaves a number at compile time under the name it is given, and one
+/// that reads it back.
+const MACROS_LIB: &str = r#"use Std.Macro (TokenTree, Loc, Expand, Datum, lookup, define)
+use Std.Macro.TokenTree.*
+use Std.Macro.Loc.*
+use Std.Macro.Delim.*
+use Std.Collections.Vector as V
+use Std.Maybe.Maybe.*
+
+@macro
+@pub fun twice (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
+  V.concat [[Group Paren ts Nowhere], [Punct "+" Nowhere], [Group Paren ts Nowhere]]
+
+@macro
+@pub fun remember (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
+  match V.get ts 0 with
+  | Just (Word name _) -> (let u = define (name, Datum.Int 20) in [])
+  | _ -> [Fail "remember! takes a name" Nowhere]
+
+@macro
+@pub fun recalled (ts : [TokenTree]) : [TokenTree] ! { Expand | e } =
+  match V.get ts 0 with
+  | Just (Word name _) ->
+      (match lookup name with
+       | Just (Datum.Int n) -> [Num (n + 1) Nowhere]
+       | _ -> [Num 0 Nowhere])
+  | _ -> [Fail "recalled! takes a name" Nowhere]
+"#;
+
+/// A program that calls them: `first` looks up what a call written after it
+/// defines, so it waits a round.
+const MACROS_APP: &str = r#"use Mac (twice!, remember!, recalled!)
+
+def first = recalled!(kept)
+
+remember!(kept)
+
+def result = (twice!(first), twice!(1 + 2))
+"#;
+
+/// What [`MACROS_APP`] answers, compiled by MeadowBoot with its macros run
+/// on `engine`.
+fn macros_answer(engine: &str) -> String {
+    let dir =
+        std::env::temp_dir().join(format!("meadowboot-macros-{engine}-{}", std::process::id()));
+    for (pkg, manifest, file, text) in [
+        (
+            "Mac",
+            "[package]\nname = \"Mac\"\nversion = \"0.1.0\"\n",
+            "Lib.mw",
+            MACROS_LIB,
+        ),
+        (
+            "App",
+            "[package]\nname = \"App\"\nversion = \"0.1.0\"\n\n[dependencies]\nMac = { path = \"../Mac\" }\n",
+            "Main.mw",
+            MACROS_APP,
+        ),
+    ] {
+        std::fs::create_dir_all(dir.join(pkg).join("src")).expect("a package directory");
+        std::fs::write(dir.join(pkg).join("Meadow.toml"), manifest).expect("a manifest");
+        std::fs::write(dir.join(pkg).join("src").join(file), text).expect("a source file");
+    }
+    let out = Command::new(meadowboot_exe())
+        .arg("cut")
+        .arg("--set")
+        .arg(format!("macros={engine}"))
+        .arg(dir.join("App").join("src").join("Main.mw"))
+        .env("MEADOWBOOT_STD", repo().join("lib").join("Std"))
+        .env("MEADOW", meadow())
+        // Nothing recorded: what the macros write is what MeadowBoot runs
+        // them to find out.
+        .env_remove("MEADOWBOOT_EXPANSIONS")
+        .output()
+        .expect("MeadowBoot runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = stdout
+        .split_once("\ncut 0\n")
+        .map(|(_, rest)| format!("cut 0\n{rest}"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no program:\n{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+    axcut_answer(&text)
+}
+
+/// MeadowBoot runs a procedural macro itself -- a function of a package the
+/// program depends on -- on its CEK machine, and as a program it compiles
+/// and the back end runs on Glade: each answers what the Rust compiler does,
+/// a call that waits for a compile-time binding among them.
+#[test]
+fn a_procedural_macro_is_run_by_meadowboot_on_either_engine() {
+    assert_eq!(macros_answer("Cek"), "(42, 6)");
+    assert_eq!(macros_answer("Glade"), "(42, 6)");
+}
+
+/// The macros every module has: the line a call is on, its argument written
+/// back as text, and literals joined into one string -- as
+/// `meadow_compiler::expand` answers them.
+#[test]
+fn the_built_in_macros_answer_in_meadowboot() {
+    let dir = std::env::temp_dir().join(format!("meadowboot-builtin-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("src")).expect("a package directory");
+    std::fs::write(
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"BuiltIn\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("a manifest");
+    let main = dir.join("src").join("Main.mw");
+    std::fs::write(
+        &main,
+        "def first = line!()\n\ndef result =\n  (first, line!(), stringify!(a + (b), [1, 2]), concat!(\"a\", 1, \"c\"))\n",
+    )
+    .expect("a source file");
+    let out = Command::new(meadowboot_exe())
+        .arg("cut")
+        .arg(&main)
+        .env("MEADOWBOOT_STD", repo().join("lib").join("Std"))
+        .env_remove("MEADOWBOOT_EXPANSIONS")
+        .output()
+        .expect("MeadowBoot runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = stdout
+        .split_once("\ncut 0\n")
+        .map(|(_, rest)| format!("cut 0\n{rest}"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no program:\n{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+    assert_eq!(axcut_answer(&text), r#"(1, 4, "a + (b), [1, 2]", "a1c")"#);
+}
+
+/// A built-in name of `@cfg` can only be compared with what it could be: a
+/// value it never has is a mistake, said where it is written, and not a
+/// condition that is quietly never true.
+#[test]
+fn a_cfg_that_could_never_hold_is_refused_by_meadowboot() {
+    let dir = std::env::temp_dir().join(format!("meadowboot-cfg-never-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("src")).expect("a package directory");
+    std::fs::write(
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"Never\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("a manifest");
+    let main = dir.join("src").join("Main.mw");
+    std::fs::write(
+        &main,
+        "@cfg(os = \"linx\")\ndef only = 1\n\ndef result = 2\n",
+    )
+    .expect("a source file");
+    let out = Command::new(meadowboot_exe())
+        .arg("cut")
+        .arg(&main)
+        .env("MEADOWBOOT_STD", repo().join("lib").join("Std"))
+        .env_remove("MEADOWBOOT_EXPANSIONS")
+        .output()
+        .expect("MeadowBoot runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        said.contains("`os` is never `\"linx\"`") && said.contains("not compiled"),
+        "{said}"
     );
 }
 

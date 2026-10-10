@@ -104,7 +104,7 @@ fun want (i : Inf s) (p : Pred) (owner : Maybe Int) : Int ! { St s | e } =
       (let w = wantedAt i k in
        M.isNone w.sol
          and V.any
-           (\t -> match zonk i.ar t with | Var now -> now == id | _ -> False)
+           (\t -> match prune i.ar t with | Var now -> now == id | _ -> False)
            w.pred.assocs))
     (stGetRef i.unanswered)
 

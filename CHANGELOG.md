@@ -39,8 +39,30 @@ beyond the last release is under _Unreleased_.
 
 ### Added
 
+- A natively compiled program can profile itself: run with
+  `MEADOW_SILO_PROFILE=<file>` it samples where its time goes, and
+  `scripts/silo-profile.py` reads the file against the executable. For a
+  machine that allows no profiler from outside, as a container does not.
+  `MEADOW_SILO_PRIMS` also says which blocks a program erased, which
+  functions dropped them, and which made its arrays.
+- A program of Cut keeps the continuation a call answers through on the
+  stack, as a program the Rust compiler lowers does, and no longer on the
+  heap: a handled body runs on a stack segment of its own, which an
+  operation that captures its continuation cuts off and its resumption puts
+  back, once. A program with an operation marked `@many` is lowered as
+  before. `MEADOW_CUT_FRAMES=none` asks for the old lowering.
+- `main` is `() -> () ! Eff` wherever its type is shown, not the row its body
+  happened to perform; and a row of every effect the runtime answers is
+  written `Eff`.
+- `Std.Collections.Vector` folds and searches a vector where it stands; each
+  of `foldl`, `find`, `any`, `elem` and their kin copied it whole first.
+- `Std.Json` writes a value in time and room in its size, escapes control
+  characters as `\u00XX`, and reads `\uXXXX` back.
 - `meadow cut FILE -- ARGS` gives the program what follows `--` as its
   arguments.
+- `meadow cut` on Glade compiles what runs often to machine code as it goes,
+  as `meadow run` does, where it only interpreted; `--aot` compiles the
+  whole program ahead of time into an executable.
 - A program of Cut may spawn threads: `prim threadSpawn(desc(rep), f; k)`
   says how what the thread answers is represented. And a top-level `val` is
   made the first time a thread reads it, not when the program starts, so a
@@ -107,6 +129,28 @@ St s }`), and `! Reading r` where a method's type says what it performs. A
 
 ### Fixed
 
+- A natively compiled program lets go of what a finished thread answered,
+  and of a `TVar`'s value, once nothing can reach them. Both were kept for
+  the whole run -- "nothing says when the last handle is gone" -- and with
+  them every compact region they held. Handles are counted now, in heaps, in
+  values on their way between threads, and inside regions.
+- A natively compiled program frees what a thread kept in a `Ref` when the
+  thread ends. A `Ref` that had been written and then let go of was left for
+  the cycle collector, which a thread that ends does not run again: the
+  `Ref` and everything it held -- compact regions among it -- stayed for the
+  rest of the program.
+- A natively compiled program frees a compact's region once a thread that
+  held the compact has ended. What the thread had let go of but not yet
+  erased went with its heap, and the region was kept for good.
+- Threads that read values out of one compact region no longer slow each
+  other down on Silo. Each share and erase of such a value wrote the region's
+  one count; a thread now counts for itself and tells the region when it
+  moves on. Parsing the standard library's files on ten threads took as long
+  as on one, and takes a fifth of that now.
+- A natively compiled program no longer aborts when a thread waits, or is
+  made to give way, under two handlers that keep their continuations and then
+  performs the outer one's operation. The runtime lost count of which
+  suspended stack segments belonged to which handler.
 - A build keeps the release its lock names when a newer one has been tagged
   since. On a machine that had not fetched the dependency yet, a dependency
   taken by `version` was resolved to the newest release before the lock was

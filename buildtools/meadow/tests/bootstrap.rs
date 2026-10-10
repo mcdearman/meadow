@@ -2705,6 +2705,11 @@ fn a_cfg_is_decided_by_the_options_meadowboot_builds_with() {
         ),
         r#"("linux", "unix", "debug", "fast", "other")"#
     );
+    // And the value the program answers is an option of the link's.
+    assert_eq!(
+        cfg_answer("entry", &["--set", "entry=speed", "--cfg", "fast"]),
+        r#""fast""#
+    );
 }
 
 /// How many glade cases MeadowBoot has to lower to Cut so that the reference

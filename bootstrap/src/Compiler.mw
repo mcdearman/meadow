@@ -461,11 +461,13 @@ fun linkProgram (o : UnitsOptions) (l : Linking Interface) : Result String () ! 
             (\(e : Export) ->
               e.kind == "v" and e.name == n and S.isEmpty e.owner and V.isEmpty e.module)
             root.exports
-      in (match (match named "result" with
-           | Just e -> Just e
-           | None -> named "main") with
-          | None -> Ok ()
-          | Just (e : Export) ->
+      in (match (match (o.entry, named (M.unwrapOr "result" o.entry)) with
+           | (_, Just e) -> Ok (Just e)
+           | (Just n, None) -> Err "${root.package} has no value `${n}` at its root to enter at\n"
+           | (None, None) -> Ok (named "main")) with
+          | Err why -> Err why
+          | Ok None -> Ok ()
+          | Ok (Just (e : Export)) ->
               (let sc =
                  M.unwrapOr (Scheme { quant = [], preds = [], ty = Error, lacks = [] }) e.scheme
                in
@@ -818,6 +820,11 @@ make! {
       backend : String = "aot" "what `@cfg(backend = …)` holds of: vm, jit, aot, silo or cek"
       test : Bool = False "whether `@cfg(test)` holds in the unit that was asked for"
       flags : [String] = [] "the flags `@cfg` holds of, each a name or `name=value`"
+      entry : Maybe String =
+        None
+          "a value at the root the program answers, in place of `result` or of running `main`"
+          for
+          link
     }
     | profile debug {}
     | profile release { opt = O2, kind = Release }

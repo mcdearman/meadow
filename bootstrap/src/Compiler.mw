@@ -26,7 +26,7 @@ use MeadowBoot.Syntax
 use MeadowBoot.Parse (checkedTree)
 use MeadowBoot.Fixity (Fixity, Grouped, declare, grouped)
 use MeadowBoot.Unit (dependenciesOf, unitFilesOf, manifestOf, packageName, dependencyNames)
-use MeadowBoot.Lower (lowered, loweredWith, Request)
+use MeadowBoot.Lower (lowered, loweredWith, Request, Cfg, shownCfg)
 use MeadowBoot.Expand (
   Binding, MacroFun, Dep, Batch, scopeOf, procFor, visOf, writeRound, readAnswers
 )
@@ -38,9 +38,7 @@ use MeadowBoot.Rules (Tok)
 use Std.Process as Proc
 use MeadowBoot.Ast (AstProgram)
 use MeadowBoot.Rename (mentionsOf, Binder)
-use MeadowBoot.Scopes (
-  Source, Cfg, shownCfg, Export, Renamed, DepExports, renameUnit, usesOf, macroFuns, saysVis
-)
+use MeadowBoot.Scopes (Source, Export, Renamed, DepExports, renameUnit, usesOf, macroFuns, saysVis)
 use MeadowBoot.Infer (inferUnit, Inferred)
 use MeadowBoot.Elab (unitCore, defSymbol, Linked, DataSig, DefaultSig, Imported)
 use MeadowBoot.Seq as Seq
@@ -96,6 +94,8 @@ database! {
     -- What the unit's procedural macros answered when it was last built:
     -- each call's file and key, where it stands, and what its macro wrote.
     | input answers (unit : Int) : [(String, String, Int, Int, String)]
+    -- What a `@cfg` in the unit is decided by.
+    | input cfg (unit : Int) : Cfg
     | query parsed (file : String) : Result [(Int, String)] (Green Surface) =
         checkedTree (querySource file)
     | query fixities (unit : Int) : [Declared] =
@@ -112,8 +112,9 @@ database! {
          | None -> "")
     | query expansions (unit : Int) : HashMap String (HashMap String Json) =
         expansionsIn (V.map querySource (V.filter (\f -> S.endsWith ".json" f) (queryFiles unit)))
-    | query lowered (file : String) : Maybe (AstProgram, [Request]) =
+    | query lowered (file : String) : Maybe (AstProgram, [Request], [(String, Int, Int)]) =
         loweredOf
+          (queryCfg 0)
           (queryPackage 0)
           (queryHome 0)
           file
@@ -133,7 +134,7 @@ database! {
           (V.concatMap
              (\f ->
                match queryLowered f with
-               | Just made -> [(f, fst made)]
+               | Just (ast, _, _) -> [(f, ast)]
                | None -> [])
              (modulesOf (queryFiles unit)))
     | query inferred (unit : Int) : ([(String, [String])], [Export], Bool, TypeEnv) =
@@ -147,7 +148,7 @@ database! {
           (V.concatMap
              (\f ->
                match queryLowered f with
-               | Just made -> [(f, fst made)]
+               | Just (ast, _, _) -> [(f, ast)]
                | None -> [])
              (modulesOf (queryFiles unit)))
     | query core (unit : Int) : Maybe CoreProgram =
@@ -163,7 +164,7 @@ database! {
              (V.concatMap
                 (\f ->
                   match queryLowered f with
-                  | Just made -> [(f, fst made)]
+                  | Just (ast, _, _) -> [(f, ast)]
                   | None -> [])
                 (modulesOf (queryFiles unit)))
              (Just "result")
@@ -186,7 +187,7 @@ database! {
              (V.concatMap
                 (\f ->
                   match queryLowered f with
-                  | Just made -> [(f, fst made)]
+                  | Just (ast, _, _) -> [(f, ast)]
                   | None -> [])
                 (modulesOf (queryFiles unit)))
              None
@@ -732,13 +733,12 @@ fun unitOf
         match x with
         | (path, text, tree) ->
             let file = "${pkg}/${relativeTo dir path}" in
-            let from =
-              \ast -> [(path, Source { path = modulePath isStd src path, file, ast, cfg })]
-            in (match (H.lookup path made, tree) with
-                | (Just ast, _) -> from ast
-                | (None, Just (g, _)) ->
-                    from (lowered pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx)
-                | (None, None) -> []))
+            let from = \ast -> [(path, Source { path = modulePath isStd src path, file, ast })] in
+            (match (H.lookup path made, tree) with
+             | (Just ast, _) -> from ast
+             | (None, Just (g, _)) ->
+                 from (lowered cfg path pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx)
+             | (None, None) -> []))
       files
   in
   let deps =
@@ -753,6 +753,7 @@ fun unitOf
 -- what `unitOf` makes of each, made of one alone -- so of each on a thread of
 -- its own.
 fun loweredOf
+    (cfg : Cfg)
     (pkg : String)
     (dir : String)
     (path : String)
@@ -761,11 +762,13 @@ fun loweredOf
     (expanded : HashMap String (HashMap String Json))
     (fx : HashMap String Fixity)
     (answered : HashMap String [Tok])
-    : Maybe (AstProgram, [Request]) =
+    : Maybe (AstProgram, [Request], [(String, Int, Int)]) =
   match grouped with
   | Just (g, _) ->
       Just
         (loweredWith
+           cfg
+           path
            pkg
            text
            g
@@ -857,16 +860,21 @@ fun modulePath (isStd : Bool) (src : String) (path : String) : [String] =
 @pub fun unitDatabase (u : Given Interface) =
   unitDatabaseWith
     u
+    shownCfg
     (readKept (M.unwrapOr "" (Res.toMaybe (readToString (Path.join (unitOut u) "macros.kept")))))
 
 -- The same, with `kept` for what its macros answered.
-fun unitDatabaseWith (u : Given Interface) (kept : [(String, String, Int, Int, String)]) =
+fun unitDatabaseWith
+    (u : Given Interface)
+    (cfg : Cfg)
+    (kept : [(String, String, Int, Int, String)]) =
   let db = newCompiler () in
   let sources = unitSources u in
   let a = setCompilerFiles db 0 (V.map fst sources) in
   let b = setCompilerImported db 0 (V.map snd (unitImports u)) in
   let h = setCompilerHome db 0 (unitDir u) in
   let k = setCompilerAnswers db 0 kept in
+  let g = setCompilerCfg db 0 cfg in
   let c = V.foldl (\acc s -> setCompilerSource db (fst s) (snd s)) () sources in
   db
 
@@ -1019,7 +1027,7 @@ fun compiling (o : UnitsOptions) (u : Given Interface) =
   let m0 = mark "given" in
   -- A unit's files are parsed, and their operators grouped, each on a thread
   -- of its own: neither needs what another file's comes to.
-  let db = parallelCompiler (unitDatabaseWith u []) in
+  let db = parallelCompiler (unitDatabaseWith u (cfgOf o) []) in
   let sources = V.filter (\s -> S.endsWith ".mw" (fst s)) (unitSources u) in
   let files = V.map fst sources in
   let parsed = compilerParsedEach db files in
@@ -1051,14 +1059,28 @@ fun compiling (o : UnitsOptions) (u : Given Interface) =
             -- thread waits on another's answer to it.
             let unitPkg = compilerPackage db 0 in
             let expanded = compilerExpansions db 0 in
+            let lowerings = compilerLoweredEach db files in
             let first =
-              (let made = compilerLoweredEach db files in
-               V.concatMap
-                 (\i ->
-                   match (V.get files i, V.get made i) with
-                   | (Just f, Just (Just (ast, asked))) -> [(f, ast, asked)]
-                   | _ -> [])
-                 (V.range 0 (V.len files)))
+              V.concatMap
+                (\i ->
+                  match (V.get files i, V.get lowerings i) with
+                  | (Just f, Just (Just (ast, asked, _))) -> [(f, ast, asked)]
+                  | _ -> [])
+                (V.range 0 (V.len files))
+            in
+            -- A `@cfg` that could not be read.
+            let misread =
+              V.concatMap
+                (\i ->
+                  match (V.get files i, V.get lowerings i) with
+                  | (Just f, Just (Just (_, _, wrongs))) ->
+                      V.map
+                        (\w ->
+                          match w with
+                          | (why, from, _) -> "${f}: ${why}, at byte ${show from}\n")
+                        wrongs
+                  | _ -> [])
+                (V.range 0 (V.len files))
             in
             let m3 = mark "lowered" in
             -- The last the unit's database is asked: what it holds -- every
@@ -1133,7 +1155,8 @@ fun compiling (o : UnitsOptions) (u : Given Interface) =
               (inlining o)
               (M.isSome (getEnv "MEADOWBOOT_NAMES"))
               mark with
-            | _ if not (V.isEmpty unexpanded) -> Err (S.join "" unexpanded)
+            | _ if not (V.isEmpty misread and V.isEmpty unexpanded) ->
+                Err (S.join "" (V.append misread unexpanded))
             -- A unit whose `main` is not one is not compiled, as the Rust
             -- compiler does not compile it: a `main` that answers a number
             -- would hand the runtime the number as the program's answer.
@@ -1195,7 +1218,7 @@ fun compiling (o : UnitsOptions) (u : Given Interface) =
                         anyVis,
                         types,
                         linked,
-                        macros = macrosOf (cfgOf o) (unitDir u) pkg asts,
+                        macros = macrosOf (unitDir u) pkg asts,
                         bindings
                       })
 
@@ -1217,20 +1240,18 @@ record Rounds = {
 
 -- A file of the unit at `dir`, package `pkg`, as a module: for what its
 -- `use`s and its attributes say.
-fun moduleOf (cfg : Cfg) (dir : String) (pkg : String) (path : String) (ast : AstProgram) : Source =
+fun moduleOf (dir : String) (pkg : String) (path : String) (ast : AstProgram) : Source =
   Source {
     path = modulePath (pkg == "Std") (Path.join dir "src") path,
     file = "${pkg}/${relativeTo dir path}",
-    ast,
-    cfg
+    ast
   }
 
 -- The functions the unit marks `@macro`.
-fun macrosOf (cfg : Cfg) (dir : String) (pkg : String) (asts : [(String, AstProgram)])
-    : [MacroFun] =
+fun macrosOf (dir : String) (pkg : String) (asts : [(String, AstProgram)]) : [MacroFun] =
   V.concatMap
     (\x ->
-      let src = moduleOf cfg dir pkg (fst x) (snd x) in
+      let src = moduleOf dir pkg (fst x) (snd x) in
       V.map (\name -> MacroFun { module = src.path, name }) (macroFuns src))
     asts
 
@@ -1267,7 +1288,7 @@ fun rounds
     V.map
       (\x ->
         match x with
-        | (f, ast, asked) -> (f, moduleOf cfg dir pkg f ast, asked))
+        | (f, ast, asked) -> (f, moduleOf dir pkg f ast, asked))
       st.files
   in
   let gated = V.any (\x -> match x with | (_, src, _) -> saysVis src) modules in
@@ -1415,6 +1436,8 @@ fun rounds
                                     (f, ast, asked)
                                   else
                                     match loweredWith
+                                      cfg
+                                      f
                                       pkg
                                       text
                                       g
@@ -1423,7 +1446,7 @@ fun rounds
                                          (H.lookup "${pkg}/${relativeTo dir f}" expanded))
                                       fx
                                       answered with
-                                    | (again, more) -> (f, again, more))
+                                    | (again, more, _) -> (f, again, more))
                              | _ -> (f, ast, asked)))
                       st.files
                   in

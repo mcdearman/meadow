@@ -26,12 +26,14 @@ use Std.Collections.HashMap (HashMap)
 use Std.String as S
 use Std.Maybe as M
 use Std.Maybe.Maybe.*
+use Std.Result.Result.*
 use Std.St (St, runSt)
 use Std.Json as J
 use Std.Json (Json)
 use MeadowBoot.Syntax (parseSurfaceTokens)
 use MeadowBoot.Rules as Ru
-use MeadowBoot.Rules (Macro, Tok)
+use MeadowBoot.Rules (Macro, Tok, Tree)
+use Std.Char as Ch
 use MeadowBoot.Hygiene as Hy
 use MeadowBoot.Derive as D
 use MeadowBoot.Derive (Shape, Ctor)
@@ -43,30 +45,43 @@ use MeadowBoot.Macros as Mc
 -- (`expr@120`), and each `@derive` what it wrote -- an operator chain in one
 -- grouped by the unit's fixities `fx`.
 @pub fun lowered
+    (cfg : Cfg)
+    (file : String)
     (pkg : String)
     (input : String)
     (tree : Green Grouped)
     (exps : HashMap String Json)
     (fx : HashMap String Fixity)
     : AstProgram =
-  fst (loweredWith pkg input tree exps fx H.empty)
+  match loweredWith cfg file pkg input tree exps fx H.empty with
+  | (program, _, _) -> program
 
 -- The same, with what the procedural macros called in it `answered` -- each
 -- call's tokens, under its key -- and, beside the syntax, every call it has
 -- no answer for: what a round of expansion is asked to run (`Compiler`).
+--
+-- What a `@cfg` switches off under `cfg` is left out here, before anything
+-- else sees the module, as `meadow_compiler::cfg::strip` takes it out: a
+-- declaration, a record's field, a constructor's named field, an effect's
+-- operation. It is not expanded, not resolved and not typed. A condition
+-- that cannot be read is the third thing answered: what is wrong, and the
+-- bytes it is at.
 @pub fun loweredWith
+    (cfg : Cfg)
+    (file : String)
     (pkg : String)
     (input : String)
     (tree : Green Grouped)
     (exps : HashMap String Json)
     (fx : HashMap String Fixity)
     (answered : HashMap String [Tok])
-    : (AstProgram, [Request]) =
+    : (AstProgram, [Request], [(String, Int, Int)]) =
   runSt (\() ->
     let count = stNewRef 0 in
     let asked = stNewRef [] in
+    let wrongs = stNewRef [] in
     let program =
-      counting count asked (\() ->
+      counting count asked wrongs (\() ->
         let b = newAstBuilder () in
         let bare =
           Lc {
@@ -75,7 +90,10 @@ use MeadowBoot.Macros as Mc
             fx,
             macros = H.empty,
             answered,
-            under = ""
+            under = "",
+            cfg,
+            input,
+            file
           }
         in
         let top = R.root tree in
@@ -83,7 +101,7 @@ use MeadowBoot.Macros as Mc
         let decls = V.concatMap (decl c b) (childrenOf NodeDecl top) in
         let root = newAstModule b (spanOf top) decls in
         AstProgram (freezeAst b) root)
-    in (program, stGetRef asked))
+    in (program, stGetRef asked, stGetRef wrongs))
 
 -- A call of a macro that is not the module's own, or a `@derive` of a
 -- trait: what would run it needs. Its key, which its answer comes back
@@ -115,8 +133,45 @@ record Lc = {
   fx : HashMap String Fixity,
   macros : HashMap String Macro,
   answered : HashMap String [Tok],
-  under : String
+  under : String,
+  cfg : Cfg,
+  -- The module's text, and what its file is called: what `line!` and
+  -- `file!` answer from.
+  input : String,
+  file : String
 }
+
+-- What a `@cfg` is decided by, as `meadow_compiler::Cfg` holds it: the system
+-- and the processor the program is for, whether the build is a `debug` or a
+-- `release` one, what runs the program, how hard it is optimised (`0` to
+-- `3`), whether its tests are being built, and the flags the build was given
+-- -- each a name, or `name=value`.
+@derive(Debug, PartialEq)
+@pub record Cfg = {
+  os : String,
+  arch : String,
+  profile : String,
+  backend : String,
+  opt : String,
+  test : Bool,
+  flags : [String]
+}
+
+-- The one build the commands that show a unit renamed or inferred answer
+-- for, wherever they run: the differential tests build the Rust compiler's
+-- side for it.
+@pub def shownCfg : Cfg =
+  Cfg {
+    os = "windows",
+    arch = "x86_64",
+    profile = "debug",
+    backend = "jit",
+    opt = "0",
+    test = False,
+    flags = []
+  }
+
+fun familyOf (c : Cfg) : String = if c.os == "windows" then "windows" else "unix"
 
 -- Each call of a `macro` expanded is numbered, in the order the Rust expander
 -- meets them -- a call, then what it wrote, then the next -- which is what
@@ -125,11 +180,14 @@ record Lc = {
 effect Expanding {
   nextExpansion : () -> Int,
   ask : Request -> (),
+  -- And something wrong said: what, and the bytes it is at.
+  wrong : (String, Int, Int) -> (),
 }
 
 fun counting
     (count : StRef s Int)
     (asked : StRef s [Request])
+    (wrongs : StRef s [(String, Int, Int)])
     (act : () -> a ! { Expanding, St s | e })
     : a ! { St s | e } =
   handle act () with {
@@ -138,6 +196,7 @@ fun counting
        let v = stSetRef count n in
        k n),
     ask r k -> (let v = stSetRef asked (V.pushBack (stGetRef asked) r) in k ()),
+    wrong w k -> (let v = stSetRef wrongs (V.pushBack (stGetRef wrongs) w) in k ()),
     return x -> x
   }
 
@@ -271,28 +330,30 @@ pass! {
     -- the module's `macro`s expanded here, and left a call if it cannot be.
     -- Anything else is what was written, and what a `@derive` on it wrote.
     | Decl { raw attrs, later item } ->
-        (let call =
-           only (\i -> R.kindOf i == NodeMacCall) (M.andThen firstNode (childOf NodeItem node))
-         in
-         let written = \u -> attributed c out node attrs (item c) in
-         match M.andThen (\i -> M.map (\m -> (i, m)) (rulesOf c i)) call with
-         | Just (i, m) -> M.unwrapOr (written ()) (expandedDecls c out m i)
-         | None ->
-             (match M.andThen (\i -> H.lookup (keyOf c "decls" node) c.answered) call with
-              | Just toks -> splicedDecls c out (keyOf c "decls" node) toks
-              | None ->
-                  (match M.andThen (\i -> expansion c "decls" (spanOf node)) call with
-                   | Just made -> V.map (jDecl c out) (jarr made)
-                   | None ->
-                       let u =
-                         (match call with
-                          | Just i -> asking c "decls" (keyOf c "decls" node) i (seenBy attrs)
-                          | None -> ())
-                       in V.append
-                            (written ())
-                            (match expansion c "derived" (spanOf node) with
-                             | Just made -> V.map (jDecl c out) (jarr made)
-                             | None -> derivedDecls c out node attrs))))
+        if not (cfgHolds c attrs) then []
+        else
+          (let call =
+             only (\i -> R.kindOf i == NodeMacCall) (M.andThen firstNode (childOf NodeItem node))
+           in
+           let written = \u -> attributed c out node attrs (item c) in
+           match M.andThen (\i -> M.map (\m -> (i, m)) (rulesOf c i)) call with
+           | Just (i, m) -> M.unwrapOr (written ()) (expandedDecls c out m i)
+           | None ->
+               (match M.andThen (\i -> H.lookup (keyOf c "decls" node) c.answered) call with
+                | Just toks -> splicedDecls c out (keyOf c "decls" node) toks
+                | None ->
+                    (match M.andThen (\i -> expansion c "decls" (spanOf node)) call with
+                     | Just made -> V.map (jDecl c out) (jarr made)
+                     | None ->
+                         let u =
+                           (match call with
+                            | Just i -> asking c "decls" (keyOf c "decls" node) i (seenBy attrs)
+                            | None -> ())
+                         in V.append
+                              (written ())
+                              (match expansion c "derived" (spanOf node) with
+                               | Just made -> V.map (jDecl c out) (jarr made)
+                               | None -> derivedDecls c out node attrs))))
     | Item {
       fixity, modDecl, useDecl, dataDecl, recordDecl, effectDecl, typeDecl, traitDecl, implDecl,
       macroDecl, macCall, funItem, defItem, patternDecl
@@ -330,14 +391,7 @@ pass! {
          let name = nm out (nameOf (must TokenUpperIdent node)) in
          match fieldList with
          | Just r ->
-             newAstVariant
-               out
-               (spanOf node)
-               attrs
-               name
-               True
-               []
-               (V.map (field c out) (childrenOf NodeFieldTy r))
+             newAstVariant out (spanOf node) attrs name True [] (V.map (field c out) (fieldsThere c r))
          | None -> newAstVariant out (spanOf node) attrs name False (V.map (tatom c out) args) [])
     | Attr {} -> attr c out node
     | RecordDecl { raw fields } ->
@@ -348,7 +402,7 @@ pass! {
             (spanOf node)
             (declared out node)
             (taking out node)
-            (V.map (field c out) (childrenOf NodeFieldTy fields))
+            (V.map (field c out) (fieldsThere c fields))
         )]
     | EffectDecl { raw body } ->
         (match childOf NodeEffectAlias body with
@@ -370,7 +424,7 @@ pass! {
                  (spanOf node)
                  (declared out node)
                  (taking out node)
-                 (V.map (field c out) (childrenOf NodeFieldTy (must NodeRecTy body)))
+                 (V.map (field c out) (fieldsThere c (must NodeRecTy body)))
              )])
     | TypeDecl { raw ty } ->
         [(
@@ -2184,6 +2238,105 @@ fun holesIn (s : GTree) : [Int] =
          (\x -> R.kindOf x != NodePat and R.kindOf x != NodeAnnot and R.kindOf x != NodeParam)
          (nodeKids s))
 
+-- --- `@cfg` -------------------------------------------------------------------
+
+-- Whether every `@cfg` among `attrs` holds for the build. One that cannot
+-- be read is said and taken to hold, so that it is the only thing wrong.
+fun cfgHolds (c : Lc) (attrs : [GTree]) : Bool ! { Expanding | e } =
+  V.all
+    (\a ->
+      if (firstName (must NodeAttrName a)).text != "cfg" then True
+      else
+        let metas =
+          (match childOf NodeAttrArgs a with
+           | Just args -> childrenOf NodeMeta args
+           | None -> [])
+        in match (V.len metas, V.get metas 0) with
+           | (1, Just m) ->
+               (match conditionHolds c m with
+                | Ok yes -> yes
+                | Err (why, at) -> (let u = wrong (why, metaStart at, metaEnd at) in True))
+           | _ ->
+               (let at = spanOf (must NodeAttrName a) in
+                let u =
+                  wrong (
+                    "`@cfg` takes one condition, as `@cfg(unix)` or `@cfg(all(unix, not(test)))`",
+                    metaStart at,
+                    metaEnd at
+                  )
+                in True))
+    attrs
+
+-- The fields of `r` that are there: a record's, a constructor's, or an
+-- effect's operations, each under its own `@cfg`s.
+fun fieldsThere (c : Lc) (r : GTree) : [GTree] ! { Expanding | e } =
+  V.filter (\f -> cfgHolds c (childrenOf NodeAttr f)) (childrenOf NodeFieldTy r)
+
+-- Whether one condition holds, as `meadow_compiler::cfg::holds` decides it:
+-- a name the build knows is asked of the build -- and can only be compared
+-- with what it could be -- and any other is a flag.
+fun conditionHolds (c : Lc) (m : GTree) : Result (String, Meta) Bool =
+  let cfg = c.cfg in
+  match m with
+  | GroupedMeta (Just text) _ _ ->
+      Err ("`\"${(stringName c text).text}\"` is not a condition", spanOf text)
+  | GroupedMeta _ (Just n) None ->
+      (let w = (firstName n).text in
+       Ok
+         (if w == "unix" or w == "windows" then familyOf cfg == w
+          else if w == "debug" or w == "release" then cfg.profile == w
+          else if w == "test" then cfg.test
+          else V.elem w cfg.flags))
+  | GroupedMeta _ (Just n) (Just rest) ->
+      (match rest with
+       | GroupedMetaRest (Just v) _ ->
+           (let key = (firstName n).text in
+            let value = (stringName c (must TokenStr v)).text in
+            let among =
+              \actual allowed ->
+                if V.elem value allowed then Ok (actual == value)
+                else
+                  Err (
+                    S.join "" [
+                      "`${key}` is never `\"${value}\"`; it is one of ",
+                      S.join ", " (V.map (\x -> "`\"${x}\"`") allowed)
+                    ],
+                    spanOf v
+                  )
+            in if key == "os" then among cfg.os ["windows", "linux", "macos"]
+               else if key == "arch" then among cfg.arch ["x86_64", "aarch64"]
+               else if key == "family" then among (familyOf cfg) ["unix", "windows"]
+               else if key == "profile" then among cfg.profile ["debug", "release"]
+               else if key == "backend" then among cfg.backend ["vm", "jit", "aot", "silo", "cek"]
+               else if key == "opt_level" then among cfg.opt ["0", "1", "2"]
+               else Ok (V.elem "${key}=${value}" cfg.flags))
+       | GroupedMetaRest _ (Just args) ->
+           (let name = (firstName n).text in
+            let each =
+              V.foldl
+                (\acc x ->
+                  match (acc, conditionHolds c x) with
+                  | (Err e, _) -> Err e
+                  | (_, Err e) -> Err e
+                  | (Ok ys, Ok y) -> Ok (V.pushBack ys y))
+                (Ok [])
+                (childrenOf NodeMeta args)
+            in match each with
+               | Err e -> Err e
+               | Ok ys ->
+                   if name == "all" then Ok (V.all (\y -> y) ys)
+                   else if name == "any" then Ok (V.any (\y -> y) ys)
+                   else if name == "not" then
+                     (if V.len ys == 1 then Ok (not (V.getOr True ys 0))
+                      else Err ("`not` takes exactly one condition", spanOf n))
+                   else
+                     Err (
+                       "there is no `${name}(…)`; conditions combine with `all`, `any` and `not`",
+                       spanOf n
+                     ))
+       | _ -> Ok True)
+  | _ -> Ok True
+
 -- --- derives -----------------------------------------------------------------
 --
 -- What the compiler's own derives write (`Derive`) is read here, where the
@@ -2195,7 +2348,7 @@ fun holesIn (s : GTree) : [Int] =
 
 -- What each built-in derive written on declaration `s` wrote, in order.
 fun derivedDecls (c : Lc) b (s : GTree) (attrs : [GTree]) =
-  match M.andThen shapeOf (M.andThen firstNode (childOf NodeItem s)) with
+  match M.andThen (shapeOf c) (M.andThen firstNode (childOf NodeItem s)) with
   | None -> []
   | Just shape ->
       let wants =
@@ -2248,49 +2401,48 @@ fun derivedText (c : Lc) b (at : Int) (text : String) =
 
 -- What a derive needs of a `data` or a `record`, and nothing of anything
 -- else.
-fun shapeOf (item : GTree) : Maybe Shape =
+fun shapeOf (c : Lc) (item : GTree) =
   let name = (nameOf (must TokenUpperIdent item)).text in
   let params = V.map (\p -> (nameOf p).text) (childrenOf TokenLowerIdent item) in
-  let names =
-    \r -> V.map (\f -> (nameOf (must TokenLowerIdent f)).text) (childrenOf NodeFieldTy r)
-  in if R.kindOf item == NodeDataDecl then
-       Just
-         (Shape {
-            name,
-            params,
-            isRecord = False,
-            ctors =
-              V.map
-                (\v ->
-                  let args = childrenOf NodeTAtom v in
-                  -- Named as lowering has it: a brace list of at least one
-                  -- field, and no `| r`, first after the name.
-                  let fieldList =
-                    M.andThen
-                      (\a ->
-                        only
-                          (\r -> V.len (childrenOf NodeFieldTy r) > 0 and not (has NodeRowTail r))
-                          (childOf NodeRecTy a))
-                      (V.get args 0)
-                  in
-                  let ctor = (nameOf (must TokenUpperIdent v)).text in
-                  match fieldList with
-                  | Just r ->
-                      (let fields = names r in
-                       Ctor { name = ctor, named = True, fields, count = V.len fields })
-                  | None -> Ctor { name = ctor, named = False, fields = [], count = V.len args })
-                (childrenOf NodeVariant item)
-          })
-     else if R.kindOf item == NodeRecordDecl then
-       (let fields = names (must NodeRecTy item) in
-        Just
-          (Shape {
-             name,
-             params,
-             isRecord = True,
-             ctors = [Ctor { name, named = True, fields, count = V.len fields }]
-           }))
-     else None
+  let names = \r -> V.map (\f -> (nameOf (must TokenLowerIdent f)).text) (fieldsThere c r) in
+  if R.kindOf item == NodeDataDecl then
+    Just
+      (Shape {
+         name,
+         params,
+         isRecord = False,
+         ctors =
+           V.map
+             (\v ->
+               let args = childrenOf NodeTAtom v in
+               -- Named as lowering has it: a brace list of at least one
+               -- field, and no `| r`, first after the name.
+               let fieldList =
+                 M.andThen
+                   (\a ->
+                     only
+                       (\r -> V.len (childrenOf NodeFieldTy r) > 0 and not (has NodeRowTail r))
+                       (childOf NodeRecTy a))
+                   (V.get args 0)
+               in
+               let ctor = (nameOf (must TokenUpperIdent v)).text in
+               match fieldList with
+               | Just r ->
+                   (let fields = names r in
+                    Ctor { name = ctor, named = True, fields, count = V.len fields })
+               | None -> Ctor { name = ctor, named = False, fields = [], count = V.len args })
+             (childrenOf NodeVariant item)
+       })
+  else if R.kindOf item == NodeRecordDecl then
+    (let fields = names (must NodeRecTy item) in
+     Just
+       (Shape {
+          name,
+          params,
+          isRecord = True,
+          ctors = [Ctor { name, named = True, fields, count = V.len fields }]
+        }))
+  else None
 
 -- --- expansions --------------------------------------------------------------
 --
@@ -2301,9 +2453,13 @@ fun shapeOf (item : GTree) : Maybe Shape =
 -- fixities, as the fixity pass groups one in a tree.
 
 fun exprCall (c : Lc) b (m : Meta) (call : GTree) =
-  match rulesOf c call with
-  | Just r -> M.unwrapOr (newAstExprMacCall b m (macCall b call)) (expandedExpr c b r call)
-  | None ->
+  match (builtIn c call, rulesOf c call) with
+  | (Just toks, _) ->
+      M.unwrapOr
+        (newAstExprMacCall b m (macCall b call))
+        (exprFrom c b "${keyOf c "expr" call}/" toks)
+  | (_, Just r) -> M.unwrapOr (newAstExprMacCall b m (macCall b call)) (expandedExpr c b r call)
+  | (None, None) ->
       let key = keyOf c "expr" call in
       (match M.andThen (\toks -> exprFrom c b "${key}/" toks) (H.lookup key c.answered) with
        | Just e -> e
@@ -2314,9 +2470,11 @@ fun exprCall (c : Lc) b (m : Meta) (call : GTree) =
                 (let u = asking c "expr" key call None in newAstExprMacCall b m (macCall b call))))
 
 fun patCall (c : Lc) b (m : Meta) (call : GTree) =
-  match rulesOf c call with
-  | Just r -> M.unwrapOr (newAstPatMacCall b m (macCall b call)) (expandedPat c b r call)
-  | None ->
+  match (builtIn c call, rulesOf c call) with
+  | (Just toks, _) ->
+      M.unwrapOr (newAstPatMacCall b m (macCall b call)) (patFrom c b "${keyOf c "pat" call}/" toks)
+  | (_, Just r) -> M.unwrapOr (newAstPatMacCall b m (macCall b call)) (expandedPat c b r call)
+  | (None, None) ->
       let key = keyOf c "pat" call in
       (match M.andThen (\toks -> patFrom c b "${key}/" toks) (H.lookup key c.answered) with
        | Just p -> p
@@ -2488,6 +2646,111 @@ fun patFrom (c : Lc) b (under : String) (toks : [Tok]) =
           let u = Hy.stripInPat b p in
           p)
         (firstOfKind NodeArm root)
+
+-- --- the built-in macros ------------------------------------------------------
+--
+-- Always there, and found before a `macro` of the name: `line!()` is the
+-- line the call is written on, `file!()` the name of the file it is in,
+-- `stringify!(…)` its argument written back as text, and `concat!(a, b, …)`
+-- its literal arguments joined into one string. Each answers one literal,
+-- standing where the call's argument is.
+
+-- What the call wrote, if it is of a built-in macro and is one it takes.
+fun builtIn (c : Lc) (call : GTree) : Maybe [Tok] =
+  let pathNode =
+    M.unwrapOr
+      call
+      (V.find (\x -> R.kindOf x == NodeMacPath or R.kindOf x == NodeArgPath) (nodeKids call))
+  in
+  let segs =
+    V.filter (\x -> R.kindOf x == NodeAnySeg or R.kindOf x == NodeArgSeg) (nodeKids pathNode)
+  in match (V.len segs, V.get segs 0, V.find isGroup (nodeKids call)) with
+     | (1, Just seg, Just g) ->
+         let name = Hy.stripOnce (firstName seg).text in
+         let arg = Ru.treeOf (tokenOf c) g in
+         let trees = Ru.treesIn arg in
+         let one =
+           \token text ->
+             (match Ru.spanOfTree arg with
+              | (from, to) -> Just [Tok { token, text, from, to }])
+         in if name == "line" then
+              (if V.isEmpty trees then
+                 (let n = lineOf c.input (metaStart (firstName seg).at) in
+                  one (Token.Int n) (show n))
+               else None)
+            else if name == "file" then
+              (if V.isEmpty trees then one (Token.Str c.file) "\"\"" else None)
+            else if name == "stringify" then
+              (let text = S.join "" (rendered (Ru.flatten trees) 0 []) in
+               one (Token.Str text) "\"\"")
+            else if name == "concat" then
+              M.andThen (\text -> one (Token.Str text) "\"\"") (concatenated trees)
+            else None
+     | _ -> None
+
+-- The line byte `at` of `text` is on, the first being 1.
+fun lineOf (text : String) (at : Int) : Int =
+  V.len (S.split "\n" (S.take text (min at (stringByteLength text))))
+
+-- Tokens written back as text, each a piece: a space before one unless it
+-- closes something or follows what opens something (`meadow_lexer::tt`'s
+-- `render`).
+fun rendered (toks : [Tok]) (i : Int) (acc : [String]) : [String] =
+  match V.get toks i with
+  | None -> acc
+  | Just (t : Tok) ->
+      let last = M.unwrapOr "" (V.last acc) in
+      let tightBefore =
+        (match t.token with
+         | Token.Comma -> True
+         | Token.SemiColon -> True
+         | Token.Period -> True
+         | Token.RParen -> True
+         | Token.RBrack -> True
+         | Token.RBrace -> True
+         | Token.InterpMid _ -> True
+         | Token.InterpEnd _ -> True
+         | _ -> False)
+      in
+      let tightAfter = last == "(" or last == "[" or last == "{" or last == "." in
+      if V.isEmpty acc or tightBefore or tightAfter then
+        rendered toks (i + 1) (V.pushBack acc t.text)
+      else rendered toks (i + 1) (V.pushBack (V.pushBack acc " ") t.text)
+
+-- The text of each literal among `trees`, commas between them, joined --
+-- or `None` if one of them is not a literal.
+fun concatenated (trees : [Tree]) : Maybe String =
+  V.foldl
+    (\acc piece ->
+      match (acc, piece) with
+      | (None, _) -> None
+      | (Just text, []) -> Just text
+      | (Just text, _) ->
+          (match (V.len piece, V.get piece 0) with
+           | (1, Just (Tree.Leaf (k : Tok))) ->
+               (match k.token with
+                | Token.Str s -> Just (text ++ s)
+                | Token.Char code -> Just (text ++ S.fromChars [Ch.fromCode code])
+                | Token.Int _ -> Just (text ++ k.text)
+                | Token.Real _ -> Just (text ++ k.text)
+                | _ -> None)
+           | _ -> None))
+    (Just "")
+    (V.foldl
+       (\pieces t ->
+         match t with
+         | Tree.Leaf (k : Tok) ->
+             (match k.token with
+              | Token.Comma -> V.pushBack pieces []
+              | _ -> onLast pieces t)
+         | _ -> onLast pieces t)
+       [[]]
+       trees)
+
+fun onLast (pieces : [[Tree]]) (t : Tree) : [[Tree]] =
+  match V.last pieces with
+  | Just p -> V.pushBack (V.take pieces (V.len pieces - 1)) (V.pushBack p t)
+  | None -> [[t]]
 
 -- --- procedural macros ---------------------------------------------------------
 --

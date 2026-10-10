@@ -39,6 +39,11 @@ beyond the last release is under _Unreleased_.
 
 ### Added
 
+- The Meadow colour theme for VS Code, **Meadow Dark** and **Meadow Light**, is
+  an extension of its own in `editors/vscode-theme`: a colour for each kind of
+  name the language server tells apart. Each release attaches it as
+  `meadow-theme-<version>.vsix`, and `scripts/install.sh --with-extension`
+  installs it beside the language extension.
 - `meadow cut FILE -- ARGS` gives the program what follows `--` as its
   arguments.
 - A program of Cut may spawn threads: `prim threadSpawn(desc(rep), f; k)`

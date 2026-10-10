@@ -1204,7 +1204,7 @@ fun rounds
        let given = Path.join (unitOut u) "macros.round" in
        let said = Path.join (unitOut u) "macros.answers" in
        let engine = if o.macros == UnitsMacros.Glade then "glade" else "cek" in
-       let w = writeString (given, writeRound st.settled (V.map snd batches)) in
+       let w = writeString (given, writeRound st.settled deps (V.map snd batches)) in
        match Proc.run (Proc.currentExe ()) ["expand", engine, given, said] with
        | Err why -> { st | wrong = ["${dir}: its macros could not be run: ${why}\n"] }
        | Ok (code, _, err) ->

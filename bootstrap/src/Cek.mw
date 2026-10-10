@@ -138,6 +138,12 @@ data Control = Eval ErasedTerm (Map (Ref Value)) | Ret Value
        fields = V.map (\n -> (erasedNamedName a n, erasedNamedLabels a n)) (erasedFileNamed a file)
      }
 
+-- A text as a value, and a value's text if it is one: what a caller of
+-- the machine hands it and reads back.
+@pub fun text (s : String) : Value = Str s
+
+@pub fun textOf (v : Value) : Maybe String = match v with | Str s -> Just s | _ -> None
+
 -- Definition `f` applied to `args`, each in turn, or what went wrong.
 @pub fun call (m : Machine) (f : Int) (args : [Value]) =
   variable m f Map.empty (V.foldr (\x acc -> Give x :: acc) [;] args)

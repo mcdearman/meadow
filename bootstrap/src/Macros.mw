@@ -302,12 +302,16 @@ fun pieceOf (w : Wire) : Int =
       (match V.get parts 0 with
        | Just (Text text) ->
            if stringByteLength text < 2 then 0
-           else if S.startsWith "\"" text and S.endsWith "${" text then 1
-           else if S.startsWith "}" text and S.endsWith "${" text then 2
+           else if S.startsWith "\"" text and S.endsWith hole text then 1
+           else if S.startsWith "}" text and S.endsWith hole text then 2
            else if S.startsWith "}" text and S.endsWith "\"" text then 3
            else 0
        | _ -> 0)
   | _ -> 0
+
+-- What opens a hole in a string: a dollar and a brace, spelt so that this
+-- is not one.
+def hole : String = S.fromChars [Ch.fromCode 36, Ch.fromCode 123]
 
 -- The interpolated string starting at `items[i]`, written out whole, and
 -- where its last piece is: the stop that closes it, past any string nested

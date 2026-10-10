@@ -213,7 +213,7 @@ fun procsAt (pkg : String) (segs : [String]) (deps : [Dep]) : [Proc] =
   calls : [(Request, Proc)]
 }
 
-@pub fun writeRound (settled : Bool) (batches : [Batch]) : String =
+@pub fun writeRound (settled : Bool) (deps : [Dep]) (batches : [Batch]) : String =
   Mc.writeWire
     (Node "" [
        Whole (if settled then 1 else 0),
@@ -240,7 +240,18 @@ fun procsAt (pkg : String) (segs : [String]) (deps : [Dep]) : [Proc] =
                            ])
                      b.calls)
               ])
-            batches)
+            batches),
+       -- Every macro the unit could call, by the unit it is in: what a
+       -- program that serves one unit's macros serves.
+       Node
+         ""
+         (V.concatMap
+            (\(d : Dep) ->
+              V.map
+                (\(m : MacroFun) ->
+                  Node d.dir [Text d.package, Text (S.join "." m.module), Text m.name])
+                d.macros)
+            deps)
      ])
 
 -- A call as whoever runs it reads it.
@@ -257,7 +268,8 @@ fun procsAt (pkg : String) (segs : [String]) (deps : [Dep]) : [Proc] =
 
 -- A round read back: whether it is settled, and each module's name, what it
 -- sees and its calls.
-@pub fun readRound (text : String) : (Bool, [(String, [(String, String)], [Call])]) =
+@pub fun readRound (text : String)
+    : (Bool, [(String, [(String, String)], [Call])], [(String, String, [String], String)]) =
   match Mc.readWire text 0 with
   | Just (Node _ parts, _) ->
       (
@@ -293,9 +305,21 @@ fun procsAt (pkg : String) (segs : [String]) (deps : [Dep]) : [Proc] =
                     (kids (V.get inner 1))
                 )]
             | _ -> [])
-          (kids (V.get parts 1))
+          (kids (V.get parts 1)),
+        V.concatMap
+          (\m ->
+            match m with
+            | Node dir fs ->
+                [(
+                  dir,
+                  textAt fs 0,
+                  (let path = textAt fs 1 in if S.isEmpty path then [] else S.split "." path),
+                  textAt fs 2
+                )]
+            | _ -> [])
+          (kids (V.get parts 2))
       )
-  | _ -> (False, [])
+  | _ -> (False, [], [])
 
 fun kids (w : Maybe Wire) : [Wire] = match w with | Just (Node _ xs) -> xs | _ -> []
 

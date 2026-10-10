@@ -33,6 +33,8 @@ use MeadowBoot.Syntax (parseSurfaceTokens)
 use MeadowBoot.Rules as Ru
 use MeadowBoot.Rules (Macro, Tok)
 use MeadowBoot.Hygiene as Hy
+use MeadowBoot.Derive as D
+use MeadowBoot.Derive (Shape, Ctor)
 
 -- `input`'s grouped tree, a module of package `pkg`, as abstract syntax:
 -- each call of one of its `macro`s expanded here, and each other macro call
@@ -227,9 +229,9 @@ pass! {
               | None ->
                   V.append
                     (written ())
-                    (V.map
-                       (jDecl c out)
-                       (M.unwrapOr [] (M.map jarr (expansion c "derived" (spanOf node)))))))
+                    (match expansion c "derived" (spanOf node) with
+                     | Just made -> V.map (jDecl c out) (jarr made)
+                     | None -> derivedDecls c out node attrs)))
     | Item {
       fixity, modDecl, useDecl, dataDecl, recordDecl, effectDecl, typeDecl, traitDecl, implDecl,
       macroDecl, macCall, funItem, defItem, patternDecl
@@ -2081,11 +2083,10 @@ fun holesIn (s : GTree) : [Int] =
     or k == NodeOpRef then []
   else if k == NodeHoleE then [metaStart (spanOf s)]
   else if k == NodeParen then
+    -- `(e)` is a section of its own: a `_` in it is its parameter, and none
+    -- of whoever is around it.
     (let elems = childrenOf NodeElem s in
-     if V.len elems == 1 then
-       (let inner = must NodeExpr (V.getOr s elems 0) in
-        if V.isEmpty (holesIn inner) then holesIn inner else [])
-     else V.concatMap (\e -> holesIn (must NodeExpr e)) elems)
+     if V.len elems == 1 then [] else V.concatMap (\e -> holesIn (must NodeExpr e)) elems)
   else if k == NodeMatchE then
     V.concatMap
       (\x ->
@@ -2121,6 +2122,102 @@ fun holesIn (s : GTree) : [Int] =
       (V.filter
          (\x -> R.kindOf x != NodePat and R.kindOf x != NodeAnnot and R.kindOf x != NodeParam)
          (nodeKids s))
+
+-- --- derives -----------------------------------------------------------------
+--
+-- What the compiler's own derives write (`Derive`) is read here, where the
+-- `@derive` is: source, lexed, every token standing at the derive's name and
+-- taking up none of it, and every lowercase name -- and `Datum` -- under the
+-- prelude's mark, so that what it binds it binds apart and what it mentions
+-- is the prelude's. Parsed and lowered as a template's tokens are, the marks
+-- then taken off what is not a local.
+
+-- What each built-in derive written on declaration `s` wrote, in order.
+fun derivedDecls (c : Lc) b (s : GTree) (attrs : [GTree]) =
+  match M.andThen shapeOf (M.andThen firstNode (childOf NodeItem s)) with
+  | None -> []
+  | Just shape ->
+      V.concatMap
+        (\(want : Nm) ->
+          match D.builtin want.text shape with
+          | Just text -> derivedText c b (metaStart want.at) text
+          | None -> [])
+        (V.concatMap
+           wanted
+           (V.filter (\a -> (firstName (must NodeAttrName a)).text == "derive") attrs))
+
+-- The names a `@derive(…)` asks for.
+fun wanted (a : GTree) : [Nm] =
+  match childOf NodeAttrArgs a with
+  | Just args ->
+      V.concatMap
+        (\m -> if has NodeMetaRest m or has TokenStr m then [] else [firstName m])
+        (childrenOf NodeMeta args)
+  | None -> []
+
+fun derivedText (c : Lc) b (at : Int) (text : String) =
+  let toks =
+    V.map
+      (\(l : Lexed) ->
+        let written = S.slice text l.from l.to in
+        match l.token with
+        | Token.LowerIdent n ->
+            Tok { token = Token.LowerIdent "${n}#0", text = "${written}#0", from = at, to = at }
+        | Token.UpperIdent "Datum" ->
+            Tok { token = Token.UpperIdent "Datum#0", text = "Datum#0", from = at, to = at }
+        | t -> Tok { token = t, text = written, from = at, to = at })
+      (lex text).tokens
+  in match reparsed c [] toks [] with
+     | (inner, root) ->
+         let ds = V.concatMap (decl inner b) (childrenOf NodeDecl root) in
+         let u = Hy.stripItems b ds in
+         ds
+
+-- What a derive needs of a `data` or a `record`, and nothing of anything
+-- else.
+fun shapeOf (item : GTree) : Maybe Shape =
+  let name = (nameOf (must TokenUpperIdent item)).text in
+  let params = V.map (\p -> (nameOf p).text) (childrenOf TokenLowerIdent item) in
+  let names =
+    \r -> V.map (\f -> (nameOf (must TokenLowerIdent f)).text) (childrenOf NodeFieldTy r)
+  in if R.kindOf item == NodeDataDecl then
+       Just
+         (Shape {
+            name,
+            params,
+            isRecord = False,
+            ctors =
+              V.map
+                (\v ->
+                  let args = childrenOf NodeTAtom v in
+                  -- Named as lowering has it: a brace list of at least one
+                  -- field, and no `| r`, first after the name.
+                  let fieldList =
+                    M.andThen
+                      (\a ->
+                        only
+                          (\r -> V.len (childrenOf NodeFieldTy r) > 0 and not (has NodeRowTail r))
+                          (childOf NodeRecTy a))
+                      (V.get args 0)
+                  in
+                  let ctor = (nameOf (must TokenUpperIdent v)).text in
+                  match fieldList with
+                  | Just r ->
+                      (let fields = names r in
+                       Ctor { name = ctor, named = True, fields, count = V.len fields })
+                  | None -> Ctor { name = ctor, named = False, fields = [], count = V.len args })
+                (childrenOf NodeVariant item)
+          })
+     else if R.kindOf item == NodeRecordDecl then
+       (let fields = names (must NodeRecTy item) in
+        Just
+          (Shape {
+             name,
+             params,
+             isRecord = True,
+             ctors = [Ctor { name, named = True, fields, count = V.len fields }]
+           }))
+     else None
 
 -- --- expansions --------------------------------------------------------------
 --

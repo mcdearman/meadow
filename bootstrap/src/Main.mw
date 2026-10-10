@@ -5,6 +5,7 @@
 -- prints is what that test compares.
 
 mod Lex
+mod Derive
 mod Core
 mod Cut
 mod Seq

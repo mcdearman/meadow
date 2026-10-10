@@ -93,7 +93,11 @@ cli! {
         files : [String] "the files to read, each in a package",
         profile : Option String "the profile to build with: `debug`, or `release`",
         opt : Option String "how hard to optimise, over the profile's: `O0` to `O3`",
-        set : Option String "options over the profile's, `name=value` with commas between"
+        set : Option String "options over the profile's, `name=value` with commas between",
+        cfg
+          : Option
+            String
+            "the flags `@cfg` holds of, each a name or `name=value`, with commas between"
       }
 }
 
@@ -117,7 +121,8 @@ fun run (cli : Cli) =
   | Cli.Rename r -> finish (renameFiles r.files)
   | Cli.Infer r -> finish (inferFiles r.files)
   | Cli.Run r -> finish (runFiles r.files)
-  | Cli.Cut r -> finish (cutFiles (M.unwrapOr "debug" r.profile) (pairsOf r.opt r.set) r.files)
+  | Cli.Cut r ->
+      finish (cutFiles (M.unwrapOr "debug" r.profile) (pairsOf r.opt r.set r.cfg) r.files)
 
 -- Each of `files`, its names resolved with every other of its unit's -- a
 -- package, built with the units it depends on first -- under a line naming
@@ -195,17 +200,21 @@ fun runFiles (files : [String]) =
 
 -- Each of `files`, its unit lowered to Cut, under a line naming it: the
 -- program, as `meadow_cut` reads one, or `not compiled`.
--- The options a command line gives over its profile's: `--opt`, and each
--- `name=value` of `--set`.
-fun pairsOf (opt : Maybe String) (set : Maybe String) : [(String, String)] =
-  V.append
-    (match opt with | Just level -> [("opt", level)] | None -> [])
-    (V.concatMap
-       (\pair ->
-         match S.indexOf "=" pair with
-         | Just k -> [(S.take pair k, S.drop pair (k + 1))]
-         | None -> if S.isEmpty pair then [] else [(pair, "true")])
-       (S.split "," (M.unwrapOr "" set)))
+-- The options a command line gives over its profile's: `--opt`, each
+-- `name=value` of `--set`, and `--cfg`'s flags, which are one option.
+fun pairsOf (opt : Maybe String) (set : Maybe String) (cfg : Maybe String) : [(String, String)] =
+  V.concat [
+    (match opt with | Just level -> [("opt", level)] | None -> []),
+    (match cfg with
+     | Just flags -> [("flags", flags)]
+     | None -> []),
+    V.concatMap
+      (\pair ->
+        match S.indexOf "=" pair with
+        | Just k -> [(S.take pair k, S.drop pair (k + 1))]
+        | None -> if S.isEmpty pair then [] else [(pair, "true")])
+      (S.split "," (M.unwrapOr "" set))
+  ]
 
 fun cutFiles (profile : String) (pairs : [(String, String)]) (files : [String]) =
   let roots =

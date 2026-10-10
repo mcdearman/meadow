@@ -19,7 +19,7 @@ use Lingua.Lang (Meta, spanMeta, metaStart, metaEnd)
 use Lingua.Table (Table, enter, entry, amend, tabled)
 use MeadowBoot.Ast
 use MeadowBoot.Ast (Ast!)
-use MeadowBoot.Scopes (declHolds)
+use MeadowBoot.Scopes (Cfg, declHolds)
 use Std.Collections.Vector as V
 use Std.Collections.List as L
 use Std.Collections.HashMap as H
@@ -138,11 +138,12 @@ use Std.Sort (sortOn)
   locals : [(String, Int);],
   top : Bool,
   assocs : HashMap String Int,
-  method : Bool
+  method : Bool,
+  cfg : Cfg
 }
 
-@pub fun envOf (s : Scope) : Env =
-  Env { scope = s, locals = [;], top = True, assocs = H.empty, method = False }
+@pub fun envOf (cfg : Cfg) (s : Scope) : Env =
+  Env { scope = s, locals = [;], top = True, assocs = H.empty, method = False, cfg }
 
 fun nested (env : Env) : Env = { env | top = False, method = False }
 
@@ -283,7 +284,9 @@ pass! {
     -- `meadow_compiler::cfg::strip` takes it out: its body names what may not
     -- be there either.
     | Module { raw decls } ->
-        Module { decls = V.map (\d -> renameDecl src out env d) (V.filter (declHolds src) decls) }
+        Module {
+          decls = V.map (\d -> renameDecl src out env d) (V.filter (declHolds env.cfg src) decls)
+        }
     | Expr.Var { name } ->
         Var {
           ref =

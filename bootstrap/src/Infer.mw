@@ -1864,46 +1864,15 @@ fun seedGroup (i : Inf s) (here : Here) (b : HirBind) : [(Int, Type)] ! { St s |
 
 -- --- a unit's declarations ---------------------------------------------------
 
--- A module's top-level declarations that hold here, each under its
--- attributes' peel.
+-- A module's top-level declarations, each under its attributes' peel. One a
+-- `@cfg` leaves out is not among them: renaming took it out.
 fun declsOfModule (a : HirArena) (root : HirModule) : [HirDecl] =
-  V.concatMap (\d -> if declEnabled a d then [peelDecl a d] else []) (hirModuleDecls a root)
+  V.map (peelDecl a) (hirModuleDecls a root)
 
 fun peelDecl (a : HirArena) (d : HirDecl) : HirDecl =
   match viewHirDecl a d with
   | HirDeclView.Attributed r -> peelDecl a r.decl
   | _ -> d
-
-fun declEnabled (a : HirArena) (d : HirDecl) : Bool =
-  match viewHirDecl a d with
-  | HirDeclView.Attributed r ->
-      V.all
-        (\at ->
-          hirNameText a (hirAttrName a at) != "cfg" or V.all (metaHolds a) (hirAttrMetas a at))
-        r.attrs
-        and declEnabled a r.decl
-  | _ -> True
-
--- Whether a `@cfg` condition holds: on Windows, x86-64, a debug build that is
--- not a test's.
-fun metaHolds (a : HirArena) (m : HirAttrMeta) : Bool =
-  match viewHirAttrMeta a m with
-  | HirAttrMetaView.Word r -> (let w = hirNameText a r.name in w == "windows" or w == "debug")
-  | HirAttrMetaView.Value r ->
-      let key = hirNameText a r.name in
-      let v = hirNameText a r.value in
-      (key == "os" and v == "windows")
-        or (key == "family" and v == "windows")
-        or (key == "arch" and v == "x86_64")
-        or (key == "profile" and v == "debug")
-        or (key == "opt_level" and v == "0")
-  | HirAttrMetaView.List r ->
-      let n = hirNameText a r.name in
-      if n == "all" then V.all (metaHolds a) r.metas
-      else if n == "any" then V.any (metaHolds a) r.metas
-      else if n == "not" then not (V.all (metaHolds a) r.metas)
-      else False
-  | _ -> False
 
 -- A declared item of a module by kind, owner and name.
 fun itemNamed (items : [Item]) (kind : String) (owner : String) (name : String) : Maybe Item =
@@ -2624,24 +2593,21 @@ fun writtenModule
   | None -> runSt (\() -> TypedProgram (freezeTyped (newTypedBuilder ())) 0)
 
 -- A module's declaration as inference wrote it: a binding as its group did, a
--- trait's or an `impl`'s with its bodies as they were, the rest copied -- and
--- one a `@cfg` leaves out, left out.
+-- trait's or an `impl`'s with its bodies as they were, the rest copied.
 fun writtenDecl (cx : Cx s) (src : HirArena) out (done : HashMap String Int) (d : HirDecl)
     : Maybe InferringDecl ! { St s | e } =
   let pl = plain cx in
   let meta = metaHirDecl src d in
   match viewHirDecl src d with
   | HirDeclView.Attributed r ->
-      if declEnabled src d then
-        M.map
-          (\inner ->
-            newInferringDeclAttributed
-              out
-              meta
-              (V.map (\at -> inferAttr src out pl at) r.attrs)
-              inner)
-          (writtenDecl cx src out done r.decl)
-      else None
+      M.map
+        (\inner ->
+          newInferringDeclAttributed
+            out
+            meta
+            (V.map (\at -> inferAttr src out pl at) r.attrs)
+            inner)
+        (writtenDecl cx src out done r.decl)
   | HirDeclView.Bind r -> Just (newInferringDeclBind out meta (writtenBind cx src out done r.bind))
   | HirDeclView.Trait r ->
       Just

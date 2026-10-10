@@ -2597,6 +2597,116 @@ fn a_program_with_the_standard_library_lowered_by_meadowboot_answers_as_the_rust
     );
 }
 
+const WITH_CFG: &str = r#"@cfg(os = "linux")
+def system = "linux"
+
+@cfg(os = "macos")
+def system = "macos"
+
+@cfg(os = "windows")
+def system = "windows"
+
+@cfg(unix)
+def family = "unix"
+
+@cfg(windows)
+def family = "windows"
+
+@cfg(debug)
+def build = "debug"
+
+@cfg(release)
+def build = "release"
+
+@cfg(any(fast, feature = "quick"))
+def speed = "fast"
+
+@cfg(not(any(fast, feature = "quick")))
+def speed = "slow"
+
+@cfg(all(opt_level = "2", backend = "aot", not(test)))
+def level = "two"
+
+@cfg(not(all(opt_level = "2", backend = "aot", not(test))))
+def level = "other"
+
+def result = (system, family, build, speed, level)
+"#;
+
+/// What MeadowBoot's `cut` answers of [`WITH_CFG`], told `args`.
+fn cfg_answer(name: &str, args: &[&str]) -> String {
+    let dir = std::env::temp_dir().join(format!("meadowboot-cfg-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("src")).expect("a package directory");
+    std::fs::write(
+        dir.join("Meadow.toml"),
+        "[package]\nname = \"WithCfg\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("a manifest");
+    let main = dir.join("src").join("Main.mw");
+    std::fs::write(&main, WITH_CFG).expect("a source file");
+    let out = Command::new(meadowboot_exe())
+        .arg("cut")
+        .args(args)
+        .arg(&main)
+        .env("MEADOWBOOT_STD", repo().join("lib").join("Std"))
+        .env_remove("MEADOWBOOT_EXPANSIONS")
+        .output()
+        .expect("MeadowBoot runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = stdout
+        .split_once("\ncut 0\n")
+        .map(|(_, rest)| format!("cut 0\n{rest}"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no program:\n{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+    axcut_answer(&text)
+}
+
+/// What a `@cfg` holds of is the build's options: the system and processor
+/// MeadowBoot was itself built for unless it is told another, the profile's
+/// kind and level, and the flags of `--cfg`.
+#[test]
+fn a_cfg_is_decided_by_the_options_meadowboot_builds_with() {
+    let os = std::env::consts::OS;
+    let family = if os == "windows" { "windows" } else { "unix" };
+    assert_eq!(
+        cfg_answer("host", &[]),
+        format!(r#"("{os}", "{family}", "debug", "slow", "other")"#)
+    );
+    assert_eq!(
+        cfg_answer(
+            "told",
+            &[
+                "--profile",
+                "release",
+                "--set",
+                "os=windows",
+                "--cfg",
+                "fast"
+            ]
+        ),
+        r#"("windows", "windows", "release", "fast", "two")"#
+    );
+    assert_eq!(
+        cfg_answer(
+            "flag",
+            &[
+                "--set",
+                "os=linux,test=true",
+                "--opt",
+                "O2",
+                "--cfg",
+                "feature=quick"
+            ]
+        ),
+        r#"("linux", "unix", "debug", "fast", "other")"#
+    );
+}
+
 /// How many glade cases MeadowBoot has to lower to Cut so that the reference
 /// interpreter answers as the Rust compiler does. The rest wait on primitives
 /// the interpreter does not have -- the sized integers', the floats', `show`

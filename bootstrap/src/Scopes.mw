@@ -80,8 +80,41 @@ use Vis.*
 @pub record Source = {
   path : [String],
   file : String,
-  ast : AstProgram
+  ast : AstProgram,
+  cfg : Cfg
 }
+
+-- What a `@cfg` is decided by, as `meadow_compiler::Cfg` holds it: the system
+-- and the processor the program is for, whether the build is a `debug` or a
+-- `release` one, what runs the program, how hard it is optimised (`0` to
+-- `3`), whether its tests are being built, and the flags the build was given
+-- -- each a name, or `name=value`.
+@derive(Debug, PartialEq)
+@pub record Cfg = {
+  os : String,
+  arch : String,
+  profile : String,
+  backend : String,
+  opt : String,
+  test : Bool,
+  flags : [String]
+}
+
+-- The one build the commands that show a unit renamed or inferred answer
+-- for, wherever they run: the differential tests build the Rust compiler's
+-- side for it.
+@pub def shownCfg : Cfg =
+  Cfg {
+    os = "windows",
+    arch = "x86_64",
+    profile = "debug",
+    backend = "jit",
+    opt = "0",
+    test = False,
+    flags = []
+  }
+
+fun familyOf (c : Cfg) : String = if c.os == "windows" then "windows" else "unix"
 
 -- A module, declared: its source, what it declares, and its `use`s -- each
 -- with how far it re-exports what it brings.
@@ -139,39 +172,50 @@ fun visOf (a : AstArena) (attrs : [AstAttr]) : Maybe Vis =
     None
     attrs
 
--- Whether a declaration's `@cfg`s hold here: on Windows, x86-64, a debug
--- build that is not a test's.
-fun enabled (a : AstArena) (attrs : [AstAttr]) : Bool =
-  V.all (\at -> nameText a (astAttrName a at) != "cfg" or V.all (holds a) (astAttrMetas a at)) attrs
+-- Whether a declaration's `@cfg`s hold for the build `c` describes.
+fun enabled (c : Cfg) (a : AstArena) (attrs : [AstAttr]) : Bool =
+  V.all
+    (\at -> nameText a (astAttrName a at) != "cfg" or V.all (holds c a) (astAttrMetas a at))
+    attrs
 
-fun holds (a : AstArena) (m : AstAttrMeta) : Bool =
+-- Whether one condition holds, as `meadow_compiler::cfg::holds` decides it: a
+-- name the build knows is asked of the build, and any other is a flag.
+fun holds (c : Cfg) (a : AstArena) (m : AstAttrMeta) : Bool =
   let k = kindAstAttrMeta a m in
   if k == AstAttrMetaKind.Word then
-    (let w = nameText a (astAttrMetaWordName a m) in w == "windows" or w == "debug")
+    (let w = nameText a (astAttrMetaWordName a m) in
+     if w == "unix" or w == "windows" then familyOf c == w
+     else if w == "debug" or w == "release" then c.profile == w
+     else if w == "test" then c.test
+     else V.elem w c.flags)
   else if k == AstAttrMetaKind.Value then
     (let key = nameText a (astAttrMetaValueName a m) in
      let v = nameText a (astAttrMetaValueValue a m) in
-     (key == "os" and v == "windows")
-       or (key == "family" and v == "windows")
-       or (key == "arch" and v == "x86_64")
-       or (key == "profile" and v == "debug")
-       or (key == "opt_level" and v == "0"))
+     if key == "os" then c.os == v
+     else if key == "arch" then c.arch == v
+     else if key == "family" then familyOf c == v
+     else if key == "profile" then c.profile == v
+     else if key == "backend" then c.backend == v
+     else if key == "opt_level" then c.opt == v
+     else V.elem "${key}=${v}" c.flags)
   else if k == AstAttrMetaKind.List then
     (let n = nameText a (astAttrMetaListName a m) in
      let args = astAttrMetaListMetas a m in
-     if n == "all" then V.all (holds a) args
-     else if n == "any" then V.any (holds a) args
-     else if n == "not" then not (V.all (holds a) args)
+     if n == "all" then V.all (holds c a) args
+     else if n == "any" then V.any (holds c a) args
+     else if n == "not" then not (V.all (holds c a) args)
      else False)
   else False
 
--- Whether declaration `d` is there at all: every `@cfg` on it holds here.
-@pub fun declHolds (a : AstArena) (d : AstDecl) : Bool = enabled a (fst (peel a d))
+-- Whether declaration `d` is there at all: every `@cfg` on it holds for `c`.
+@pub fun declHolds (c : Cfg) (a : AstArena) (d : AstDecl) : Bool = enabled c a (fst (peel a d))
 
--- The declarations of a module that hold here, each with its attributes.
+-- The declarations of a module that hold in its build, each with its
+-- attributes.
 @pub fun declsOf (src : Source) : [([AstAttr], AstDecl)] =
   match src.ast with
-  | AstProgram a root -> V.filter (\x -> enabled a (fst x)) (V.map (peel a) (astModuleDecls a root))
+  | AstProgram a root ->
+      V.filter (\x -> enabled src.cfg a (fst x)) (V.map (peel a) (astModuleDecls a root))
 
 fun siteIn (src : Source) (m : Meta) : String = "${src.file}@${show (metaStart m)}"
 
@@ -1026,4 +1070,4 @@ fun depItemsOf (exports : [Export]) : [([String], Item)] ! { Table Binder | e } 
        ([], H.empty)
        exports)
 
-fun renameSource (sc : Scope) (f : ModFrame) = (f.src.file, rename (envOf sc) f.src.ast)
+fun renameSource (sc : Scope) (f : ModFrame) = (f.src.file, rename (envOf f.src.cfg sc) f.src.ast)

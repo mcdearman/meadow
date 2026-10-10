@@ -29,7 +29,7 @@ use MeadowBoot.Unit (dependenciesOf, unitFilesOf, manifestOf, packageName, depen
 use MeadowBoot.Lower (lowered)
 use MeadowBoot.Ast (AstProgram)
 use MeadowBoot.Rename (mentionsOf, Binder)
-use MeadowBoot.Scopes (Source, Export, Renamed, DepExports, renameUnit)
+use MeadowBoot.Scopes (Source, Cfg, shownCfg, Export, Renamed, DepExports, renameUnit)
 use MeadowBoot.Infer (inferUnit, Inferred)
 use MeadowBoot.Elab (unitCore, defSymbol, Linked, DataSig, DefaultSig, Imported)
 use MeadowBoot.Seq as Seq
@@ -122,6 +122,7 @@ database! {
     | query core (unit : Int) : Maybe CoreProgram =
         coreIn
           (checkedOf
+             shownCfg
              (queryHome unit)
              (queryImported unit)
              (tableOf (queryFixities 0))
@@ -173,7 +174,7 @@ fun renamedOf
     (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
     : ([(String, [String])], [Export], Bool) =
-  match unitOf dir imported fx files [] with
+  match unitOf shownCfg dir imported fx files [] with
   | (sources, r) ->
       let mentions = mentionsOf r.binders in
       (
@@ -191,7 +192,7 @@ fun inferredOf
     (fx : HashMap String Fixity)
     (files : [(String, String, Maybe (Green Grouped, [Diagnostic]))])
     : ([(String, [String])], [Export], Bool, TypeEnv) =
-  match unitOf dir imported fx files [] with
+  match unitOf shownCfg dir imported fx files [] with
   | (sources, r) ->
       let deps =
         V.map
@@ -232,6 +233,7 @@ fun inferredOf
 -- (`Dictionaries`); and if it `inlines`, a call of a small function is the
 -- function's body (`Inline`).
 fun checkedOf
+    (cfg : Cfg)
     (dir : String)
     (imported : [Interface])
     (fx : HashMap String Fixity)
@@ -244,7 +246,7 @@ fun checkedOf
     (mark : String -> () ! e)
     : ([Export], Bool, TypeEnv, Maybe (CoreProgram, Linked, Object), [String]) ! e =
   let m0 = mark "start" in
-  match unitOf dir imported fx files asts with
+  match unitOf cfg dir imported fx files asts with
   | (sources, r) ->
       let m1 = mark "renamed" in
       let deps =
@@ -630,6 +632,7 @@ fun isProgram (exports : [Export]) : Bool =
 -- The unit at `dir` renamed: its modules, each with its path, and what
 -- renaming made of them.
 fun unitOf
+    (cfg : Cfg)
     (dir : String)
     (imported : [Interface])
     (fx : HashMap String Fixity)
@@ -666,12 +669,13 @@ fun unitOf
         match x with
         | (path, text, tree) ->
             let file = "${pkg}/${relativeTo dir path}" in
-            let from = \ast -> [(path, Source { path = modulePath isStd src path, file, ast })] in
-            (match (H.lookup path made, tree) with
-             | (Just ast, _) -> from ast
-             | (None, Just (g, _)) ->
-                 from (lowered pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx)
-             | (None, None) -> []))
+            let from =
+              \ast -> [(path, Source { path = modulePath isStd src path, file, ast, cfg })]
+            in (match (H.lookup path made, tree) with
+                | (Just ast, _) -> from ast
+                | (None, Just (g, _)) ->
+                    from (lowered pkg text g (M.unwrapOr H.empty (H.lookup file expanded)) fx)
+                | (None, None) -> []))
       files
   in
   let deps =
@@ -808,10 +812,64 @@ make! {
       dictionaries : Bool =
         True
           "copy a function for the dictionaries a call names, and read a known dictionary's method out of it"
+      kind : Debug | Release = Debug "what `@cfg(debug)` and `@cfg(release)` hold of"
+      os : String = hostOs "the system `@cfg` answers for: windows, linux or macos"
+      arch : String = hostArch "the processor `@cfg` answers for: x86_64 or aarch64"
+      backend : String = "aot" "what `@cfg(backend = …)` holds of: vm, jit, aot, silo or cek"
+      test : Bool = False "whether `@cfg(test)` holds in the unit that was asked for"
+      flags : [String] = [] "the flags `@cfg` holds of, each a name or `name=value`"
     }
     | profile debug {}
-    | profile release { opt = O2 }
+    | profile release { opt = O2, kind = Release }
+    | pinned = pinnedOf
 }
+
+-- The system and the processor this compiler was itself built for, which is
+-- what it builds for unless told another: whoever compiled it decided these
+-- `@cfg`s.
+@cfg(os = "linux")
+def hostOs : String = "linux"
+
+@cfg(os = "macos")
+def hostOs : String = "macos"
+
+@cfg(os = "windows")
+def hostOs : String = "windows"
+
+@cfg(arch = "x86_64")
+def hostArch : String = "x86_64"
+
+@cfg(arch = "aarch64")
+def hostArch : String = "aarch64"
+
+-- What a build at these options decides a `@cfg` by.
+fun cfgOf (o : UnitsOptions) : Cfg =
+  Cfg {
+    os = o.os,
+    arch = o.arch,
+    profile = if o.kind == UnitsKind.Release then "release" else "debug",
+    backend = o.backend,
+    opt =
+      (match o.opt with
+       | UnitsOpt.O0 -> "0"
+       | UnitsOpt.O1 -> "1"
+       | UnitsOpt.O2 -> "2"
+       | UnitsOpt.O3 -> "3"),
+    test = o.test,
+    flags = o.flags
+  }
+
+-- What holds of a unit whatever the build was told. The standard library is
+-- compiled for the platform alone, as `meadow_compiler::Cfg::platform` has
+-- it, so one compile of it serves every program on that platform; and
+-- `@cfg(test)` holds only in the unit the build was asked for, so a library
+-- whose tests stopped compiling does not break what depends on it.
+fun pinnedOf (root : String) (dir : String) (manifest : String) (profile : String)
+    : [(String, String)] =
+  if packageName manifest == "Std" then
+    [("kind", "Debug"), ("backend", "jit"), ("test", "false"), ("flags", "")]
+  else if dir != root then [("test", "false")]
+  else []
 
 -- Whether a build at these options copies small functions to where they are
 -- called: `meadow_rt`'s `OptLevel::inlines`, which is O2's, and here O3's
@@ -884,6 +942,7 @@ fun compiling (o : UnitsOptions) (u : Given Interface) =
             -- Its types inferred once, and lowered: its declarations of Cut
             -- are its object, written where the link reads them.
             match checkedOf
+              (cfgOf o)
               (unitDir u)
               (V.map snd (unitImports u))
               (tableOf fixities)

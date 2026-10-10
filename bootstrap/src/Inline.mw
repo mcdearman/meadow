@@ -216,7 +216,7 @@ fun leading (traits : HashMap String Bool) (params : [(Int, Type)]) (i : Int) : 
 
 -- The functions of `p` there may be a copy of, by binder: the small ones
 -- that reach themselves through none, and the ones that take dictionaries.
-fun candidates (p : CoreProgram) (traits : HashMap String Bool) : HashMap Int Body =
+fun candidates (p : CoreProgram) (traits : HashMap String Bool) (reps : Bool) : HashMap Int Body =
   let a = coreArena p in
   let all =
     V.concatMap
@@ -225,7 +225,10 @@ fun candidates (p : CoreProgram) (traits : HashMap String Bool) : HashMap Int Bo
          let (params, body) = lams a inner [] in
          let n = size a body kept 0 in
          let dicts = leading traits params 0 in
-         if V.isEmpty params or (n > budget and (dicts == 0 or n > kept)) then []
+         -- One generic in a type is kept too, where copies are made for the
+         -- representations a function is used at (`instantiated`).
+         let generic = reps and not (V.isEmpty vars) in
+         if V.isEmpty params or (n > budget and ((dicts == 0 and not generic) or n > kept)) then []
          else
            [(
              coreDefId a d,
@@ -256,7 +259,8 @@ fun candidates (p : CoreProgram) (traits : HashMap String Bool) : HashMap Int Bo
       match kv with
       | (id, (b : Body)) ->
           if M.isSome (H.lookup id safe) then H.insert id b h
-          else if b.dicts > 0 then H.insert id { b | small = False, dicts = b.dicts } h
+          else if b.dicts > 0 or (reps and not (V.isEmpty b.vars)) then
+            H.insert id { b | small = False, dicts = b.dicts } h
           else h)
     H.empty
     all
@@ -450,6 +454,48 @@ fun copied out (cx : Cx s) (f : Int) (b : Body) (given : [(Int, String)]) (tys :
             stSetRef sh.extra (V.pushBack (stGetRef sh.extra) (newCoreDef out nowhere id whole))
           in id)
 
+-- A generic function mentioned at `tys`: where the types are all there, and
+-- copies are being made, the copy of it for how values of those types are
+-- represented -- `meadow_core::specialize::release`. A function generic in a
+-- type does nothing with a value of it but move it, so one copy serves every
+-- type whose values are pointers, and one each the numbers and the rest that
+-- are not; and what the copy does with such a value it does knowing what the
+-- value is, where the function as written asks a descriptor at run time. A
+-- small function is left to be copied to where it is called, and one that
+-- takes dictionaries to be copied for them (`call`).
+fun instantiated out (cx : Cx s) (m : Meta) func tys (t : Type) =
+  let sh = cx.sh in
+  let plain = \u -> newCoreTermTyApp out m func tys t in
+  if not sh.inlines or cx.deep >= depth or not (V.all closed tys) then plain ()
+  else
+    (match named out func with
+     | Just f ->
+         (match H.lookup f sh.bodies with
+          | Just (b : Body) ->
+              if b.dicts == 0 and not b.small and V.len b.vars == V.len tys then
+                newCoreTermVar out m (copied out cx f b [] (V.map represented tys)) t
+              else plain ()
+          | None -> plain ())
+     | None -> plain ())
+
+-- A type as a copy is made at it: itself where its values are not pointers,
+-- and otherwise one type that stands for every type whose values are. It
+-- names no declaration; nothing takes a value of it apart. An effect is
+-- itself: it is not a value's type.
+fun represented (t : Type) : Type =
+  match t with
+  | Con name args -> if V.isEmpty args and V.elem name unboxed then t else Con "#Ref" []
+  | RowEmpty -> t
+  | RowExtend _ _ _ -> t
+  | _ -> Con "#Ref" []
+
+-- The types whose values are not pointers: `Seq.scalars`.
+def unboxed : [String] =
+  [
+    "Int", "Float", "Float32", "Bool", "Char", "String", "Unit", "Int8", "Int16", "Int32", "UInt8",
+    "UInt16", "UInt32", "UInt64"
+  ]
+
 -- A call: `func` given `arg`, of type `t`.
 fun call out (cx : Cx s) (m : Meta) func arg (t : Type) =
   let sh = cx.sh in
@@ -529,7 +575,8 @@ pass! {
     | Lam { param, paramTy, body, ty } ->
         Lam { param = renamed cx param, paramTy = at cx paramTy, body, ty = at cx ty }
     | TyLam { vars, body, ty } -> TyLam { vars, body, ty = at cx ty }
-    | TyApp { func, tys, ty } -> TyApp { func, tys = V.map (\x -> at cx x) tys, ty = at cx ty }
+    | TyApp { func, tys, ty } ->
+        instantiated out cx here func (V.map (\x -> at cx x) tys) (at cx ty)
     | App { func, arg, ty } -> call out cx here func arg (at cx ty)
     | Let { id, value, body, ty } -> Let { id = renamed cx id, value, body, ty = at cx ty }
     | LetRec { binds, body, ty } -> LetRec { binds, body, ty = at cx ty }
@@ -595,11 +642,11 @@ pass! {
 -- its own they may want a copy of, and -- as what it names of another unit
 -- is written -- each definition one of those mentions, its own included:
 -- its binder here, its symbol, and how it is written.
-@pub fun exports (p : CoreProgram) (traits : HashMap String Bool) : CoreProgram =
+@pub fun exports (p : CoreProgram) (traits : HashMap String Bool) (reps : Bool) : CoreProgram =
   let a = coreArena p in
   let file = coreRoot p in
   let pkg = coreFilePackage a file in
-  let bodies = candidates p traits in
+  let bodies = candidates p traits reps in
   let own =
     V.foldl
       (\h d ->
@@ -738,67 +785,68 @@ fun imported
       (coreFileExterns a file)
   in
   let binders = V.foldl (\h kv -> H.insert (snd kv) (fst kv) h) H.empty (H.toVec symbols) in
-  let bodies = V.foldl (\h their -> imported binders traits their h) (candidates p traits) theirs in
-  runSt (\() ->
-    let out = newCoreBuilder () in
-    let sh =
-      Shared {
-        pkg,
-        bodies,
-        kept = V.foldl (\h kv -> H.insert (fst kv) True h) H.empty (H.toVec symbols),
-        binders,
-        symbols,
-        made = stNewRef [],
-        selectors =
-          V.foldl
-            (\h (s : Summary) ->
-              V.foldl (\g (e : Entry String) -> H.insert e.key e.value g) h s.selectors)
-            H.empty
-            all,
-        dicts =
-          V.foldl
-            (\h (s : Summary) ->
-              V.foldl (\g (e : Entry [Entry String]) -> H.insert e.key e.value g) h s.dicts)
-            H.empty
-            all,
-        wrappers =
-          V.foldl
-            (\h (s : Summary) ->
-              V.foldl (\g (e : Entry Wrapper) -> H.insert e.key e.value g) h s.wrappers)
-            H.empty
-            all,
-        arities = V.foldl (\h (e : Entry Int) -> H.insert e.key e.value h) H.empty arities,
-        next = stNewRef base,
-        copies = stNewRef H.empty,
-        extra = stNewRef [],
-        known,
-        inlines
-      }
-    in
-    let cx =
-      Cx { own = True, types = H.empty, tops = None, names = stNewRef H.empty, deep = 0, sh }
-    in
-    let defs = V.map (\d -> copyDef a out cx d) (coreFileDefs a file) in
-    let named = V.map (\n -> copyNamed a out cx n) (coreFileNamed a file) in
-    let datas = V.map (\d -> copyData a out cx d) (coreFileDatas a file) in
-    let effects = V.map (\e -> copyEffect a out cx e) (coreFileEffects a file) in
-    let externs = V.map (\x -> copyExtern a out cx x) (coreFileExterns a file) in
-    let more =
-      V.map
-        (\x ->
-          match x with
-          | (id, (t : Top)) -> newCoreExtern out nowhere id t.symbol t.types t.arity)
-        (stGetRef sh.made)
-    in
-    let root =
-      newCoreFile
-        out
-        nowhere
-        pkg
-        (coreFileEntry a file)
-        (V.append defs (stGetRef sh.extra))
-        named
-        datas
-        effects
-        (V.append externs more)
-    in CoreProgram (freezeCore out) root)
+  let bodies =
+    V.foldl (\h their -> imported binders traits their h) (candidates p traits inlines) theirs
+  in runSt (\() ->
+       let out = newCoreBuilder () in
+       let sh =
+         Shared {
+           pkg,
+           bodies,
+           kept = V.foldl (\h kv -> H.insert (fst kv) True h) H.empty (H.toVec symbols),
+           binders,
+           symbols,
+           made = stNewRef [],
+           selectors =
+             V.foldl
+               (\h (s : Summary) ->
+                 V.foldl (\g (e : Entry String) -> H.insert e.key e.value g) h s.selectors)
+               H.empty
+               all,
+           dicts =
+             V.foldl
+               (\h (s : Summary) ->
+                 V.foldl (\g (e : Entry [Entry String]) -> H.insert e.key e.value g) h s.dicts)
+               H.empty
+               all,
+           wrappers =
+             V.foldl
+               (\h (s : Summary) ->
+                 V.foldl (\g (e : Entry Wrapper) -> H.insert e.key e.value g) h s.wrappers)
+               H.empty
+               all,
+           arities = V.foldl (\h (e : Entry Int) -> H.insert e.key e.value h) H.empty arities,
+           next = stNewRef base,
+           copies = stNewRef H.empty,
+           extra = stNewRef [],
+           known,
+           inlines
+         }
+       in
+       let cx =
+         Cx { own = True, types = H.empty, tops = None, names = stNewRef H.empty, deep = 0, sh }
+       in
+       let defs = V.map (\d -> copyDef a out cx d) (coreFileDefs a file) in
+       let named = V.map (\n -> copyNamed a out cx n) (coreFileNamed a file) in
+       let datas = V.map (\d -> copyData a out cx d) (coreFileDatas a file) in
+       let effects = V.map (\e -> copyEffect a out cx e) (coreFileEffects a file) in
+       let externs = V.map (\x -> copyExtern a out cx x) (coreFileExterns a file) in
+       let more =
+         V.map
+           (\x ->
+             match x with
+             | (id, (t : Top)) -> newCoreExtern out nowhere id t.symbol t.types t.arity)
+           (stGetRef sh.made)
+       in
+       let root =
+         newCoreFile
+           out
+           nowhere
+           pkg
+           (coreFileEntry a file)
+           (V.append defs (stGetRef sh.extra))
+           named
+           datas
+           effects
+           (V.append externs more)
+       in CoreProgram (freezeCore out) root)

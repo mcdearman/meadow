@@ -405,7 +405,7 @@ fun checkedOf
                         -- most of what was written of it.
                         bodies =
                           if (keep and not inlines) or program then Inline.nothing ()
-                          else Inline.exports core traits
+                          else Inline.exports core traits inlines
                       },
                       Seq.declarations
                         core

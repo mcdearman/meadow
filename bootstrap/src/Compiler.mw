@@ -26,10 +26,20 @@ use MeadowBoot.Syntax
 use MeadowBoot.Parse (checkedTree)
 use MeadowBoot.Fixity (Fixity, Grouped, declare, grouped)
 use MeadowBoot.Unit (dependenciesOf, unitFilesOf, manifestOf, packageName, dependencyNames)
-use MeadowBoot.Lower (lowered)
+use MeadowBoot.Lower (lowered, loweredWith, Request)
+use MeadowBoot.Expand (
+  Binding, MacroFun, Dep, Batch, scopeOf, procFor, visOf, writeRound, readAnswers
+)
+use MeadowBoot.Macros as Mc
+use MeadowBoot.Macros (Answer)
+use MeadowBoot.Rules as Ru
+use MeadowBoot.Rules (Tok)
+use Std.Process as Proc
 use MeadowBoot.Ast (AstProgram)
 use MeadowBoot.Rename (mentionsOf, Binder)
-use MeadowBoot.Scopes (Source, Cfg, shownCfg, Export, Renamed, DepExports, renameUnit)
+use MeadowBoot.Scopes (
+  Source, Cfg, shownCfg, Export, Renamed, DepExports, renameUnit, usesOf, macroFuns, saysVis
+)
 use MeadowBoot.Infer (inferUnit, Inferred)
 use MeadowBoot.Elab (unitCore, defSymbol, Linked, DataSig, DefaultSig, Imported)
 use MeadowBoot.Seq as Seq
@@ -65,7 +75,11 @@ use Std.Result.Result.*
   exports : [Export],
   anyVis : Bool,
   types : TypeEnv,
-  linked : Linked
+  linked : Linked,
+  -- The functions it marks `@macro`, and what its macro calls left for
+  -- later ones at compile time.
+  macros : [MacroFun],
+  bindings : [Binding]
 }
 
 -- An operator, and how it binds.
@@ -94,7 +108,7 @@ database! {
          | None -> "")
     | query expansions (unit : Int) : HashMap String (HashMap String Json) =
         expansionsIn (V.map querySource (V.filter (\f -> S.endsWith ".json" f) (queryFiles unit)))
-    | query lowered (file : String) : Maybe AstProgram =
+    | query lowered (file : String) : Maybe (AstProgram, [Request]) =
         loweredOf
           (queryPackage 0)
           (queryHome 0)
@@ -131,6 +145,24 @@ database! {
                 (queryFiles unit))
              []
              (Just "result")
+             True
+             False
+             False
+             (\x -> ()))
+    -- The same with no entry: every definition of the unit, for whoever runs
+    -- one of them -- a macro -- rather than the unit.
+    | query whole (unit : Int) : Maybe CoreProgram =
+        coreIn
+          (checkedOf
+             shownCfg
+             (queryHome unit)
+             (queryImported unit)
+             (tableOf (queryFixities 0))
+             (V.map
+                (\f -> (f, querySource f, if S.endsWith ".mw" f then queryGrouped f else None))
+                (queryFiles unit))
+             []
+             None
              True
              False
              False
@@ -699,16 +731,17 @@ fun loweredOf
     (grouped : Maybe (Green Grouped, [Diagnostic]))
     (expanded : HashMap String (HashMap String Json))
     (fx : HashMap String Fixity)
-    : Maybe AstProgram =
+    : Maybe (AstProgram, [Request]) =
   match grouped with
   | Just (g, _) ->
       Just
-        (lowered
+        (loweredWith
            pkg
            text
            g
            (M.unwrapOr H.empty (H.lookup "${pkg}/${relativeTo dir path}" expanded))
-           fx)
+           fx
+           H.empty)
   | None -> None
 
 -- Each unit a unit imports with the name its manifest gives it, which a
@@ -737,7 +770,9 @@ fun emptyInterface () : Interface =
     exports = [],
     anyVis = False,
     types = noTypes,
-    linked = emptyLinked ()
+    linked = emptyLinked (),
+    macros = [],
+    bindings = []
   }
 
 fun fileOf (s : Source) : String = s.file
@@ -820,6 +855,9 @@ make! {
       backend : String = "aot" "what `@cfg(backend = …)` holds of: vm, jit, aot, silo or cek"
       test : Bool = False "whether `@cfg(test)` holds in the unit that was asked for"
       flags : [String] = [] "the flags `@cfg` holds of, each a name or `name=value`"
+      macros : Off
+        | Cek
+        | Glade = Off "what runs a procedural macro: nothing, the CEK machine, or Glade"
       entry : Maybe String =
         None
           "a value at the root the program answers, in place of `result` or of running `main`"
@@ -928,14 +966,14 @@ fun compiling (o : UnitsOptions) (u : Given Interface) =
             -- Each file's abstract syntax, on a thread of its own as well.
             -- What every file's is made with is asked for here first, so no
             -- thread waits on another's answer to it.
-            let asts =
-              (let pkg = compilerPackage db 0 in
-               let expanded = compilerExpansions db 0 in
-               let made = compilerLoweredEach db files in
+            let unitPkg = compilerPackage db 0 in
+            let expanded = compilerExpansions db 0 in
+            let first =
+              (let made = compilerLoweredEach db files in
                V.concatMap
                  (\i ->
                    match (V.get files i, V.get made i) with
-                   | (Just f, Just (Just ast)) -> [(f, ast)]
+                   | (Just f, Just (Just (ast, asked))) -> [(f, ast, asked)]
                    | _ -> [])
                  (V.range 0 (V.len files)))
             in
@@ -945,6 +983,44 @@ fun compiling (o : UnitsOptions) (u : Given Interface) =
             -- which is now and not when the unit is done.
             let fixities = compilerFixities db 0 in
             let closed = closeCompiler db in
+            -- Its procedural macros run, in rounds, and each file one of
+            -- them answered lowered again with what it said.
+            let (asts, bindings, unexpanded) =
+              (if o.macros == UnitsMacros.Off then
+                 (V.map (\x -> match x with | (f, ast, _) -> (f, ast)) first, [], [])
+               else
+                 let grouping =
+                   H.fromVec
+                     (V.concatMap
+                        (\i ->
+                          match (V.get sources i, V.get groups i) with
+                          | (Just (path, text), Just (Just (g, _))) -> [(path, (text, g))]
+                          | _ -> [])
+                        (V.range 0 (V.len sources)))
+                 in
+                 let done =
+                   rounds
+                     o
+                     u
+                     unitPkg
+                     expanded
+                     (tableOf fixities)
+                     grouping
+                     (Rounds {
+                        files = first,
+                        answers = H.empty,
+                        bindings = [],
+                        wrong = [],
+                        settled = False
+                      })
+                     0
+                 in (
+                      V.map (\x -> match x with | (f, ast, _) -> (f, ast)) done.files,
+                      done.bindings,
+                      done.wrong
+                    ))
+            in
+            let m3b = mark "expanded" in
             let made = H.fromVec (V.map (\a -> (fst a, True)) asts) in
             -- Its types inferred once, and lowered: its declarations of Cut
             -- are its object, written where the link reads them.
@@ -971,6 +1047,7 @@ fun compiling (o : UnitsOptions) (u : Given Interface) =
               (inlining o)
               (M.isSome (getEnv "MEADOWBOOT_NAMES"))
               mark with
+            | _ if not (V.isEmpty unexpanded) -> Err (S.join "" unexpanded)
             -- A unit whose `main` is not one is not compiled, as the Rust
             -- compiler does not compile it: a `main` that answers a number
             -- would hand the runtime the number as the program's answer.
@@ -1024,7 +1101,260 @@ fun compiling (o : UnitsOptions) (u : Given Interface) =
                         let m8 = mark "written" in
                         l)
                    | None -> emptyLinked ())
-                in Ok (Interface { fixities, package = pkg, exports, anyVis, types, linked })
+                in Ok
+                     (Interface {
+                        fixities,
+                        package = pkg,
+                        exports,
+                        anyVis,
+                        types,
+                        linked,
+                        macros = macrosOf (cfgOf o) (unitDir u) pkg asts,
+                        bindings
+                      })
+
+-- --- procedural macros ---------------------------------------------------------
+
+-- Where a unit's expansion has got to: each file's syntax and the calls in
+-- it nothing has answered; what each call that ran answered, by file and
+-- key; what they defined; what went wrong; and whether the next round is
+-- settled.
+record Rounds = {
+  files : [(String, AstProgram, [Request])],
+  answers : HashMap String (HashMap String [Tok]),
+  bindings : [Binding],
+  wrong : [String],
+  settled : Bool
+}
+
+-- A file of the unit at `dir`, package `pkg`, as a module: for what its
+-- `use`s and its attributes say.
+fun moduleOf (cfg : Cfg) (dir : String) (pkg : String) (path : String) (ast : AstProgram) : Source =
+  Source {
+    path = modulePath (pkg == "Std") (Path.join dir "src") path,
+    file = "${pkg}/${relativeTo dir path}",
+    ast,
+    cfg
+  }
+
+-- The functions the unit marks `@macro`.
+fun macrosOf (cfg : Cfg) (dir : String) (pkg : String) (asts : [(String, AstProgram)])
+    : [MacroFun] =
+  V.concatMap
+    (\x ->
+      let src = moduleOf cfg dir pkg (fst x) (snd x) in
+      V.map (\name -> MacroFun { module = src.path, name }) (macroFuns src))
+    asts
+
+-- The units unit `u` depends on, as far as macros go.
+fun macroDeps (u : Given Interface) : [Dep] =
+  let imports = unitImports u in
+  let named = namedDeps (V.map (\s -> (fst s, snd s, None)) (unitSources u)) (V.map snd imports) in
+  V.concatMap
+    (\k ->
+      match (V.get imports k, V.get named k) with
+      | (Just (dir, _), Just (spelled, (i : Interface))) ->
+          [Dep { spelled, package = i.package, dir, macros = i.macros, bindings = i.bindings }]
+      | _ -> [])
+    (V.range 0 (V.len imports))
+
+-- Rounds of expansion from `st` on, `n` of them done: every call that
+-- names a macro its module can see and has no answer is run -- by another
+-- run of this program, `meadowboot expand`, which is handed the round
+-- written out and writes what each call answered -- and each file one of
+-- them answered is lowered again. Until a round has nothing to run.
+fun rounds
+    (o : UnitsOptions)
+    (u : Given Interface)
+    (pkg : String)
+    (expanded : HashMap String (HashMap String Json))
+    (fx : HashMap String Fixity)
+    (grouping : HashMap String (String, Green Grouped))
+    (st : Rounds)
+    (n : Int) =
+  let dir = unitDir u in
+  let cfg = cfgOf o in
+  let deps = macroDeps u in
+  let modules =
+    V.map
+      (\x ->
+        match x with
+        | (f, ast, asked) -> (f, moduleOf cfg dir pkg f ast, asked))
+      st.files
+  in
+  let gated = V.any (\x -> match x with | (_, src, _) -> saysVis src) modules in
+  let batches =
+    V.concatMap
+      (\x ->
+        match x with
+        | (f, (src : Source), asked) ->
+            let sc = scopeOf pkg src.path (usesOf src) st.bindings deps in
+            let had = M.unwrapOr H.empty (H.lookup f st.answers) in
+            let calls =
+              V.concatMap
+                (\(r : Request) ->
+                  if M.isSome (H.lookup r.key had) then []
+                  else match procFor sc r with | Just p -> [(r, p)] | None -> [])
+                asked
+            in if V.isEmpty calls then []
+               else [(src.path, Batch { file = f, visible = sc.visible, calls })])
+      modules
+  in if V.isEmpty batches or n >= 64 then st
+     else
+       let given = Path.join (unitOut u) "macros.round" in
+       let said = Path.join (unitOut u) "macros.answers" in
+       let engine = if o.macros == UnitsMacros.Glade then "glade" else "cek" in
+       let w = writeString (given, writeRound st.settled (V.map snd batches)) in
+       match Proc.run (Proc.currentExe ()) ["expand", engine, given, said] with
+       | Err why -> { st | wrong = ["${dir}: its macros could not be run: ${why}\n"] }
+       | Ok (code, _, err) ->
+           (match (code, readToString said) with
+            | (0, Ok text) ->
+                let next =
+                  V.foldl
+                    (\(acc : (Rounds, Int)) answer ->
+                      match answer with
+                      | (file, key, result) ->
+                          (let asked =
+                             V.find
+                               (\b -> match b with | (_, (b2 : Batch)) -> b2.file == file)
+                               batches
+                           in
+                           let call =
+                             M.andThen
+                               (\b ->
+                                 match b with
+                                 | (path, (b2 : Batch)) ->
+                                     M.map
+                                       (\c -> (path, fst c))
+                                       (V.find
+                                          (\c -> (match fst c with | (r : Request) -> r.key == key))
+                                          b2.calls))
+                               asked
+                           in match (call, result) with
+                              | (None, _) -> acc
+                              | (Just (_, (r : Request)), Err why) ->
+                                  (
+                                    {
+                                      (fst acc)
+                                        | wrong =
+                                          V.pushBack
+                                            (fst acc).wrong
+                                            "${file}: `${r.name}!` could not be run: ${why}\n"
+                                    },
+                                    snd acc
+                                  )
+                              | (Just (path, (r : Request)), Ok wire) ->
+                                  (match M.map
+                                     (\w -> Mc.answerOf (fst w) (r.from, r.to))
+                                     (Mc.readWire wire 0) with
+                                   | Just (Answer.Answered trees defined) ->
+                                       (let had =
+                                          M.unwrapOr H.empty (H.lookup file (fst acc).answers)
+                                        in (
+                                             {
+                                               (fst acc)
+                                                 | answers =
+                                                   H.insert
+                                                     file
+                                                     (H.insert key (Ru.flatten trees) had)
+                                                     (fst acc).answers,
+                                               bindings =
+                                                 V.append
+                                                   (fst acc).bindings
+                                                   (V.map
+                                                      (\d ->
+                                                        Binding {
+                                                          name = fst d,
+                                                          module = path,
+                                                          package = pkg,
+                                                          vis = visOf r.seen gated,
+                                                          value = Mc.writeWire (snd d)
+                                                        })
+                                                      defined)
+                                             },
+                                             snd acc
+                                           ))
+                                   | Just (Answer.Waiting _) -> (fst acc, snd acc + 1)
+                                   | Just (Answer.Failed why _) ->
+                                       (
+                                         {
+                                           (fst acc)
+                                             | wrong =
+                                               V.pushBack
+                                                 (fst acc).wrong
+                                                 "${file}: `${r.name}!`: ${why}\n"
+                                         },
+                                         snd acc
+                                       )
+                                   | None ->
+                                       (
+                                         {
+                                           (fst acc)
+                                             | wrong =
+                                               V.pushBack
+                                                 (fst acc).wrong
+                                                 "${file}: `${r.name}!` did not answer with tokens\n"
+                                         },
+                                         snd acc
+                                       ))))
+                    (st, 0)
+                    (readAnswers text)
+                in
+                let after = fst next in
+                let waiting = snd next in
+                if not (V.isEmpty after.wrong) then after
+                else
+                  -- Each file a call of was answered, lowered again with
+                  -- every answer it has: what a macro wrote may call another.
+                  let files =
+                    V.map
+                      (\x ->
+                        match x with
+                        | (f, ast, asked) ->
+                            (match (H.lookup f after.answers, H.lookup f grouping) with
+                             | (Just answered, Just (text, g)) ->
+                                 (if H.size answered
+                                    == H.size (M.unwrapOr H.empty (H.lookup f st.answers)) then
+                                    (f, ast, asked)
+                                  else
+                                    match loweredWith
+                                      pkg
+                                      text
+                                      g
+                                      (M.unwrapOr
+                                         H.empty
+                                         (H.lookup "${pkg}/${relativeTo dir f}" expanded))
+                                      fx
+                                      answered with
+                                    | (again, more) -> (f, again, more))
+                             | _ -> (f, ast, asked)))
+                      st.files
+                  in
+                  let defined = V.len after.bindings != V.len st.bindings in
+                  let answered =
+                    V.any
+                      (\x ->
+                        match x with
+                        | (f, _, _) ->
+                            M.map H.size (H.lookup f after.answers)
+                              != M.map H.size (H.lookup f st.answers))
+                      st.files
+                  in
+                  -- Nothing ran and nothing can: what still waits, waits
+                  -- for what is not coming.
+                  if not answered and st.settled then { after | files = files }
+                  else
+                    rounds
+                      o
+                      u
+                      pkg
+                      expanded
+                      fx
+                      grouping
+                      { after | files = files, settled = waiting > 0 and not defined }
+                      (n + 1)
+            | _ -> { st | wrong = ["${dir}: its macros could not be run:\n${err}\n"] })
 
 fun indexOf (xs : [String]) (x : String) : Int =
   M.unwrapOr (0 - 1) (V.find (\k -> V.get xs k == Just x) (V.range 0 (V.len xs)))

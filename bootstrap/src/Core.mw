@@ -19,6 +19,10 @@ use Std.Macro (toDatum)
 use MeadowBoot.Types
 use MeadowBoot.Types.Type.*
 use Std.Collections.Vector as V
+use Std.Collections.HashMap as H
+use Std.Collections.HashMap (HashMap)
+use Std.St (runSt)
+use Lingua.Lang (spanMeta)
 use Std.String as S
 use Std.Char as C
 use Std.Maybe as M
@@ -294,6 +298,107 @@ pass! {
     | PCtor { name, args } -> PCtor { name, args }
     | PRecord { fields } -> PRecord { fields }
 }
+
+-- The types taken off, and every binder what `re` makes it: what `erase`
+-- does for one unit of several that are to be one program.
+pass! {
+  relink : Core -> Erased with re from Def, Named
+    | File { entry, defs, named } -> File { entry = re entry, defs, named }
+    | Def { id, body } -> Def { id = re id, body }
+    | Var { id } -> Var { id = re id }
+    | Lam { param, body } -> Lam { param = re param, body }
+    | TyLam { body } -> body
+    | TyApp { func } -> func
+    | App { func, arg } -> App { func, arg }
+    | Let { id, value, body } -> Let { id = re id, value, body }
+    | LetRec { binds, body } -> LetRec { binds, body }
+    | Bind { id, value } -> Bind { id = re id, value }
+    | If { cond, yes, no } -> If { cond, yes, no }
+    | Tuple { items } -> Tuple { items }
+    | Array { items } -> Array { items }
+    | Proj { tuple, index } -> Proj { tuple, index }
+    | Record { fields } -> Record { fields }
+    | Sel { target, label } -> Sel { target, label }
+    | Extend { target, label, value } -> Extend { target, label, value }
+    | Ctor { name, args } -> Ctor { name, args }
+    | Prim { op, args } -> Prim { op, args }
+    | Case { scrutinee, arms } -> Case { scrutinee, arms }
+    | Perform { eff, op, arg } -> Perform { eff, op, arg }
+    | Handle { body, clauses, retId, ret } -> Handle { body, clauses, retId = M.map re retId, ret }
+    | Clause { eff, op, param, resume, body } ->
+        Clause { eff, op, param = re param, resume = re resume, body }
+    | Join { id, params, rhs, body } -> Join { id = re id, params = V.map re params, rhs, body }
+    | Jump { id, args } -> Jump { id = re id, args }
+    | Ill {} -> Ill {}
+    | Const { lit } -> Const { lit }
+    | PWild {} -> PWild {}
+    | PVar { id } -> PVar { id = re id }
+    | PAs { id, pat } -> PAs { id = re id, pat }
+    | PLit { lit } -> PLit { lit }
+    | PTuple { items } -> PTuple { items }
+    | PArray { items } -> PArray { items }
+    | PCtor { name, args } -> PCtor { name, args }
+    | PRecord { fields } -> PRecord { fields }
+}
+
+-- A definition's symbol: its package, and its binder -- an `impl`'s
+-- dictionary's is below every other (`Elab.defSymbol`).
+fun symbolOf (pkg : String) (id : Int) : String =
+  if id < 0 then "meadow:${pkg}/impl${show (0 - id)}" else "meadow:${pkg}/d${show id}"
+
+-- Several units, each a program of core that names what it mentions of
+-- another by symbol, as one program the CEK machine runs: every binder made
+-- one no other unit has, and a mention of another unit's definition that
+-- definition. With it, where each definition is, by its symbol.
+@pub fun linkedUnits (units : [CoreProgram]) : (ErasedProgram, HashMap String Int) =
+  let many = V.len units + 1 in
+  let global = \u id -> if id >= 0 then id * many + u else id * many - u in
+  let parts =
+    \u ->
+      (match V.get units u with
+       | Just (CoreProgram a file) -> Just (a, file)
+       | None -> None)
+  in
+  let table =
+    V.foldl
+      (\h u ->
+        match parts u with
+        | Just (a, file) ->
+            (let pkg = coreFilePackage a file in
+             V.foldl
+               (\h2 d -> H.insert (symbolOf pkg (coreDefId a d)) (global u (coreDefId a d)) h2)
+               h
+               (coreFileDefs a file))
+        | None -> h)
+      H.empty
+      (V.range 0 (V.len units))
+  in runSt (\() ->
+       let out = newErasedBuilder () in
+       let made =
+         V.map
+           (\u ->
+             match parts u with
+             | Just (a, file) ->
+                 (let theirs =
+                    V.foldl
+                      (\h e ->
+                        match H.lookup (coreExternSymbol a e) table with
+                        | Just g -> H.insert (coreExternId a e) g h
+                        | None -> h)
+                      H.empty
+                      (coreFileExterns a file)
+                  in
+                  let re = \id -> M.unwrapOr (global u id) (H.lookup id theirs) in
+                  (
+                    V.map (\d -> relinkDef a out re d) (coreFileDefs a file),
+                    V.map (\n -> relinkNamed a out re n) (coreFileNamed a file)
+                  ))
+             | None -> ([], []))
+           (V.range 0 (V.len units))
+       in
+       let root =
+         newErasedFile out (spanMeta 0 0) (0 - 1) (V.concatMap fst made) (V.concatMap snd made)
+       in (ErasedProgram (freezeErased out) root, table))
 
 -- Each numeral a number, each quoted string its text, each float's bits the
 -- float; everything else is as it was.

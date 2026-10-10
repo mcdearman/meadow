@@ -217,6 +217,53 @@ fun holds (c : Cfg) (a : AstArena) (m : AstAttrMeta) : Bool =
   | AstProgram a root ->
       V.filter (\x -> enabled src.cfg a (fst x)) (V.map (peel a) (astModuleDecls a root))
 
+-- What a `use` says, as far as macros go: the module it names, whether it
+-- picks values out -- by name, or all of them with `.*` -- the macros it
+-- picks, each `name!`, and what it calls the module.
+@pub record Using = {
+  path : [String],
+  selects : Bool,
+  macros : [String],
+  alias : Maybe String
+}
+
+-- Each `use` of a module that holds here.
+@pub fun usesOf (src : Source) : [Using] =
+  match src.ast with
+  | AstProgram a root ->
+      V.concatMap
+        (\x ->
+          let d = snd x in
+          if kindAstDecl a d == AstDeclKind.Use then
+            [Using {
+               path = V.map (nameText a) (astDeclUsePath a d),
+               selects = astDeclUseGlob a d or not (V.isEmpty (astDeclUseNames a d)),
+               macros = V.map (nameText a) (astDeclUseMacros a d),
+               alias = M.map (nameText a) (astDeclUseAlias a d)
+             }]
+          else [])
+        (declsOf src)
+
+-- The functions a module marks `@macro`: what a unit that depends on its
+-- package may call as macros.
+@pub fun macroFuns (src : Source) : [String] =
+  match src.ast with
+  | AstProgram a root ->
+      V.concatMap
+        (\x ->
+          let d = snd x in
+          if V.any (\at -> nameText a (astAttrName a at) == "macro") (fst x)
+            and kindAstDecl a d == AstDeclKind.Bind
+            and kindAstBind a (astDeclBindBind a d) == AstBindKind.Fun then
+            [nameText a (astBindFunName a (astDeclBindBind a d))]
+          else [])
+        (declsOf src)
+
+-- Whether a module says how far anything of its is seen.
+@pub fun saysVis (src : Source) : Bool =
+  match src.ast with
+  | AstProgram a root -> V.any (\x -> M.isSome (visOf a (fst x))) (declsOf src)
+
 fun siteIn (src : Source) (m : Meta) : String = "${src.file}@${show (metaStart m)}"
 
 -- A binder for name `n` of the module's.

@@ -34,13 +34,18 @@ use Std.Macro.Wire.*
 @pub fun serve (run : [TokenTree] -> [TokenTree] ! { Expand | e }) : () ! { Console | e } =
   match readLine () with
   | None -> ()
-  | Just given ->
-      match fst (readWire given 0) with
-      | Node _ parts ->
-          let settled = wholeOf (arrayGet parts 0) == 1 in
-          let scope = V.map binding (V.fromArray (childrenOf (arrayGet parts 1))) in
-          writeOutput (writeWire (expanding settled scope run (treesOf (arrayGet parts 2))))
-      | _ -> ()
+  | Just given -> writeOutput (answering run given)
+
+-- What the macro `run` answers a call written out as `given`, written out:
+-- for whoever runs a macro without its being a program of its own.
+@pub fun answering (run : [TokenTree] -> [TokenTree] ! { Expand | e }) (given : String)
+    : String ! e =
+  match fst (readWire given 0) with
+  | Node _ parts ->
+      let settled = wholeOf (arrayGet parts 0) == 1 in
+      let scope = V.map binding (V.fromArray (childrenOf (arrayGet parts 1))) in
+      writeWire (expanding settled scope run (treesOf (arrayGet parts 2)))
+  | _ -> ""
 
 -- `w` as text.
 @pub fun writeWire (w : Wire) : String = S.join "" (pieces w V.empty)

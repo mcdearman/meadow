@@ -101,6 +101,15 @@ fn meadowboot(args: &[String]) -> String {
         "MeadowBoot printed nothing:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // A unit that did not build is said so in place of what was asked of it,
+    // and why is on stderr: without it a failure reads only "not compiled".
+    if stdout.contains("\nnot compiled\n") {
+        eprintln!(
+            "MeadowBoot did not compile something of {:?}:\n{}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     stdout
 }
 
@@ -201,7 +210,11 @@ fn per_file_with(args: &[String], files: &[PathBuf]) -> Vec<(PathBuf, String)> {
                             let mut argv = args.to_vec();
                             argv.extend(run.iter().map(|p| p.display().to_string()));
                             let text = meadowboot(&argv);
-                            let _ = std::fs::write(&at, &text);
+                            // What did not build is not kept: the next
+                            // run tries it again, and says why once more.
+                            if !text.contains("\nnot compiled\n") {
+                                let _ = std::fs::write(&at, &text);
+                            }
                             text
                         }
                     };
